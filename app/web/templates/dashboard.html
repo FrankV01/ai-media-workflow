@@ -50,6 +50,21 @@
 
 </div>
 
+<!-- Pipeline Workflow -->
+<section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Pipeline Workflow</h2>
+        <span class="text-[10px] text-gray-600 uppercase tracking-wide">default</span>
+    </div>
+    <div id="workflow-visual"
+         hx-get="/partials/workflow"
+         hx-trigger="load"
+         hx-swap="innerHTML"
+         class="text-sm text-gray-400">
+        <div class="animate-pulse h-16 bg-gray-800 rounded"></div>
+    </div>
+</section>
+
 <!-- Quick Run -->
 <section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
     <h2 class="text-lg font-semibold mb-3">Quick Run</h2>

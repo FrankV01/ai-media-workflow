@@ -1,0 +1,123 @@
+<!-- Pipeline workflow visualization -->
+<div class="overflow-x-auto">
+  <div class="flex items-start gap-0 min-w-max py-2">
+
+    {% for node in nodes %}
+      {% if node.type == "block" %}
+        <!-- Block node -->
+        <div class="flex items-center">
+          <div class="relative group">
+            <div class="px-3 py-2 rounded-lg border text-center min-w-[120px]
+                        {% if node.category == 'creative' %}
+                          bg-indigo-950/60 border-indigo-700/60 hover:border-indigo-500
+                        {% elif node.category == 'production' %}
+                          bg-emerald-950/60 border-emerald-700/60 hover:border-emerald-500
+                        {% else %}
+                          bg-gray-800 border-gray-700 hover:border-gray-500
+                        {% endif %}
+                        transition-colors duration-150">
+              <div class="text-xs font-semibold
+                          {% if node.category == 'creative' %}text-indigo-300
+                          {% elif node.category == 'production' %}text-emerald-300
+                          {% else %}text-gray-300{% endif %}">
+                {{ node.title }}
+              </div>
+              <div class="text-[10px] text-gray-500 mt-0.5">{{ node.name }}</div>
+            </div>
+            <!-- Tooltip -->
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-md
+                        bg-gray-800 border border-gray-700 text-xs text-gray-300
+                        opacity-0 group-hover:opacity-100 transition-opacity duration-150
+                        pointer-events-none whitespace-nowrap z-10 shadow-lg">
+              {{ node.description }}
+            </div>
+          </div>
+          {% if not loop.last %}
+            <!-- Arrow -->
+            <div class="flex items-center px-1">
+              <svg width="24" height="16" viewBox="0 0 24 16" class="text-gray-600">
+                <line x1="0" y1="8" x2="18" y2="8" stroke="currentColor" stroke-width="1.5"/>
+                <polyline points="14,3 20,8 14,13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              </svg>
+            </div>
+          {% endif %}
+        </div>
+
+      {% elif node.type == "routing" %}
+        <!-- Routing / branch node -->
+        <div class="flex items-center">
+          <div class="relative">
+            <!-- Diamond shape via rotated square -->
+            <div class="flex flex-col items-center">
+              <div class="w-10 h-10 rotate-45 rounded-sm border-2 border-amber-600/70 bg-amber-950/40
+                          flex items-center justify-center">
+                <svg class="-rotate-45 text-amber-400" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2">
+                  <path d="M6 3v12"/>
+                  <path d="M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+                  <path d="M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+                  <path d="M15 6a9 9 0 0 0-9 9"/>
+                  <path d="M18 15v6"/>
+                </svg>
+              </div>
+              <!-- Branch labels -->
+              <div class="flex gap-4 mt-3 text-[10px]">
+                {% if node.on_good %}
+                  <div class="flex items-center gap-1">
+                    <span class="inline-block w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                    <span class="text-green-400">{{ node.on_good|join(', ') }}</span>
+                  </div>
+                {% endif %}
+                {% if node.on_bad %}
+                  <div class="flex items-center gap-1">
+                    <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                    <span class="text-red-400">{{ node.on_bad|join(', ') }}</span>
+                  </div>
+                {% endif %}
+                {% if node.always %}
+                  <div class="flex items-center gap-1">
+                    <span class="inline-block w-1.5 h-1.5 rounded-full bg-gray-400"></span>
+                    <span class="text-gray-400">{{ node.always|join(', ') }}</span>
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+          {% if not loop.last %}
+            <div class="flex items-center px-1 self-start mt-3">
+              <svg width="24" height="16" viewBox="0 0 24 16" class="text-gray-600">
+                <line x1="0" y1="8" x2="18" y2="8" stroke="currentColor" stroke-width="1.5"/>
+                <polyline points="14,3 20,8 14,13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              </svg>
+            </div>
+          {% endif %}
+        </div>
+      {% endif %}
+    {% endfor %}
+
+  </div>
+</div>
+
+<!-- Legend -->
+<div class="flex gap-4 mt-3 text-[10px] text-gray-500">
+  <div class="flex items-center gap-1.5">
+    <span class="inline-block w-3 h-2 rounded-sm bg-indigo-950/60 border border-indigo-700/60"></span>
+    Creative
+  </div>
+  <div class="flex items-center gap-1.5">
+    <span class="inline-block w-3 h-2 rounded-sm bg-emerald-950/60 border border-emerald-700/60"></span>
+    Production
+  </div>
+  <div class="flex items-center gap-1.5">
+    <span class="inline-block w-2 h-2 rotate-45 rounded-sm border border-amber-600/70 bg-amber-950/40"></span>
+    Routing
+  </div>
+  <div class="flex items-center gap-1.5">
+    <span class="inline-block w-1.5 h-1.5 rounded-full bg-green-500"></span>
+    Good
+    <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-500 ml-1"></span>
+    Bad
+    <span class="inline-block w-1.5 h-1.5 rounded-full bg-gray-400 ml-1"></span>
+    Always
+  </div>
+</div>

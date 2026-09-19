@@ -25,10 +25,29 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.blocks.registry import list_blocks
+from app.blocks.registry import get_block, list_blocks
 from app.database import get_session
 from app.models.job import Job, JobStep
 from app.pipeline.engine import run_pipeline
+
+# Default workflow — the standard creative agency pipeline
+DEFAULT_WORKFLOW: list[str | dict] = [
+    "art_director",
+    "prompt_architect",
+    "media_producer",
+    "art_critic",
+    {"on_good": [], "on_bad": ["art_director"], "always": ["social_media_specialist"]},
+]
+
+# Human-friendly titles for blocks (used in the visual)
+_BLOCK_TITLES = {
+    "art_director": "Art Director",
+    "prompt_architect": "Prompt Architect",
+    "media_producer": "Media Producer",
+    "art_critic": "Art Critic",
+    "social_media_specialist": "Social Media",
+    "echo": "Echo",
+}
 
 templates = Jinja2Templates(directory="app/web/templates")
 
@@ -131,6 +150,49 @@ async def job_detail(
 
 
 # ── HTMX partials ────────────────────────────────────────────────────────
+
+def _build_workflow_nodes(workflow: list[str | dict]) -> list[dict]:
+    """Convert a workflow step list into visual node dicts for the template."""
+    nodes = []
+    for item in workflow:
+        if isinstance(item, str):
+            # Block node
+            try:
+                block_cls = get_block(item)
+                desc = block_cls.meta.description
+                category = block_cls.meta.category
+            except KeyError:
+                desc = ""
+                category = "utility"
+            nodes.append({
+                "type": "block",
+                "name": item,
+                "title": _BLOCK_TITLES.get(item, item.replace("_", " ").title()),
+                "description": desc,
+                "category": category,
+            })
+        elif isinstance(item, dict):
+            # Routing node
+            on_good = [_BLOCK_TITLES.get(b, b) for b in item.get("on_good", [])]
+            on_bad = [_BLOCK_TITLES.get(b, b) for b in item.get("on_bad", [])]
+            always = [_BLOCK_TITLES.get(b, b) for b in item.get("always", [])]
+            nodes.append({
+                "type": "routing",
+                "on_good": on_good,
+                "on_bad": on_bad,
+                "always": always,
+            })
+    return nodes
+
+
+@router.get("/partials/workflow")
+async def partial_workflow(request: Request):
+    """Return the workflow pipeline visualization fragment."""
+    nodes = _build_workflow_nodes(DEFAULT_WORKFLOW)
+    return templates.TemplateResponse(
+        request, "partials/workflow_visual.html", {"nodes": nodes}
+    )
+
 
 @router.get("/partials/blocks")
 async def partial_blocks(request: Request):
