@@ -40,9 +40,9 @@ DEFAULT_PARAMS = {
     "width": 1024,
     "height": 1024,
     "cfg_scale": 7.0,
-    "steps": 30,
-    "sampler": "euler",
-    "scheduler": "normal",
+    "steps": 69,
+    "sampler": "dpmpp_2m",
+    "scheduler": "karras",
     "clip_skip": 1,
 }
 
@@ -61,7 +61,7 @@ def _parse_prompt_output(raw: str) -> dict:
         first_newline = text.index("\n")
         text = text[first_newline + 1 :]
         if text.endswith("```"):
-            text = text[: -3]
+            text = text[:-3]
         text = text.strip()
 
     # Try direct parse first
@@ -134,7 +134,9 @@ class MediaProducer(Block):
 
     meta = BlockMeta(
         name="media_producer",
-        description="Dispatches structured prompts to an image generation backend and delivers assets",
+        description=(
+            "Dispatches structured prompts to an image generation backend and delivers assets"
+        ),
         version="0.1.0",
         category="production",
         inputs=["brief"],
@@ -172,7 +174,11 @@ class MediaProducer(Block):
 
         # Get the configured backend
         backend = get_backend()
-        logger.info("MediaProducer: using backend '%s' for %d request(s)", backend.name, len(requests))
+        logger.info(
+            "MediaProducer: using backend '%s' for %d request(s)",
+            backend.name,
+            len(requests),
+        )
 
         # Generate all variants
         all_image_paths: list[str] = []
@@ -184,14 +190,16 @@ class MediaProducer(Block):
 
             paths = [str(p) for p in result.image_paths]
             all_image_paths.extend(paths)
-            all_metadata.append({
-                "variant_name": req.variant_name,
-                "image_paths": paths,
-                "seed_used": result.seed_used,
-                "backend": result.backend_name,
-                "generation_time_seconds": round(result.generation_time_seconds, 2),
-                **result.metadata,
-            })
+            all_metadata.append(
+                {
+                    "variant_name": req.variant_name,
+                    "image_paths": paths,
+                    "seed_used": result.seed_used,
+                    "backend": result.backend_name,
+                    "generation_time_seconds": round(result.generation_time_seconds, 2),
+                    **result.metadata,
+                }
+            )
 
             logger.info(
                 "MediaProducer: variant '%s' → %d image(s) in %.1fs",

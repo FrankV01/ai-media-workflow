@@ -26,9 +26,9 @@ class GenerationRequest:
     width: int = 1024
     height: int = 1024
     cfg_scale: float = 7.0
-    steps: int = 30
-    sampler: str = "euler"
-    scheduler: str = "normal"
+    steps: int = 69
+    sampler: str = "dpmpp_2m"
+    scheduler: str = "karras"
     clip_skip: int = 1
     seed: int = -1  # -1 = random
 

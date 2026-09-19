@@ -11,8 +11,6 @@ Output: Structured JSON with positive/negative/refiner prompts,
 Suggested next: media_producer
 """
 
-from typing import Any
-
 from app.blocks.base import BlockMeta
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
@@ -42,9 +40,9 @@ over-saturation, plastic skin, noise>",
     "width": 1024,
     "height": 1024,
     "cfg_scale": 7.0,
-    "steps": 30,
-    "sampler": "euler",
-    "scheduler": "normal",
+    "steps": 69,
+    "sampler": "dpmpp_2m",
+    "scheduler": "karras",
     "clip_skip": 1,
     "aspect_ratio": "1:1"
   },

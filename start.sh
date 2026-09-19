@@ -21,7 +21,9 @@ if [ ! -d "$SAN_DISK_VOLUME" ] || ! /usr/sbin/diskutil info "$SAN_DISK_VOLUME" 2
     exit 1
 fi
 
-if [ -x "$PROJECT_DIR/.venv/bin/python" ] && "$PROJECT_DIR/.venv/bin/python" -c 'import uvicorn' 2>/dev/null; then
+if [ -x "$PROJECT_DIR/.venv/bin/python" ] && (
+    cd "$PROJECT_DIR" && "$PROJECT_DIR/.venv/bin/python" -c 'import app.main, uvicorn' 2>/dev/null
+); then
     PYTHON="$PROJECT_DIR/.venv/bin/python"
 else
     PYTHON=${PYTHON:-python}
@@ -32,7 +34,7 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! "$PYTHON" -c 'import uvicorn' 2>/dev/null; then
+if ! (cd "$PROJECT_DIR" && "$PYTHON" -c 'import app.main, uvicorn' 2>/dev/null); then
     printf 'ERROR: Required Python packages are not installed for: %s\n' "$PYTHON" >&2
     printf 'Install the project dependencies, then run this script again.\n' >&2
     exit 1

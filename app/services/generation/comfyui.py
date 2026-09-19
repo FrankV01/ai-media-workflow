@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -24,90 +23,9 @@ import httpx
 
 from app.config import settings
 from app.services.generation.base import GenerationBackend, GenerationRequest, GenerationResult
+from app.services.generation.sdxl_workflow import SdxlWorkflowConfig, build_sdxl_workflow
 
 logger = logging.getLogger(__name__)
-
-
-def _build_sdxl_workflow(request: GenerationRequest, client_id: str) -> dict:
-    """Build a minimal SDXL txt2img ComfyUI workflow API payload.
-
-    This produces the standard node graph:
-    CheckpointLoader → CLIPTextEncode (pos) → KSampler → VAEDecode → SaveImage
-                     → CLIPTextEncode (neg) ↗
-    """
-    seed = request.seed if request.seed >= 0 else int(uuid.uuid4().int % (2**32))
-
-    workflow = {
-        "client_id": client_id,
-        "prompt": {
-            # Checkpoint loader
-            "1": {
-                "class_type": "CheckpointLoaderSimple",
-                "inputs": {
-                    "ckpt_name": request.extras.get("checkpoint", settings.comfyui_checkpoint),
-                },
-            },
-            # Positive CLIP encode
-            "2": {
-                "class_type": "CLIPTextEncode",
-                "inputs": {
-                    "text": request.positive_prompt,
-                    "clip": ["1", 1],
-                },
-            },
-            # Negative CLIP encode
-            "3": {
-                "class_type": "CLIPTextEncode",
-                "inputs": {
-                    "text": request.negative_prompt,
-                    "clip": ["1", 1],
-                },
-            },
-            # Empty latent image
-            "4": {
-                "class_type": "EmptyLatentImage",
-                "inputs": {
-                    "width": request.width,
-                    "height": request.height,
-                    "batch_size": 1,
-                },
-            },
-            # KSampler
-            "5": {
-                "class_type": "KSampler",
-                "inputs": {
-                    "model": ["1", 0],
-                    "positive": ["2", 0],
-                    "negative": ["3", 0],
-                    "latent_image": ["4", 0],
-                    "seed": seed,
-                    "steps": request.steps,
-                    "cfg": request.cfg_scale,
-                    "sampler_name": request.sampler,
-                    "scheduler": request.scheduler,
-                    "denoise": 1.0,
-                },
-            },
-            # VAE Decode
-            "6": {
-                "class_type": "VAEDecode",
-                "inputs": {
-                    "samples": ["5", 0],
-                    "vae": ["1", 2],
-                },
-            },
-            # Save Image
-            "7": {
-                "class_type": "SaveImage",
-                "inputs": {
-                    "images": ["6", 0],
-                    "filename_prefix": f"aimw_{request.variant_name}",
-                },
-            },
-        },
-    }
-
-    return workflow
 
 
 class ComfyUIBackend(GenerationBackend):
@@ -128,8 +46,23 @@ class ComfyUIBackend(GenerationBackend):
         custom_workflow_path = request.extras.get("workflow_path")
         if custom_workflow_path:
             workflow = self._load_custom_workflow(custom_workflow_path, request, client_id)
+            seed = request.seed if request.seed >= 0 else 42
         else:
-            workflow = _build_sdxl_workflow(request, client_id)
+            workflow, seed = build_sdxl_workflow(
+                request,
+                client_id,
+                SdxlWorkflowConfig(
+                    base_checkpoint=settings.comfyui_checkpoint,
+                    refiner_checkpoint=settings.comfyui_refiner_checkpoint,
+                    upscale_2x_model=settings.comfyui_upscale_2x_model,
+                    upscale_4x_model=settings.comfyui_upscale_4x_model,
+                    refiner_steps=settings.refiner_steps,
+                    refiner_cfg_scale=settings.refiner_cfg_scale,
+                    refiner_sampler=settings.refiner_sampler,
+                    refiner_scheduler=settings.refiner_scheduler,
+                    refiner_denoise=settings.refiner_denoise,
+                ),
+            )
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             # Submit the prompt
@@ -147,7 +80,7 @@ class ComfyUIBackend(GenerationBackend):
 
         return GenerationResult(
             image_paths=image_paths,
-            seed_used=request.seed,
+            seed_used=seed,
             backend_name=self.name,
             generation_time_seconds=elapsed,
             metadata={
@@ -155,12 +88,17 @@ class ComfyUIBackend(GenerationBackend):
                 "comfyui_url": self.base_url,
                 "width": request.width,
                 "height": request.height,
+                "output_scales": [1, 2, 4],
+                "refiner_checkpoint": settings.comfyui_refiner_checkpoint,
+                "refiner_steps": settings.refiner_steps,
+                "refiner_cfg_scale": settings.refiner_cfg_scale,
+                "refiner_sampler": settings.refiner_sampler,
+                "refiner_scheduler": settings.refiner_scheduler,
+                "refiner_denoise": settings.refiner_denoise,
             },
         )
 
-    async def _poll_until_done(
-        self, client: httpx.AsyncClient, prompt_id: str
-    ) -> list[Path]:
+    async def _poll_until_done(self, client: httpx.AsyncClient, prompt_id: str) -> list[Path]:
         """Poll /history/{prompt_id} until the job finishes or times out."""
         deadline = time.monotonic() + self.timeout
 
@@ -191,9 +129,7 @@ class ComfyUIBackend(GenerationBackend):
             f"ComfyUI generation timed out after {self.timeout}s for prompt {prompt_id}"
         )
 
-    async def _download_image(
-        self, client: httpx.AsyncClient, img_info: dict
-    ) -> Path | None:
+    async def _download_image(self, client: httpx.AsyncClient, img_info: dict) -> Path | None:
         """Download a generated image from ComfyUI to local storage."""
         filename = img_info.get("filename")
         subfolder = img_info.get("subfolder", "")

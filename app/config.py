@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     comfyui_poll_interval: float = 2.0  # seconds between status polls
     comfyui_timeout: float = 600.0  # max wait for generation (10 min)
     comfyui_checkpoint: str = "RealVisXL_V5.0_fp16.safetensors"
+    comfyui_refiner_checkpoint: str = "sd_xl_refiner_1.0.safetensors"
+    comfyui_upscale_2x_model: str = "RealESRGAN_x2.pth"
+    comfyui_upscale_4x_model: str = "RealESRGAN_x4.pth"
+    refiner_steps: int = 20
+    refiner_cfg_scale: float = 6.0
+    refiner_sampler: str = "dpmpp_2m"
+    refiner_scheduler: str = "karras"
+    refiner_denoise: float = 0.25
     image_output_dir: Path = Path("/Volumes/SanDisk Mac AI/ComfyUI/output")
 
 
