@@ -3,19 +3,23 @@ app.web.routes — HTML routes served via Jinja2 + HTMX
 
 Full pages:
 - /              — Dashboard: overview of recent jobs, available blocks
+- /jobs/<id>     — Job detail with step-by-step input/output + runtime stats
 
 HTMX partials (return HTML fragments, not full pages):
-- /partials/blocks     — styled block list
-- /partials/jobs       — styled recent jobs list
-- /partials/run        — execute a workflow and return result fragment
+- /partials/blocks              — styled block list
+- /partials/jobs                — styled recent jobs list
+- /partials/jobs/<id>/preview   — hover preview popover for a job
+- /partials/run                 — execute a workflow and return result fragment
 
 Planned pages:
 - /workflows     — Build/edit workflows by arranging blocks
-- /jobs          — Job history with drill-down
 - /settings      — Manage persistent settings
 """
 
-from fastapi import APIRouter, Depends, Form, Request
+import json
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,12 +27,58 @@ from sqlalchemy.orm import selectinload
 
 from app.blocks.registry import list_blocks
 from app.database import get_session
-from app.models.job import Job
+from app.models.job import Job, JobStep
 from app.pipeline.engine import run_pipeline
 
 templates = Jinja2Templates(directory="app/web/templates")
 
 router = APIRouter()
+
+
+def _fmt_duration(start: datetime | None, end: datetime | None) -> str:
+    """Format a human-readable duration between two datetimes."""
+    if not start or not end:
+        return "—"
+    delta = end - start
+    total_secs = int(delta.total_seconds())
+    if total_secs < 1:
+        return f"{int(delta.total_seconds() * 1000)}ms"
+    if total_secs < 60:
+        return f"{total_secs}s"
+    mins, secs = divmod(total_secs, 60)
+    if mins < 60:
+        return f"{mins}m {secs}s"
+    hours, mins = divmod(mins, 60)
+    return f"{hours}h {mins}m"
+
+
+def _extract_brief(raw_json: str | None) -> str:
+    """Pull the main text value out of a JSON-serialized context dict.
+
+    Looks for common keys in priority order; falls back to the first
+    string value, then the raw JSON truncated.
+    """
+    if not raw_json:
+        return ""
+    try:
+        data = json.loads(raw_json)
+        for key in ("brief", "message", "input_brief", "output_deliverable"):
+            if key in data and data[key]:
+                return str(data[key])
+        # Fallback: first string value in the dict
+        for v in data.values():
+            if isinstance(v, str) and v:
+                return v
+        return json.dumps(data, ensure_ascii=False)[:500]
+    except (json.JSONDecodeError, AttributeError):
+        return str(raw_json)[:500]
+
+
+def _preview(text: str, max_len: int = 120) -> str:
+    """Truncate text for preview display."""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len].rstrip() + "…"
 
 
 # ── Full pages ───────────────────────────────────────────────────────────
@@ -37,6 +87,47 @@ router = APIRouter()
 async def dashboard(request: Request):
     """Render the main dashboard page."""
     return templates.TemplateResponse(request, "dashboard.html")
+
+
+@router.get("/jobs/{job_id}")
+async def job_detail(
+    request: Request, job_id: int, session: AsyncSession = Depends(get_session)
+):
+    """Render the full job detail page with step-by-step input/output."""
+    result = await session.execute(
+        select(Job).where(Job.id == job_id).options(selectinload(Job.steps))
+    )
+    job_raw = result.scalar_one_or_none()
+    if not job_raw:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    sorted_steps = sorted(job_raw.steps, key=lambda s: s.order)
+    job = {
+        "id": job_raw.id,
+        "workflow_name": job_raw.workflow_name,
+        "status": job_raw.status.value,
+        "created_at": (
+            job_raw.created_at.strftime("%b %d, %Y %H:%M:%S") if job_raw.created_at else "—"
+        ),
+        "finished_at": (
+            job_raw.finished_at.strftime("%b %d, %Y %H:%M:%S") if job_raw.finished_at else None
+        ),
+        "duration": _fmt_duration(job_raw.created_at, job_raw.finished_at),
+        "error": job_raw.error,
+        "steps": [
+            {
+                "block_name": s.block_name,
+                "order": s.order,
+                "status": s.status.value,
+                "duration": _fmt_duration(s.started_at, s.finished_at),
+                "input_brief": _extract_brief(s.input_context),
+                "output_brief": _extract_brief(s.output),
+                "error": s.error,
+            }
+            for s in sorted_steps
+        ],
+    }
+    return templates.TemplateResponse(request, "job_detail.html", {"job": job})
 
 
 # ── HTMX partials ────────────────────────────────────────────────────────
@@ -64,11 +155,48 @@ async def partial_jobs(request: Request, session: AsyncSession = Depends(get_ses
             "workflow_name": j.workflow_name,
             "status": j.status.value,
             "created_at": j.created_at.strftime("%b %d, %H:%M") if j.created_at else None,
+            "duration": _fmt_duration(j.created_at, j.finished_at),
             "steps": list(j.steps),
         }
         for j in jobs_raw
     ]
     return templates.TemplateResponse(request, "partials/job_list.html", {"jobs": jobs})
+
+
+@router.get("/partials/jobs/{job_id}/preview")
+async def partial_job_preview(
+    request: Request, job_id: int, session: AsyncSession = Depends(get_session)
+):
+    """Return a hover-preview HTML fragment for a job."""
+    result = await session.execute(
+        select(Job).where(Job.id == job_id).options(selectinload(Job.steps))
+    )
+    job_raw = result.scalar_one_or_none()
+    if not job_raw:
+        return templates.TemplateResponse(
+            request,
+            "partials/job_preview.html",
+            {"job": None},
+        )
+    sorted_steps = sorted(job_raw.steps, key=lambda s: s.order)
+    job = {
+        "id": job_raw.id,
+        "workflow_name": job_raw.workflow_name,
+        "status": job_raw.status.value,
+        "duration": _fmt_duration(job_raw.created_at, job_raw.finished_at),
+        "error": job_raw.error,
+        "steps": [
+            {
+                "block_name": s.block_name,
+                "status": s.status.value,
+                "duration": _fmt_duration(s.started_at, s.finished_at),
+                "input_preview": _preview(_extract_brief(s.input_context)),
+                "output_preview": _preview(_extract_brief(s.output)),
+            }
+            for s in sorted_steps
+        ],
+    }
+    return templates.TemplateResponse(request, "partials/job_preview.html", {"job": job})
 
 
 @router.post("/partials/run")

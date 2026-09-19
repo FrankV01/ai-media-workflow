@@ -1,40 +1,56 @@
 {% if jobs %}
 <div class="space-y-2">
     {% for job in jobs %}
-    <div class="flex items-center gap-3 p-3 rounded bg-gray-800/60 border border-gray-700/50">
-        <!-- Status badge -->
-        {% if job.status == "completed" %}
-        <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-        {% elif job.status == "running" %}
-        <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0"></span>
-        {% elif job.status == "failed" %}
-        <span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>
-        {% else %}
-        <span class="w-2 h-2 rounded-full bg-gray-500 shrink-0"></span>
-        {% endif %}
+    <div class="relative group">
+        <a href="/jobs/{{ job.id }}"
+           class="flex items-center gap-3 p-3 rounded bg-gray-800/60 border border-gray-700/50
+                  hover:border-gray-600 hover:bg-gray-800 transition-colors cursor-pointer block"
+           hx-get="/partials/jobs/{{ job.id }}/preview"
+           hx-trigger="mouseenter once"
+           hx-target="find .job-preview"
+           hx-swap="innerHTML">
+            <!-- Status badge -->
+            {% if job.status == "completed" %}
+            <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
+            {% elif job.status == "running" %}
+            <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0"></span>
+            {% elif job.status == "failed" %}
+            <span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span>
+            {% else %}
+            <span class="w-2 h-2 rounded-full bg-gray-500 shrink-0"></span>
+            {% endif %}
 
-        <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2">
-                <span class="text-sm text-white font-medium">{{ job.workflow_name }}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded
-                    {% if job.status == 'completed' %}bg-emerald-900/40 text-emerald-300
-                    {% elif job.status == 'running' %}bg-blue-900/40 text-blue-300
-                    {% elif job.status == 'failed' %}bg-red-900/40 text-red-300
-                    {% else %}bg-gray-700 text-gray-400{% endif %}">
-                    {{ job.status }}
-                </span>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                    <span class="text-sm text-white font-medium">{{ job.workflow_name }}</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded
+                        {% if job.status == 'completed' %}bg-emerald-900/40 text-emerald-300
+                        {% elif job.status == 'running' %}bg-blue-900/40 text-blue-300
+                        {% elif job.status == 'failed' %}bg-red-900/40 text-red-300
+                        {% else %}bg-gray-700 text-gray-400{% endif %}">
+                        {{ job.status }}
+                    </span>
+                </div>
+                <p class="text-[11px] text-gray-500 mt-0.5">
+                    Job #{{ job.id }}
+                    {% if job.created_at %} · {{ job.created_at }}{% endif %}
+                    {% if job.duration %} · {{ job.duration }}{% endif %}
+                </p>
             </div>
-            <p class="text-[11px] text-gray-500 mt-0.5">
-                Job #{{ job.id }}
-                {% if job.created_at %} · {{ job.created_at }}{% endif %}
-            </p>
-        </div>
 
-        {% if job.steps %}
-        <div class="text-[10px] text-gray-500">
-            {{ job.steps | length }} step{{ "s" if job.steps | length != 1 }}
-        </div>
-        {% endif %}
+            {% if job.steps %}
+            <div class="text-[10px] text-gray-500">
+                {{ job.steps | length }} step{{ "s" if job.steps | length != 1 }}
+            </div>
+            {% endif %}
+
+            <!-- Hover preview popover (loaded via HTMX on mouseenter) -->
+            <div class="job-preview hidden group-hover:block absolute z-50 right-0 top-full mt-1
+                        bg-gray-900 border border-gray-700 rounded-lg shadow-xl shadow-black/40
+                        min-w-[320px] max-w-[420px]">
+                <div class="p-4 text-xs text-gray-500">Loading preview…</div>
+            </div>
+        </a>
     </div>
     {% endfor %}
 </div>

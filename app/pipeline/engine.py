@@ -17,6 +17,7 @@ Future enhancements:
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -53,12 +54,19 @@ async def run_pipeline(
         try:
             block_cls = get_block(name)
             block = block_cls()
+
+            # Snapshot the input context (exclude internal keys for readability)
+            input_snap = {k: v for k, v in context.items() if not k.startswith("_")}
+            step.input_context = json.dumps(input_snap, default=str, ensure_ascii=False)
+
             await block.validate(context)
             result = await block.run(context)
             context.update(result)
 
+            # Store clean output (exclude internal keys)
+            output_snap = {k: v for k, v in result.items() if not k.startswith("_")}
             step.status = JobStatus.COMPLETED
-            step.output = str(result)
+            step.output = json.dumps(output_snap, default=str, ensure_ascii=False)
         except Exception as exc:
             logger.exception("Block %s failed", name)
             step.status = JobStatus.FAILED
