@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_poll_interval: float = 2.0  # seconds between status polls
     comfyui_timeout: float = 600.0  # max wait for generation (10 min)
-    image_output_dir: Path = Path("./data/media/generated")
+    image_output_dir: Path = Path("/Volumes/SanDisk Mac AI/ComfyUI/output")
 
 
 settings = Settings()
