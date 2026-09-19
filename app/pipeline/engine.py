@@ -150,6 +150,11 @@ async def run_pipeline(
         # All blocks succeeded
         job.status = JobStatus.COMPLETED
 
+    # Persist generated asset paths at the Job level for easy querying
+    generated_images = context.get("generated_images")
+    if generated_images:
+        job.generated_assets = json.dumps(generated_images, default=str, ensure_ascii=False)
+
     job.finished_at = datetime.now(timezone.utc)
     await session.commit()
     return job

@@ -13,6 +13,9 @@ Planned tests:
 - test_media_producer_registered  — media_producer block discovered
 - test_media_producer_placeholder — runs end-to-end with placeholder backend
 - test_prompt_parsing             — JSON parsing handles LLM quirks
+- test_social_media_specialist_registered — block discovered with correct metadata
+- test_social_media_specialist_has_all_inputs — needs full dossier
+- test_social_media_specialist_post_parsing — JSON post extraction
 """
 
 import json
@@ -68,7 +71,7 @@ def test_prompt_architect_registered():
 
 
 def test_creative_blocks_have_system_prompts():
-    for name in ("art_director", "prompt_architect"):
+    for name in ("art_director", "prompt_architect", "art_critic", "social_media_specialist"):
         cls = get_block(name)
         block = cls()
         assert len(block.system_prompt) > 100, f"{name} system prompt is too short"
@@ -109,6 +112,54 @@ def test_all_creative_blocks_in_list():
     assert "prompt_architect" in names
     assert "media_producer" in names
     assert "art_critic" in names
+    assert "social_media_specialist" in names
+
+
+# ── Social Media Specialist block tests ──────────────────────────────────
+
+
+def test_social_media_specialist_registered():
+    cls = get_block("social_media_specialist")
+    assert cls.meta.name == "social_media_specialist"
+    assert cls.meta.category == "creative"
+    assert "art_director_output" in cls.meta.inputs
+    assert "art_critic_output" in cls.meta.inputs
+    assert "generated_images" in cls.meta.inputs
+    assert "social_media_posts" in cls.meta.outputs
+
+
+def test_social_media_specialist_post_parsing_clean():
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+
+    specialist = SocialMediaSpecialist()
+    raw = json.dumps({
+        "posts": [
+            {"platform": "instagram", "title": "Mars Bloom", "description": "Wow"},
+            {"platform": "twitter", "title": "Mars Bloom", "description": "Wow"},
+        ],
+        "summary": "Test.",
+    })
+    posts = specialist._extract_posts(raw)
+    assert len(posts) == 2
+    assert posts[0]["platform"] == "instagram"
+
+
+def test_social_media_specialist_post_parsing_fenced():
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+
+    specialist = SocialMediaSpecialist()
+    raw = '```json\n{"posts": [{"platform": "linkedin", "title": "AI Art"}]}\n```'
+    posts = specialist._extract_posts(raw)
+    assert len(posts) == 1
+    assert posts[0]["platform"] == "linkedin"
+
+
+def test_social_media_specialist_post_parsing_fallback():
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+
+    specialist = SocialMediaSpecialist()
+    posts = specialist._extract_posts("garbled nonsense")
+    assert posts == []
 
 
 # ── Art Critic block tests ─────────────────────────────────────────────
