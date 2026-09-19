@@ -21,8 +21,12 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env          # adjust settings as needed
-python main.py                # starts on http://127.0.0.1:8000
+./start.sh                    # checks SanDisk, then starts on http://127.0.0.1:8000
 ```
+
+The startup script requires `/Volumes/SanDisk Mac AI` to be mounted and prints the main UI,
+API documentation, and major REST endpoint URLs before launching. Override the mount path with
+`SAN_DISK_VOLUME` if needed. To bypass the script and its disk prerequisite, run `python main.py`.
 
 ## The Pipeline
 
@@ -91,7 +95,7 @@ data/                → SQLite DB + media files (gitignored)
 
 | Task | Command |
 |---|---|
-| Run dev server | `python main.py` |
+| Run dev server | `./start.sh` |
 | Run tests | `pytest` |
 | Lint + format | `ruff check --fix . && ruff format .` |
 | Install deps | `pip install -e ".[dev]"` |
