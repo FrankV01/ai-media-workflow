@@ -141,7 +141,7 @@ class MediaProducer(Block):
         outputs=["generated_images", "generation_metadata"],
     )
 
-    suggested_next: str | None = None  # Terminal for now
+    suggested_next: str | None = "art_critic"
 
     async def validate(self, context: dict[str, Any]) -> None:
         """Verify the generation backend is available."""

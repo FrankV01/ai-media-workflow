@@ -108,6 +108,103 @@ def test_all_creative_blocks_in_list():
     assert "art_director" in names
     assert "prompt_architect" in names
     assert "media_producer" in names
+    assert "art_critic" in names
+
+
+# ── Art Critic block tests ─────────────────────────────────────────────
+
+
+def test_art_critic_registered():
+    cls = get_block("art_critic")
+    assert cls.meta.name == "art_critic"
+    assert cls.meta.category == "creative"
+    assert "_verdict" in cls.meta.outputs
+
+
+def test_art_critic_verdict_parsing_good():
+    from app.blocks.art_critic import ArtCritic
+
+    critic = ArtCritic()
+    raw = json.dumps({"verdict": "good", "overall_score": 8, "summary": "Great work."})
+    assert critic._extract_verdict(raw) == "good"
+
+
+def test_art_critic_verdict_parsing_bad():
+    from app.blocks.art_critic import ArtCritic
+
+    critic = ArtCritic()
+    raw = json.dumps({"verdict": "bad", "overall_score": 3, "summary": "Needs rework."})
+    assert critic._extract_verdict(raw) == "bad"
+
+
+def test_art_critic_verdict_from_score_fallback():
+    """If verdict field is missing, derive from overall_score."""
+    from app.blocks.art_critic import ArtCritic
+
+    critic = ArtCritic()
+    # Score 7 with no verdict field -> good
+    raw = json.dumps({"overall_score": 7, "summary": "Decent."})
+    assert critic._extract_verdict(raw) == "good"
+    # Score 4 -> bad
+    raw = json.dumps({"overall_score": 4, "summary": "Poor."})
+    assert critic._extract_verdict(raw) == "bad"
+
+
+def test_art_critic_verdict_markdown_fenced():
+    from app.blocks.art_critic import ArtCritic
+
+    critic = ArtCritic()
+    raw = '```json\n{"verdict": "good", "overall_score": 9}\n```'
+    assert critic._extract_verdict(raw) == "good"
+
+
+def test_art_critic_verdict_fallback_to_bad():
+    """Unparseable output should default to bad (conservative)."""
+    from app.blocks.art_critic import ArtCritic
+
+    critic = ArtCritic()
+    assert critic._extract_verdict("totally garbled output") == "bad"
+
+
+def test_media_producer_suggests_art_critic():
+    cls = get_block("media_producer")
+    block = cls()
+    assert block.suggested_next == "art_critic"
+
+
+# ── Pipeline routing tests ────────────────────────────────────────────
+
+
+def test_resolve_steps_good_verdict():
+    from app.pipeline.engine import _resolve_steps
+
+    steps = [{"on_good": ["publisher"], "on_bad": ["revise"], "always": ["archiver"]}]
+    result = _resolve_steps(steps, "good")
+    assert result == ["publisher", "archiver"]
+
+
+def test_resolve_steps_bad_verdict():
+    from app.pipeline.engine import _resolve_steps
+
+    steps = [{"on_good": ["publisher"], "on_bad": ["revise"], "always": ["archiver"]}]
+    result = _resolve_steps(steps, "bad")
+    assert result == ["revise", "archiver"]
+
+
+def test_resolve_steps_no_verdict():
+    from app.pipeline.engine import _resolve_steps
+
+    steps = [{"on_good": ["publisher"], "on_bad": ["revise"], "always": ["archiver"]}]
+    result = _resolve_steps(steps, None)
+    assert result == ["archiver"]
+
+
+def test_resolve_steps_mixed_list():
+    from app.pipeline.engine import _resolve_steps
+
+    steps = ["block_a", {"on_good": ["block_b"], "always": ["block_c"]}, "block_d"]
+    result = _resolve_steps(steps, "good")
+    assert result == ["block_a", "block_b", "block_c", "block_d"]
 
 
 # ── Media Producer block tests ───────────────────────────────────────────
