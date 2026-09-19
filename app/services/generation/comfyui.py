@@ -50,7 +50,7 @@ def _build_sdxl_workflow(request: GenerationRequest, client_id: str) -> dict:
             "1": {
                 "class_type": "CheckpointLoaderSimple",
                 "inputs": {
-                    "ckpt_name": request.extras.get("checkpoint", "sd_xl_base_1.0.safetensors"),
+                    "ckpt_name": request.extras.get("checkpoint", settings.comfyui_checkpoint),
                 },
             },
             # Positive CLIP encode

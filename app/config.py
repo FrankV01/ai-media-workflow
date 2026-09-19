@@ -44,10 +44,11 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 4096
 
     # Image generation settings
-    generation_backend: str = "placeholder"  # 'comfyui' or 'placeholder'
+    generation_backend: str = "comfyui"  # 'comfyui' or 'placeholder'
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_poll_interval: float = 2.0  # seconds between status polls
     comfyui_timeout: float = 600.0  # max wait for generation (10 min)
+    comfyui_checkpoint: str = "RealVisXL_V5.0_fp16.safetensors"
     image_output_dir: Path = Path("/Volumes/SanDisk Mac AI/ComfyUI/output")
 
 
