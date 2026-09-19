@@ -3,6 +3,7 @@ POST http://127.0.0.1:8000/api/workflows/run
 Content-Type: application/json
 
 {
+  "photo_shoot_name": "Understated Navy Swimwear",
   "block_names": [
     "art_director",
     "prompt_architect",
@@ -20,6 +21,7 @@ POST http://127.0.0.1:8000/api/workflows/run
 Content-Type: application/json
 
 {
+  "photo_shoot_name": "Golden Hour Editorial",
   "block_names": [
     "art_director",
     "prompt_architect",
@@ -39,6 +41,7 @@ GET http://127.0.0.1:8000/api/workflows/jobs/12
 # curl -s -X POST http://127.0.0.1:8000/api/workflows/run
 #  -H 'Content-Type: application/json'
 #  -d '{
+#    "photo_shoot_name": "Understated Navy Swimwear",
 #    "block_names": [
 #      "art_director",
 #      "prompt_architect",
@@ -54,6 +57,7 @@ POST http://127.0.0.1:8000/api/workflows/run
 Content-Type: application/json
 
 {
+  "photo_shoot_name": "Understated Navy Swimwear Revision",
   "block_names": [
     "art_director",
     "prompt_architect",

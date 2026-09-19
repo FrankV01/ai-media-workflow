@@ -9,7 +9,7 @@ GET  /api/workflows/jobs/{id} — job detail with per-step status, I/O, and timi
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,22 +17,42 @@ from sqlalchemy.orm import selectinload
 from app.database import get_session
 from app.models.job import Job
 from app.pipeline.engine import run_pipeline
+from app.pipeline.naming import PhotoShootNameError, resolve_photo_shoot_name
 
 router = APIRouter()
 
 
 class RunRequest(BaseModel):
     """Payload to trigger a workflow run."""
-    workflow_name: str = "default"
+
+    photo_shoot_name: str | None = None
+    workflow_name: str | None = Field(default=None, deprecated=True)
     block_names: list[str | dict[str, Any]]
-    context: dict = {}
+    context: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_photo_shoot_name(self) -> "RunRequest":
+        try:
+            self.photo_shoot_name = resolve_photo_shoot_name(
+                self.photo_shoot_name,
+                self.__dict__.get("workflow_name"),
+            )
+        except PhotoShootNameError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+    @property
+    def job_name(self) -> str:
+        if self.photo_shoot_name is None:
+            raise RuntimeError("photo_shoot_name was not validated")
+        return self.photo_shoot_name
 
 
 @router.post("/run", status_code=202)
 async def run_workflow(req: RunRequest):
     """Queue a pipeline run in the background. Returns the job_id immediately."""
     job_id = await run_pipeline(
-        workflow_name=req.workflow_name,
+        workflow_name=req.job_name,
         block_names=req.block_names,
         context=dict(req.context),
         start_in_background=True,
@@ -43,13 +63,12 @@ async def run_workflow(req: RunRequest):
 @router.get("/jobs")
 async def list_jobs(limit: int = 20, session: AsyncSession = Depends(get_session)):
     """Return recent jobs, newest first."""
-    result = await session.execute(
-        select(Job).order_by(Job.created_at.desc()).limit(limit)
-    )
+    result = await session.execute(select(Job).order_by(Job.created_at.desc()).limit(limit))
     jobs = result.scalars().all()
     return [
         {
             "id": j.id,
+            "photo_shoot_name": j.workflow_name,
             "workflow_name": j.workflow_name,
             "status": j.status.value,
             "created_at": j.created_at.isoformat() if j.created_at else None,
@@ -71,6 +90,7 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
         raise HTTPException(404, "Job not found")
     return {
         "id": job.id,
+        "photo_shoot_name": job.workflow_name,
         "workflow_name": job.workflow_name,
         "status": job.status.value,
         "created_at": job.created_at.isoformat() if job.created_at else None,
