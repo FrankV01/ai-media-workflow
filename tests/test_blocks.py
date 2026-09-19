@@ -10,7 +10,12 @@ Planned tests:
 - test_prompt_architect_registered — prompt_architect block discovered
 - test_creative_blocks_have_system_prompts — role blocks have non-empty system prompts
 - test_art_director_suggests_next — art_director points to prompt_architect
+- test_media_producer_registered  — media_producer block discovered
+- test_media_producer_placeholder — runs end-to-end with placeholder backend
+- test_prompt_parsing             — JSON parsing handles LLM quirks
 """
+
+import json
 
 import pytest
 
@@ -75,10 +80,10 @@ def test_art_director_suggests_prompt_architect():
     assert block.suggested_next == "prompt_architect"
 
 
-def test_prompt_architect_is_terminal():
+def test_prompt_architect_suggests_media_producer():
     cls = get_block("prompt_architect")
     block = cls()
-    assert block.suggested_next is None
+    assert block.suggested_next == "media_producer"
 
 
 @pytest.mark.asyncio
@@ -102,3 +107,92 @@ def test_all_creative_blocks_in_list():
     names = {b["name"] for b in blocks}
     assert "art_director" in names
     assert "prompt_architect" in names
+    assert "media_producer" in names
+
+
+# ── Media Producer block tests ───────────────────────────────────────────
+
+
+def test_media_producer_registered():
+    cls = get_block("media_producer")
+    assert cls.meta.name == "media_producer"
+    assert cls.meta.category == "production"
+    assert "brief" in cls.meta.inputs
+    assert "generated_images" in cls.meta.outputs
+
+
+@pytest.mark.asyncio
+async def test_media_producer_with_placeholder():
+    """Full run with the placeholder backend and structured JSON input."""
+    from app.config import settings
+
+    original_backend = settings.generation_backend
+    try:
+        settings.generation_backend = "placeholder"
+        cls = get_block("media_producer")
+        block = cls()
+
+        prompt_json = json.dumps({
+            "positive_prompt": "A red rose on a white table, photorealistic, 8k",
+            "negative_prompt": "blurry, watermark, text",
+            "positive_refiner_prompt": "fine petal details, soft light",
+            "negative_refiner_prompt": "over-sharpening, noise",
+            "parameters": {"width": 512, "height": 512, "steps": 10, "cfg_scale": 7.0},
+            "variants": [
+                {"name": "close_up", "positive_prompt": "extreme close-up of a red rose petal"}
+            ],
+        })
+
+        result = await block.run({"brief": prompt_json})
+
+        assert "generated_images" in result
+        assert len(result["generated_images"]) >= 2  # main + 1 variant
+        assert "generation_metadata" in result
+        assert result["generation_metadata"][0]["backend"] == "placeholder"
+    finally:
+        settings.generation_backend = original_backend
+
+
+@pytest.mark.asyncio
+async def test_media_producer_parses_markdown_fenced_json():
+    """Verify that JSON wrapped in markdown fences is handled."""
+    from app.blocks.media_producer import _parse_prompt_output
+
+    raw = '```json\n{"positive_prompt": "a cat", "negative_prompt": "dog"}\n```'
+    parsed = _parse_prompt_output(raw)
+    assert parsed["positive_prompt"] == "a cat"
+    assert parsed["negative_prompt"] == "dog"
+
+
+@pytest.mark.asyncio
+async def test_media_producer_parses_raw_text_fallback():
+    """When given plain text, it should use it as the positive prompt."""
+    from app.blocks.media_producer import _parse_prompt_output
+
+    parsed = _parse_prompt_output("just a simple prompt about a sunset")
+    assert "sunset" in parsed["positive_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_placeholder_backend_creates_file():
+    """PlaceholderBackend should create an actual file on disk."""
+    import os
+
+    from app.services.generation import GenerationRequest, get_backend
+    from app.config import settings
+
+    original_backend = settings.generation_backend
+    try:
+        settings.generation_backend = "placeholder"
+        backend = get_backend()
+        req = GenerationRequest(
+            positive_prompt="test image",
+            width=64,
+            height=64,
+            steps=1,
+        )
+        result = await backend.generate(req)
+        assert result.success
+        assert os.path.exists(result.image_paths[0])
+    finally:
+        settings.generation_backend = original_backend

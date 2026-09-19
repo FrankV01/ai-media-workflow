@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block title %}Job #{{ job.id }} — {{ job.workflow_name }}{% endblock %}
+
+{% block content %}
+<!-- Breadcrumb -->
+<div class="flex items-center gap-2 text-sm text-gray-500 mb-6">
+    <a href="/" class="hover:text-white transition-colors">Dashboard</a>
+    <span>›</span>
+    <span class="text-gray-300">Job #{{ job.id }}</span>
+</div>
+
+<!-- Job Header -->
+<div class="bg-gray-900 rounded-lg p-6 border border-gray-800 mb-6">
+    <div class="flex items-start justify-between">
+        <div>
+            <h1 class="text-2xl font-bold flex items-center gap-3">
+                {{ job.workflow_name }}
+                <span class="text-sm px-2 py-0.5 rounded
+                    {% if job.status == 'completed' %}bg-emerald-900/40 text-emerald-300
+                    {% elif job.status == 'running' %}bg-blue-900/40 text-blue-300
+                    {% elif job.status == 'failed' %}bg-red-900/40 text-red-300
+                    {% else %}bg-gray-700 text-gray-400{% endif %}">
+                    {{ job.status }}
+                </span>
+            </h1>
+            <p class="text-sm text-gray-500 mt-1">Job #{{ job.id }}</p>
+        </div>
+    </div>
+
+    <!-- Runtime Stats -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5">
+        <div class="bg-gray-800/60 rounded p-3">
+            <p class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Started</p>
+            <p class="text-sm text-gray-200">{{ job.created_at }}</p>
+        </div>
+        <div class="bg-gray-800/60 rounded p-3">
+            <p class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Finished</p>
+            <p class="text-sm text-gray-200">{{ job.finished_at or "—" }}</p>
+        </div>
+        <div class="bg-gray-800/60 rounded p-3">
+            <p class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Duration</p>
+            <p class="text-sm text-gray-200">{{ job.duration }}</p>
+        </div>
+        <div class="bg-gray-800/60 rounded p-3">
+            <p class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Steps</p>
+            <p class="text-sm text-gray-200">{{ job.steps | length }}</p>
+        </div>
+    </div>
+
+    {% if job.error %}
+    <div class="mt-4 p-3 rounded bg-red-900/30 border border-red-800/50">
+        <p class="text-sm text-red-300 font-medium">Error</p>
+        <p class="text-xs text-red-400/80 mt-1">{{ job.error }}</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Steps -->
+<h2 class="text-lg font-semibold mb-4">Steps</h2>
+
+<div class="space-y-4">
+    {% for step in job.steps %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+        <!-- Step header -->
+        <button
+            class="w-full flex items-center gap-3 p-4 text-left hover:bg-gray-800/40 transition-colors cursor-pointer"
+            onclick="this.parentElement.querySelector('.step-body').classList.toggle('hidden')"
+        >
+            <!-- Status indicator -->
+            {% if step.status == "completed" %}
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0"></span>
+            {% elif step.status == "running" %}
+            <span class="w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse shrink-0"></span>
+            {% elif step.status == "failed" %}
+            <span class="w-2.5 h-2.5 rounded-full bg-red-400 shrink-0"></span>
+            {% else %}
+            <span class="w-2.5 h-2.5 rounded-full bg-gray-500 shrink-0"></span>
+            {% endif %}
+
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                    <span class="text-sm font-medium text-white">Step {{ step.order + 1 }}</span>
+                    <span class="font-mono text-sm text-indigo-300">{{ step.block_name }}</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded
+                        {% if step.status == 'completed' %}bg-emerald-900/40 text-emerald-300
+                        {% elif step.status == 'running' %}bg-blue-900/40 text-blue-300
+                        {% elif step.status == 'failed' %}bg-red-900/40 text-red-300
+                        {% else %}bg-gray-700 text-gray-400{% endif %}">
+                        {{ step.status }}
+                    </span>
+                </div>
+            </div>
+
+            <!-- Duration -->
+            <div class="text-xs text-gray-500 shrink-0">
+                {{ step.duration }}
+            </div>
+
+            <!-- Expand icon -->
+            <svg class="w-4 h-4 text-gray-500 shrink-0 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+        </button>
+
+        <!-- Step body (collapsed by default, first step open) -->
+        <div class="step-body border-t border-gray-800 {{ '' if loop.first else 'hidden' }}">
+            {% if step.error %}
+            <div class="p-4 bg-red-900/20">
+                <p class="text-xs uppercase tracking-wide text-red-400 mb-1">Error</p>
+                <pre class="text-sm text-red-300 whitespace-pre-wrap">{{ step.error }}</pre>
+            </div>
+            {% endif %}
+
+            <!-- Input -->
+            <div class="p-4 border-b border-gray-800/50">
+                <p class="text-xs uppercase tracking-wide text-gray-500 mb-2 flex items-center gap-2">
+                    <span class="text-emerald-400">↓</span> Input
+                </p>
+                {% if step.input_brief %}
+                <div class="bg-gray-800/60 rounded p-3 max-h-96 overflow-y-auto">
+                    <div class="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{{ step.input_brief }}</div>
+                </div>
+                {% else %}
+                <p class="text-xs text-gray-600 italic">No input recorded</p>
+                {% endif %}
+            </div>
+
+            <!-- Output -->
+            <div class="p-4">
+                <p class="text-xs uppercase tracking-wide text-gray-500 mb-2 flex items-center gap-2">
+                    <span class="text-amber-400">↑</span> Output
+                </p>
+                {% if step.output_brief %}
+                <div class="bg-gray-800/60 rounded p-3 max-h-96 overflow-y-auto">
+                    <div class="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{{ step.output_brief }}</div>
+                </div>
+                {% else %}
+                <p class="text-xs text-gray-600 italic">No output recorded</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

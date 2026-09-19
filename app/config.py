@@ -13,6 +13,9 @@ Planned settings:
 - OPENAI_API_KEY — API key (not needed for local LM Studio)
 - LLM_MODEL      — Default model name (e.g. google/gemma-4-12b)
 - LLM_TEMPERATURE — Default temperature for LLM calls
+- COMFYUI_URL     — ComfyUI API base URL (default: localhost:8188)
+- GENERATION_BACKEND — 'comfyui' or 'placeholder' (for testing)
+- IMAGE_OUTPUT_DIR   — Where generated images are saved
 """
 
 from pathlib import Path
@@ -39,6 +42,13 @@ class Settings(BaseSettings):
     llm_model: str = "google/gemma-4-12b"
     llm_temperature: float = 0.7
     llm_max_tokens: int = 4096
+
+    # Image generation settings
+    generation_backend: str = "placeholder"  # 'comfyui' or 'placeholder'
+    comfyui_url: str = "http://127.0.0.1:8188"
+    comfyui_poll_interval: float = 2.0  # seconds between status polls
+    comfyui_timeout: float = 600.0  # max wait for generation (10 min)
+    image_output_dir: Path = Path("./data/media/generated")
 
 
 settings = Settings()

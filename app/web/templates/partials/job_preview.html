@@ -1,0 +1,57 @@
+<div class="p-4 space-y-3 max-w-md">
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <span class="text-sm font-medium text-white">{{ job.workflow_name }}</span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded
+            {% if job.status == 'completed' %}bg-emerald-900/40 text-emerald-300
+            {% elif job.status == 'running' %}bg-blue-900/40 text-blue-300
+            {% elif job.status == 'failed' %}bg-red-900/40 text-red-300
+            {% else %}bg-gray-700 text-gray-400{% endif %}">
+            {{ job.status }}
+        </span>
+    </div>
+
+    <!-- Stats row -->
+    <div class="flex gap-4 text-[11px] text-gray-500">
+        <span>{{ job.duration }}</span>
+        <span>{{ job.steps | length }} step{{ "s" if job.steps | length != 1 }}</span>
+    </div>
+
+    {% if job.error %}
+    <p class="text-xs text-red-400 truncate">{{ job.error }}</p>
+    {% endif %}
+
+    <!-- Step summaries -->
+    <div class="space-y-2">
+        {% for step in job.steps %}
+        <div class="rounded bg-gray-800/80 p-2.5">
+            <div class="flex items-center gap-2 mb-1">
+                {% if step.status == "completed" %}
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                {% elif step.status == "failed" %}
+                <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                {% else %}
+                <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>
+                {% endif %}
+                <span class="font-mono text-xs text-indigo-300">{{ step.block_name }}</span>
+                <span class="text-[10px] text-gray-600 ml-auto">{{ step.duration }}</span>
+            </div>
+            {% if step.input_preview %}
+            <p class="text-[11px] text-gray-500 truncate">
+                <span class="text-emerald-400/60">in:</span> {{ step.input_preview }}
+            </p>
+            {% endif %}
+            {% if step.output_preview %}
+            <p class="text-[11px] text-gray-400 truncate">
+                <span class="text-amber-400/60">out:</span> {{ step.output_preview }}
+            </p>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Link to full detail -->
+    <a href="/jobs/{{ job.id }}" class="block text-center text-xs text-indigo-400 hover:text-indigo-300 pt-1">
+        View full details →
+    </a>
+</div>
