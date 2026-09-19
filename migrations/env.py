@@ -19,6 +19,7 @@ from app.database import Base
 # Import all models so Base.metadata is fully populated
 import app.models.job  # noqa: F401
 import app.models.setting  # noqa: F401
+import app.models.creative  # noqa: F401
 
 # Alembic Config object
 config = context.config

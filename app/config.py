@@ -9,6 +9,10 @@ Planned settings:
 - DEBUG          — Toggle debug mode
 - LOG_LEVEL      — Logging verbosity
 - MEDIA_DIR      — Root path for media file storage
+- LLM_BASE_URL   — Base URL for LLM API (default: LM Studio at localhost:1234)
+- OPENAI_API_KEY — API key (not needed for local LM Studio)
+- LLM_MODEL      — Default model name (e.g. google/gemma-4-12b)
+- LLM_TEMPERATURE — Default temperature for LLM calls
 """
 
 from pathlib import Path
@@ -28,6 +32,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
     media_dir: Path = Path("./data/media")
+
+    # LLM settings (defaults target LM Studio local server)
+    llm_base_url: str = "http://127.0.0.1:1234/v1"
+    openai_api_key: str = "lm-studio"  # LM Studio ignores this but the client requires a value
+    llm_model: str = "google/gemma-4-12b"
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 4096
 
 
 settings = Settings()
