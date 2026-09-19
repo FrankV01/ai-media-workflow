@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — AI Media Workflow{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Dashboard</h1>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+    <!-- Registered Blocks -->
+    <section class="bg-gray-900 rounded-lg p-5 border border-gray-800">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-semibold">Available Blocks</h2>
+            <span class="text-[10px] text-gray-600 uppercase tracking-wide">auto-discovered</span>
+        </div>
+        <div id="block-list"
+             hx-get="/partials/blocks"
+             hx-trigger="load"
+             hx-swap="innerHTML"
+             class="text-sm text-gray-400">
+            <div class="animate-pulse space-y-2">
+                <div class="h-14 bg-gray-800 rounded"></div>
+                <div class="h-14 bg-gray-800 rounded"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Recent Jobs -->
+    <section class="bg-gray-900 rounded-lg p-5 border border-gray-800">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-semibold">Recent Jobs</h2>
+            <button hx-get="/partials/jobs"
+                    hx-target="#job-list"
+                    hx-swap="innerHTML"
+                    class="text-[10px] text-indigo-400 hover:text-indigo-300 uppercase tracking-wide cursor-pointer">
+                Refresh
+            </button>
+        </div>
+        <div id="job-list"
+             hx-get="/partials/jobs"
+             hx-trigger="load"
+             hx-swap="innerHTML"
+             class="text-sm text-gray-400">
+            <div class="animate-pulse space-y-2">
+                <div class="h-12 bg-gray-800 rounded"></div>
+                <div class="h-12 bg-gray-800 rounded"></div>
+            </div>
+        </div>
+    </section>
+
+</div>
+
+<!-- Quick Run -->
+<section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
+    <h2 class="text-lg font-semibold mb-3">Quick Run</h2>
+    <p class="text-xs text-gray-500 mb-4">
+        Test the pipeline by running the <span class="font-mono text-gray-400">echo</span> block.
+        The result appears below and the job list updates automatically.
+    </p>
+    <form hx-post="/partials/run"
+          hx-target="#run-result"
+          hx-swap="innerHTML"
+          class="flex flex-wrap gap-3 items-end">
+        <div class="flex-1 min-w-[200px]">
+            <label for="message" class="block text-xs text-gray-500 mb-1">Message</label>
+            <input id="message" name="message" type="text" value="Hello, pipeline!"
+                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white
+                          focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30
+                          placeholder-gray-600"
+                   placeholder="Type something…">
+        </div>
+        <button type="submit"
+                class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700
+                       text-white text-sm px-5 py-1.5 rounded font-medium
+                       transition-colors duration-150">
+            Run Echo Block
+        </button>
+    </form>
+    <div id="run-result" class="mt-4 min-h-[2rem]"></div>
+</section>
+{% endblock %}

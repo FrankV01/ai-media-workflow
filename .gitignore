@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Environment
+.env
+
+# Data (keep structure, ignore contents)
+data/*.db
+data/media/
+
+# OS
+.DS_Store
+Thumbs.db

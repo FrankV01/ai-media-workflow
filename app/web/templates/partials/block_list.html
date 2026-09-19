@@ -1,0 +1,39 @@
+{% if blocks %}
+<div class="space-y-2">
+    {% for block in blocks %}
+    <div class="flex items-start gap-3 p-3 rounded bg-gray-800/60 border border-gray-700/50">
+        <div class="mt-0.5">
+            {% if block.category == "utility" %}
+            <span class="text-yellow-400 text-base">⚙️</span>
+            {% elif block.category == "media" %}
+            <span class="text-blue-400 text-base">🎬</span>
+            {% elif block.category == "ai" %}
+            <span class="text-purple-400 text-base">🤖</span>
+            {% else %}
+            <span class="text-gray-400 text-base">📦</span>
+            {% endif %}
+        </div>
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+                <span class="font-mono text-sm text-white">{{ block.name }}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">v{{ block.version }}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300">{{ block.category }}</span>
+            </div>
+            <p class="text-xs text-gray-500 mt-0.5">{{ block.description }}</p>
+            {% if block.inputs or block.outputs %}
+            <div class="flex gap-3 mt-1.5 text-[10px]">
+                {% if block.inputs %}
+                <span class="text-gray-500">in: <span class="text-emerald-400/70">{{ block.inputs | join(", ") }}</span></span>
+                {% endif %}
+                {% if block.outputs %}
+                <span class="text-gray-500">out: <span class="text-amber-400/70">{{ block.outputs | join(", ") }}</span></span>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-gray-500 italic text-sm">No blocks registered.</p>
+{% endif %}
