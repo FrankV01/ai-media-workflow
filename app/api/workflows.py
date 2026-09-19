@@ -57,7 +57,7 @@ async def run_workflow(req: RunRequest):
         context=dict(req.context),
         start_in_background=True,
     )
-    return {"job_id": job_id, "status": "running"}
+    return {"job_id": job_id, "status": "pending"}
 
 
 @router.get("/jobs")

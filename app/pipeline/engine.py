@@ -7,6 +7,10 @@ Supports conditional branching via verdict-based routing dicts.
 Designed for background execution: creates its own DB session and commits
 after each step so progress is visible in real-time via the status API.
 
+A module-level semaphore ensures only one pipeline runs at a time.
+Additional submissions queue (PENDING) until the running pipeline finishes.
+This prevents concurrent LLM / ComfyUI calls that would overwhelm the host.
+
 Step format (simple):
     ["art_director", "prompt_architect", "media_producer"]
 
@@ -38,6 +42,10 @@ from app.database import async_session
 from app.models.job import Job, JobStatus, JobStep
 
 logger = logging.getLogger(__name__)
+
+# Only one pipeline may execute at a time (single-GPU / M-series constraint).
+# Additional submissions queue until the running pipeline finishes.
+_pipeline_lock = asyncio.Semaphore(1)
 
 # Verdicts that blocks can set via context["_verdict"]
 VERDICT_GOOD = "good"
@@ -86,22 +94,34 @@ async def run_pipeline(
 
     Returns the job ID (int).
     """
-    # Create the job row first so we have an ID to return
+    # Create the job row as PENDING — it transitions to RUNNING once the lock is acquired
     async with async_session() as session:
-        job = Job(workflow_name=workflow_name, status=JobStatus.RUNNING)
+        job = Job(workflow_name=workflow_name, status=JobStatus.PENDING)
         session.add(job)
         await session.commit()
         job_id = job.id
 
     if start_in_background:
         asyncio.create_task(
-            _execute_pipeline(job_id, block_names, context),
+            _guarded_execute(job_id, block_names, context),
             name=f"pipeline-job-{job_id}",
         )
     else:
-        await _execute_pipeline(job_id, block_names, context)
+        await _guarded_execute(job_id, block_names, context)
 
     return job_id
+
+
+async def _guarded_execute(
+    job_id: int,
+    block_names: list[str | dict],
+    context: dict[str, Any],
+) -> None:
+    """Acquire the pipeline lock, then execute. Queues if another pipeline is running."""
+    if _pipeline_lock.locked():
+        logger.info("Job %d queued — waiting for current pipeline to finish", job_id)
+    async with _pipeline_lock:
+        await _execute_pipeline(job_id, block_names, context)
 
 
 async def _execute_pipeline(
@@ -115,6 +135,10 @@ async def _execute_pipeline(
             select(Job).where(Job.id == job_id)
         )
         job = result.scalar_one()
+
+        # Transition from PENDING to RUNNING now that we hold the lock
+        job.status = JobStatus.RUNNING
+        await session.commit()
 
         # Preserve the original user brief so re-routed blocks can access it
         if "brief" in context:
