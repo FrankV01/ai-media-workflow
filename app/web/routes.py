@@ -261,6 +261,32 @@ async def partial_job_preview(
     return templates.TemplateResponse(request, "partials/job_preview.html", {"job": job})
 
 
+@router.post("/partials/run-pipeline")
+async def partial_run_pipeline(
+    request: Request,
+    brief: str = Form(""),
+):
+    """Queue the default creative pipeline and return a queued-confirmation fragment."""
+    brief = brief.strip()
+    if not brief:
+        return templates.TemplateResponse(
+            request,
+            "partials/pipeline_queued.html",
+            {"error": "Brief cannot be empty."},
+        )
+    job_id = await run_pipeline(
+        workflow_name="default",
+        block_names=list(DEFAULT_WORKFLOW),
+        context={"brief": brief},
+        start_in_background=True,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/pipeline_queued.html",
+        {"job_id": job_id, "error": None},
+    )
+
+
 @router.post("/partials/run")
 async def partial_run(
     request: Request,

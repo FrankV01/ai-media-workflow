@@ -1,0 +1,22 @@
+{% if error %}
+<div class="flex items-start gap-2 p-3 rounded bg-red-900/30 border border-red-800/50">
+    <span class="text-red-400 shrink-0">✗</span>
+    <p class="text-sm text-red-300">{{ error }}</p>
+</div>
+{% else %}
+<div class="flex items-start gap-2 p-3 rounded bg-indigo-900/30 border border-indigo-800/50">
+    <span class="text-indigo-400 shrink-0">⟳</span>
+    <div>
+        <p class="text-sm text-indigo-300 font-medium">
+            Job #{{ job_id }} queued
+        </p>
+        <p class="text-xs text-gray-400 mt-1">
+            The pipeline is running in the background.
+            <a href="/jobs/{{ job_id }}" class="text-indigo-400 hover:text-indigo-300 underline">View details →</a>
+        </p>
+    </div>
+</div>
+
+<!-- Trigger job list refresh -->
+<script>htmx.trigger("#job-list", "load");</script>
+{% endif %}

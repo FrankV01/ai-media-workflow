@@ -65,12 +65,42 @@
     </div>
 </section>
 
-<!-- Quick Run -->
+<!-- Run Pipeline -->
+<section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
+    <h2 class="text-lg font-semibold mb-3">Run Pipeline</h2>
+    <p class="text-xs text-gray-500 mb-4">
+        Describe a concept below to run the full creative agency pipeline.
+        The job is queued in the background — check status in <span class="font-mono text-gray-400">Recent Jobs</span>.
+    </p>
+    <form hx-post="/partials/run-pipeline"
+          hx-target="#pipeline-result"
+          hx-swap="innerHTML"
+          class="space-y-3">
+        <div>
+            <label for="brief" class="block text-xs text-gray-500 mb-1">Creative Brief</label>
+            <textarea id="brief" name="brief" rows="3"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white
+                             focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30
+                             placeholder-gray-600 resize-y"
+                      placeholder="Describe your concept…"
+                      oninput="document.getElementById('run-pipeline-btn').disabled = !this.value.trim()"></textarea>
+        </div>
+        <button id="run-pipeline-btn" type="submit" disabled
+                class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700
+                       text-white text-sm px-5 py-1.5 rounded font-medium
+                       transition-colors duration-150
+                       disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-indigo-600">
+            Run Pipeline
+        </button>
+    </form>
+    <div id="pipeline-result" class="mt-4 min-h-[2rem]"></div>
+</section>
+
+<!-- Quick Run (echo test) -->
 <section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
     <h2 class="text-lg font-semibold mb-3">Quick Run</h2>
     <p class="text-xs text-gray-500 mb-4">
-        Test the pipeline by running the <span class="font-mono text-gray-400">echo</span> block.
-        The result appears below and the job list updates automatically.
+        Test connectivity by running the <span class="font-mono text-gray-400">echo</span> block.
     </p>
     <form hx-post="/partials/run"
           hx-target="#run-result"
@@ -88,7 +118,7 @@
                 class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700
                        text-white text-sm px-5 py-1.5 rounded font-medium
                        transition-colors duration-150">
-            Run Echo Block
+            Run Echo
         </button>
     </form>
     <div id="run-result" class="mt-4 min-h-[2rem]"></div>
