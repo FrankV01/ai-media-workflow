@@ -1,21 +1,9 @@
 """
-tests.test_blocks — Verify block registration and execution
+tests.test_blocks — Block registration, execution, and pipeline routing tests
 
-Planned tests:
-- test_echo_block_registered    — echo block appears in registry after discover
-- test_echo_block_run           — echo block returns expected output
-- test_registry_list            — list_blocks() returns correct metadata
-- test_unknown_block_raises     — get_block("nope") raises KeyError
-- test_art_director_registered  — art_director block discovered and has correct metadata
-- test_prompt_architect_registered — prompt_architect block discovered
-- test_creative_blocks_have_system_prompts — role blocks have non-empty system prompts
-- test_art_director_suggests_next — art_director points to prompt_architect
-- test_media_producer_registered  — media_producer block discovered
-- test_media_producer_placeholder — runs end-to-end with placeholder backend
-- test_prompt_parsing             — JSON parsing handles LLM quirks
-- test_social_media_specialist_registered — block discovered with correct metadata
-- test_social_media_specialist_has_all_inputs — needs full dossier
-- test_social_media_specialist_post_parsing — JSON post extraction
+Covers: registry discovery, block metadata, system prompts, suggested_next
+chaining, placeholder backend execution, JSON parsing (with LLM quirks),
+verdict extraction, and pipeline routing logic.
 """
 
 import json

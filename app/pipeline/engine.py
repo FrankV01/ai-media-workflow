@@ -91,8 +91,11 @@ async def run_pipeline(
     session.add(job)
     await session.flush()  # get job.id
 
-    # Split the step list into pre-routing and routing portions
-    # We process linearly until we hit a routing dict, then resolve the branch
+    # Preserve the original user brief so re-routed blocks can access it
+    if "brief" in context:
+        context["_original_brief"] = context["brief"]
+
+    # Process blocks: linearly until a routing dict, then resolve the branch
     pending: list[str | dict] = list(block_names)
     order = 0
 
@@ -108,6 +111,9 @@ async def run_pipeline(
                 verdict,
                 branch_blocks if branch_blocks else "(no blocks)",
             )
+            # Restore original brief for re-routed blocks (e.g. looping back to art_director)
+            if "_original_brief" in context:
+                context["brief"] = context["_original_brief"]
             # Prepend resolved blocks so they execute next
             pending = branch_blocks + pending
             continue

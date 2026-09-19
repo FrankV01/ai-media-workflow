@@ -1,14 +1,13 @@
 """
 app.api.workflows — Workflow execution endpoints
 
-POST /api/workflows/run    — trigger a pipeline run
-GET  /api/workflows/jobs   — list recent jobs
+POST /api/workflows/run      — trigger a pipeline run (accepts routing dicts)
+POST /api/workflows/run      — trigger a pipeline run (accepts routing dicts)
+GET  /api/workflows/jobs     — list recent jobs
 GET  /api/workflows/jobs/{id} — job detail with steps
-
-Future:
-- CRUD for saved workflow definitions (WorkflowDef model)
-- WebSocket endpoint for live progress streaming
 """
+
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -26,7 +25,7 @@ router = APIRouter()
 class RunRequest(BaseModel):
     """Payload to trigger a workflow run."""
     workflow_name: str = "default"
-    block_names: list[str]
+    block_names: list[str | dict[str, Any]]
     context: dict = {}
 
 

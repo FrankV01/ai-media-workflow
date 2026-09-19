@@ -2,32 +2,16 @@
 app.blocks.role_block — Base class for LLM-powered creative role blocks
 
 Every "employee" in the creative agency pipeline is a RoleBlock subclass.
-Each role:
-1. Reads an input brief from the pipeline context
-2. Calls an LLM with a role-specific system prompt
-3. Persists the full conversation (system + user + assistant) to the DB
-4. Writes its output deliverable into the context for the next role
+Each role reads a brief from context, calls an LLM with a role-specific
+system prompt, and writes its output into the context for the next role.
 
-Subclasses only need to define:
-- meta (BlockMeta)
-- role_name: str          — matches CreativeRole.name in the DB
-- system_prompt: str      — default prompt (can be overridden via DB)
-- role_title: str         — human-friendly title
-- role_description: str   — what this role does
+Subclasses define: meta, role_name, role_title, role_description,
+system_prompt, and optionally suggested_next and default_temperature.
+See agents.md § "RoleBlock interface" for the full pattern.
 
-The base class handles:
-- LLM API calls (OpenAI)
-- DB role creation/lookup (auto-seeds on first run)
-- RoleExecution + Message persistence
-- Token tracking
-- Context threading (reads input_brief, writes output_deliverable + suggested_next_role)
-
-Future enhancements:
-- Streaming responses
-- Multi-turn conversations (follow-up questions)
-- Human-in-the-loop approval before passing to next role
-- Tool use / function calling for structured output
-- Support for additional providers (Anthropic, Ollama, etc.)
+The base class handles: LLM API calls (OpenAI-compatible), token tracking,
+execution logging, and context threading (reads "brief", writes
+"{role_name}_output").
 """
 
 from __future__ import annotations

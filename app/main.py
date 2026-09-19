@@ -2,10 +2,14 @@
 app.main — FastAPI application factory
 
 Responsibilities:
-- Create the FastAPI app instance
-- Include API routers (api/workflows.py, api/blocks.py)
-- Mount static files and Jinja2 template renderer
-- Register startup/shutdown hooks (DB init, block discovery)
+- Create the FastAPI app instance with lifespan hooks
+- Startup: init DB, discover blocks, verify external dependencies
+- Include API routers and web UI routes
+- Mount static files
+
+Dependency checks at startup verify LLM endpoint, ComfyUI
+(when configured), and image output directory writability.
+Server refuses to start if any check fails.
 """
 
 import logging

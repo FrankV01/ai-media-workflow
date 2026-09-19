@@ -2,18 +2,12 @@
 app.services.generation.comfyui — ComfyUI API backend
 
 Dispatches image generation to a running ComfyUI server by:
-1. Building a workflow JSON with the prompt data injected
-2. POSTing it to /prompt
+1. Building an SDXL txt2img workflow JSON with prompt data injected
+2. POSTing to /prompt
 3. Polling /history/{prompt_id} until complete
-4. Downloading the output image(s) to local storage
+4. Downloading output image(s) to IMAGE_OUTPUT_DIR
 
-The workflow template is a standard SDXL txt2img pipeline.
-Custom workflows can be loaded from a JSON file via extras["workflow_path"].
-
-Future enhancements:
-- WebSocket-based progress tracking instead of polling
-- Support for img2img, inpainting, ControlNet workflows
-- Multi-node workflow templates (upscale chain, etc.)
+Checkpoint is configurable via COMFYUI_CHECKPOINT in settings.
 """
 
 from __future__ import annotations

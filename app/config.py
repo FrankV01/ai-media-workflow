@@ -1,21 +1,8 @@
 """
-app.config — Application settings
+app.config — Application settings via pydantic-settings
 
-Uses pydantic-settings to read from environment variables and/or a .env file.
-
-Planned settings:
-- DATABASE_URL   — SQLite connection string (default: sqlite+aiosqlite:///./data/app.db)
-- APP_NAME       — Display name in the UI
-- DEBUG          — Toggle debug mode
-- LOG_LEVEL      — Logging verbosity
-- MEDIA_DIR      — Root path for media file storage
-- LLM_BASE_URL   — Base URL for LLM API (default: LM Studio at localhost:1234)
-- OPENAI_API_KEY — API key (not needed for local LM Studio)
-- LLM_MODEL      — Default model name (e.g. google/gemma-4-12b)
-- LLM_TEMPERATURE — Default temperature for LLM calls
-- COMFYUI_URL     — ComfyUI API base URL (default: localhost:8188)
-- GENERATION_BACKEND — 'comfyui' or 'placeholder' (for testing)
-- IMAGE_OUTPUT_DIR   — Where generated images are saved
+Reads from environment variables and/or `.env` file.
+See `.env.example` for all available settings and defaults.
 """
 
 from pathlib import Path

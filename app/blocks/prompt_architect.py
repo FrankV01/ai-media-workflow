@@ -1,17 +1,14 @@
 """
-app.blocks.prompt_architect — Realism & Prompt Architect creative role
+app.blocks.prompt_architect — Prompt Architect creative role
 
-The Prompt Architect receives a detailed photo shoot brief from the Art Director
-and converts it into an optimized prompt for AI text-to-image models (Midjourney,
-DALL-E, Stable Diffusion, Flux, etc.).
+Converts Art Director's creative brief into structured JSON for the
+Media Producer's generation backend (currently SDXL via ComfyUI).
 
-This role understands the syntax, parameters, and best practices of various
-image generation models and translates artistic vision into technical prompts.
+Input:  context["brief"] — creative brief from Art Director
+Output: Structured JSON with positive/negative/refiner prompts,
+        generation parameters, and optional variants.
 
-Input:  Detailed photo shoot brief (context["brief"] from Art Director)
-Output: Structured JSON with positive/negative/refiner prompts + generation params
-
-Suggested next role: media_producer
+Suggested next: media_producer
 """
 
 from typing import Any

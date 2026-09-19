@@ -2,18 +2,18 @@
 app.web.routes — HTML routes served via Jinja2 + HTMX
 
 Full pages:
-- /              — Dashboard: overview of recent jobs, available blocks
+- /              — Dashboard (blocks, jobs, pipeline visual, quick run)
 - /jobs/<id>     — Job detail with step-by-step input/output + runtime stats
 
 HTMX partials (return HTML fragments, not full pages):
 - /partials/blocks              — styled block list
 - /partials/jobs                — styled recent jobs list
 - /partials/jobs/<id>/preview   — hover preview popover for a job
+- /partials/workflow            — pipeline visual diagram
 - /partials/run                 — execute a workflow and return result fragment
 
-Planned pages:
-- /workflows     — Build/edit workflows by arranging blocks
-- /settings      — Manage persistent settings
+Also defines DEFAULT_WORKFLOW — the standard creative agency pipeline
+used by the dashboard visual and available for API submissions.
 """
 
 import json

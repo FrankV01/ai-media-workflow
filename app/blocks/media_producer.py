@@ -20,7 +20,7 @@ and returns a delivery manifest (image paths + generation metadata).
 Input:  context["brief"] — JSON string from Prompt Architect
 Output: context["generated_images"], context["generation_metadata"]
 
-Suggested next role: None (terminal for now; future: quality_reviewer, upscaler)
+Suggested next: art_critic
 """
 
 from __future__ import annotations

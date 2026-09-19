@@ -1,49 +1,100 @@
 # ai-media-workflow
 
-Modular workflow engine for AI-driven media processing.
+Modular workflow engine for AI-driven media processing. A "creative agency"
+of LLM-powered roles collaborates to produce images from high-level concepts.
+
+## Prerequisites
+
+| Dependency | Purpose | Default |
+|---|---|---|
+| Python 3.11+ | Runtime | — |
+| [LM Studio](https://lmstudio.ai/) | Local LLM server (OpenAI-compatible) | `http://127.0.0.1:1234/v1` |
+| [ComfyUI](https://github.com/comfyanonymous/ComfyUI) | Image generation backend | `http://127.0.0.1:8188` |
+
+LM Studio and ComfyUI must be running before the server starts — a startup
+health check verifies all dependencies and fails fast if anything is missing.
 
 ## Quick Start
 
 ```bash
-# Create virtual environment
 python -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -e ".[dev]"
-
-# Initialize the database
-alembic upgrade head
-
-# Run the dev server
-python main.py
+cp .env.example .env          # adjust settings as needed
+python main.py                # starts on http://127.0.0.1:8000
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
+## The Pipeline
+
+A concept flows through a chain of "employees", each doing one job:
+
+```
+User prompt
+  → Art Director          (expands concept into a detailed creative brief)
+  → Prompt Architect      (converts brief into structured generation prompts)
+  → Media Producer        (dispatches prompts to ComfyUI, collects images)
+  → Art Critic            (evaluates quality, sets verdict: good / bad)
+  → Routing               (branches based on verdict)
+      ├─ on_bad  → Art Director (retry with original brief)
+      └─ always  → Social Media Specialist (creates platform posts)
+```
+
+Each block writes its report into the pipeline context as
+`{role_name}_output`, so downstream blocks can reference any prior report.
+The Art Critic's verdict drives conditional branching via the engine's
+routing dicts (see `app/pipeline/engine.py`).
 
 ## Architecture
 
-- **Blocks** — self-contained processing units (transcribe, tag, resize, etc.)
-- **Pipeline** — chains blocks into a workflow; handles ordering and data flow
-- **API** — FastAPI routes to trigger workflows, inspect status, manage settings
-- **Web UI** — lightweight HTMX + Jinja2 dashboard; no Node build step
+- **Blocks** — atomic processing units in `app/blocks/`. Subclass `Block`,
+  decorate with `@register`, auto-discovered at startup.
+- **RoleBlock** — base class for LLM-powered roles. Handles LLM calls,
+  prompt management, token tracking, and context threading.
+- **Pipeline engine** — runs blocks sequentially, supports conditional
+  branching via verdict-based routing dicts (`on_good`/`on_bad`/`always`).
+- **Generation backends** — pluggable image generation in
+  `app/services/generation/`. ComfyUI for production, placeholder for testing.
+- **Persistence** — SQLite via SQLAlchemy async. Jobs, steps, input/output
+  snapshots, and generated asset paths are all stored.
+- **Web UI** — Jinja2 + HTMX, Tailwind CDN. No JS build step.
+- **Config** — pydantic-settings reads `.env`. See `.env.example`.
 
 ## Project Layout
 
 ```
-main.py              → Dev server entry point
+main.py              → uvicorn entry point
 app/
-  main.py            → FastAPI application factory
-  config.py          → Settings via pydantic-settings
-  database.py        → SQLAlchemy async engine & session
-  models/            → ORM models (jobs, settings, history)
-  blocks/            → Modular workflow blocks
-    base.py          → Abstract Block interface
-    registry.py      → Auto-discovery & registration
-  pipeline/          → Workflow orchestration
-    engine.py        → Runs a sequence of blocks
-  api/               → REST route modules
-  web/               → Jinja2 templates & static assets
-migrations/          → Alembic DB migrations
+  main.py            → FastAPI factory, lifespan, dependency checks
+  config.py          → pydantic-settings (reads .env)
+  database.py        → async engine, session factory, Base
+  models/            → ORM models (Job, JobStep, CreativeRole, etc.)
+  blocks/            → workflow blocks
+    base.py          → Abstract Block + BlockMeta
+    registry.py      → auto-discovery & @register decorator
+    role_block.py    → LLM-powered RoleBlock base class
+    art_director.py  → creative brief from concept
+    prompt_architect.py → structured generation prompts
+    media_producer.py   → image generation dispatch
+    art_critic.py    → quality evaluation + verdict
+    social_media_specialist.py → platform post suggestions
+  pipeline/
+    engine.py        → sequential execution + conditional routing
+  services/
+    generation/      → backend abstraction (ComfyUI, placeholder)
+  api/               → REST endpoints (/api/blocks, /api/workflows)
+  web/               → Jinja2 templates, HTMX partials, static assets
 tests/               → pytest suite
+data/                → SQLite DB + media files (gitignored)
 ```
+
+## Common Tasks
+
+| Task | Command |
+|---|---|
+| Run dev server | `python main.py` |
+| Run tests | `pytest` |
+| Lint + format | `ruff check --fix . && ruff format .` |
+| Install deps | `pip install -e ".[dev]"` |
+| API docs | `http://127.0.0.1:8000/docs` |
+
+For detailed AI-agent coding guidelines, see [`agents.md`](agents.md).
