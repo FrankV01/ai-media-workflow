@@ -268,15 +268,14 @@ async def partial_run(
     session: AsyncSession = Depends(get_session),
 ):
     """Execute the echo block and return a styled result fragment."""
-    job = await run_pipeline(
+    job_id = await run_pipeline(
         workflow_name="quick_run",
         block_names=["echo"],
         context={"message": message},
-        session=session,
     )
     # Re-fetch with steps loaded
     result = await session.execute(
-        select(Job).where(Job.id == job.id).options(selectinload(Job.steps))
+        select(Job).where(Job.id == job_id).options(selectinload(Job.steps))
     )
     job = result.scalar_one()
     steps = [

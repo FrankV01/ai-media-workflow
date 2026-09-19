@@ -1,0 +1,60 @@
+### POST request to run workflow
+POST http://127.0.0.1:8000/api/workflows/run
+Content-Type: application/json
+
+{
+  "block_names": [
+    "art_director",
+    "prompt_architect",
+    "media_producer",
+    "art_critic",
+    {"on_good": [], "on_bad": [], "always": ["social_media_specialist"]}
+  ],
+  "context": {
+    "brief": "A photo of a woman in a black and blue one-piece swimsuit. She is around a size 16 — beautiful but understated. The shoot has a professional, artistic, detail-oriented feel. Think photo shoot director aesthetic: focus on mood, styling, composition, lighting, and technical direction. Natural beauty, confidence, and elegance."
+  }
+}
+
+
+
+
+###
+# curl -s -X POST http://127.0.0.1:8000/api/workflows/run
+#  -H 'Content-Type: application/json'
+#  -d '{
+#    "block_names": [
+#      "art_director",
+#      "prompt_architect",
+#      "media_producer",
+#      "art_critic",
+#      {"on_good": [], "on_bad": ["art_director"], "always": ["social_media_specialist"]}
+#    ],
+#    "context": {
+#      "brief": "A photo of a woman in a black and blue one-piece swimsuit. She is around a size 16 — beautiful but understated. The shoot has a professional, artistic, detail-oriented feel. Think photo shoot director aesthetic: focus on mood, styling, composition, lighting, and technical direction. Natural beauty, confidence, and elegance."
+#    }
+#  }'
+POST http://127.0.0.1:8000/api/workflows/run
+Content-Type: application/json
+
+{
+  "block_names": [
+    "art_director",
+    "prompt_architect",
+    "media_producer",
+    "art_critic",
+    {
+      "on_good": [],
+      "on_bad": [
+        "art_director"
+      ],
+      "always": [
+        "social_media_specialist"
+      ]
+    }
+  ],
+  "context": {
+    "brief": "A photo of a woman in a black and blue one-piece swimsuit. She is around a size 16 — beautiful but understated. The shoot has a professional, artistic, detail-oriented feel. Think photo shoot director aesthetic: focus on mood, styling, composition, lighting, and technical direction. Natural beauty, confidence, and elegance."
+  }
+}
+
+###

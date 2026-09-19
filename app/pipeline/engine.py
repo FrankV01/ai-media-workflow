@@ -1,13 +1,11 @@
 """
 app.pipeline.engine — Pipeline execution engine
 
-Responsibilities:
-- Accept a list of block names (or step dicts) + initial context
-- Instantiate blocks from the registry
-- Run them in order, threading the context dict through each
-- Support conditional branching via verdict-based routing
-- Record Job + JobStep rows in the DB
-- Handle errors: mark failed step, stop or continue based on policy
+Runs blocks sequentially, threading a shared context dict through each.
+Supports conditional branching via verdict-based routing dicts.
+
+Designed for background execution: creates its own DB session and commits
+after each step so progress is visible in real-time via the status API.
 
 Step format (simple):
     ["art_director", "prompt_architect", "media_producer"]
@@ -21,26 +19,22 @@ Step format (with routing):
         {"on_good": ["publisher"], "on_bad": ["art_director"], "always": ["archiver"]},
     ]
 
-When the engine encounters a routing dict, it reads context["_verdict"] (set by
-the preceding block) and selects the appropriate branch:
-- "good" → runs blocks listed under "on_good"
-- "bad"  → runs blocks listed under "on_bad"
-- blocks under "always" run regardless of verdict
-
-If no routing dict follows a verdict-producing block, execution continues
-linearly as before.
+Routing reads context["_verdict"] set by the preceding block.
+See agents.md § "Pipeline routing" for details.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.blocks.registry import get_block
+from app.database import async_session
 from app.models.job import Job, JobStatus, JobStep
 
 logger = logging.getLogger(__name__)
@@ -77,90 +71,126 @@ async def run_pipeline(
     workflow_name: str,
     block_names: list[str | dict],
     context: dict[str, Any],
-    session: AsyncSession,
-) -> Job:
+    *,
+    start_in_background: bool = False,
+) -> int:
     """
-    Execute a sequence of blocks and persist results.
+    Create a Job and execute (or schedule) a pipeline run.
 
-    block_names can be a simple list of strings or a mixed list containing
-    routing dicts for conditional branching. See module docstring for format.
+    If start_in_background is True, the job row is created and committed,
+    then execution is launched as an asyncio task. The function returns the
+    job_id immediately.
 
-    Returns the completed (or failed) Job ORM instance.
+    If False, execution runs inline and the function returns when the
+    pipeline finishes.
+
+    Returns the job ID (int).
     """
-    job = Job(workflow_name=workflow_name, status=JobStatus.RUNNING)
-    session.add(job)
-    await session.flush()  # get job.id
+    # Create the job row first so we have an ID to return
+    async with async_session() as session:
+        job = Job(workflow_name=workflow_name, status=JobStatus.RUNNING)
+        session.add(job)
+        await session.commit()
+        job_id = job.id
 
-    # Preserve the original user brief so re-routed blocks can access it
-    if "brief" in context:
-        context["_original_brief"] = context["brief"]
-
-    # Process blocks: linearly until a routing dict, then resolve the branch
-    pending: list[str | dict] = list(block_names)
-    order = 0
-
-    while pending:
-        item = pending.pop(0)
-
-        # Routing dict — resolve based on current verdict and prepend to pending
-        if isinstance(item, dict):
-            verdict = context.get("_verdict")
-            branch_blocks = _resolve_steps([item], verdict)
-            logger.info(
-                "Routing: verdict=%s → %s",
-                verdict,
-                branch_blocks if branch_blocks else "(no blocks)",
-            )
-            # Restore original brief for re-routed blocks (e.g. looping back to art_director)
-            if "_original_brief" in context:
-                context["brief"] = context["_original_brief"]
-            # Prepend resolved blocks so they execute next
-            pending = branch_blocks + pending
-            continue
-
-        # Normal block execution
-        name = item
-        step = JobStep(job_id=job.id, block_name=name, order=order, status=JobStatus.RUNNING)
-        step.started_at = datetime.now(timezone.utc)
-        session.add(step)
-        await session.flush()
-
-        try:
-            block_cls = get_block(name)
-            block = block_cls()
-
-            # Snapshot the input context (exclude internal keys for readability)
-            input_snap = {k: v for k, v in context.items() if not k.startswith("_")}
-            step.input_context = json.dumps(input_snap, default=str, ensure_ascii=False)
-
-            await block.validate(context)
-            result = await block.run(context)
-            context.update(result)
-
-            # Store clean output (exclude internal keys)
-            output_snap = {k: v for k, v in result.items() if not k.startswith("_")}
-            step.status = JobStatus.COMPLETED
-            step.output = json.dumps(output_snap, default=str, ensure_ascii=False)
-        except Exception as exc:
-            logger.exception("Block %s failed", name)
-            step.status = JobStatus.FAILED
-            step.error = str(exc)
-            job.status = JobStatus.FAILED
-            job.error = f"Block '{name}' failed: {exc}"
-            break
-        finally:
-            step.finished_at = datetime.now(timezone.utc)
-            order += 1
-
+    if start_in_background:
+        asyncio.create_task(
+            _execute_pipeline(job_id, block_names, context),
+            name=f"pipeline-job-{job_id}",
+        )
     else:
-        # All blocks succeeded
-        job.status = JobStatus.COMPLETED
+        await _execute_pipeline(job_id, block_names, context)
 
-    # Persist generated asset paths at the Job level for easy querying
-    generated_images = context.get("generated_images")
-    if generated_images:
-        job.generated_assets = json.dumps(generated_images, default=str, ensure_ascii=False)
+    return job_id
 
-    job.finished_at = datetime.now(timezone.utc)
-    await session.commit()
-    return job
+
+async def _execute_pipeline(
+    job_id: int,
+    block_names: list[str | dict],
+    context: dict[str, Any],
+) -> None:
+    """Run blocks sequentially, committing status after each step."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Job).where(Job.id == job_id)
+        )
+        job = result.scalar_one()
+
+        # Preserve the original user brief so re-routed blocks can access it
+        if "brief" in context:
+            context["_original_brief"] = context["brief"]
+
+        # Process blocks: linearly until a routing dict, then resolve the branch
+        pending: list[str | dict] = list(block_names)
+        order = 0
+
+        while pending:
+            item = pending.pop(0)
+
+            # Routing dict — resolve based on current verdict and prepend to pending
+            if isinstance(item, dict):
+                verdict = context.get("_verdict")
+                branch_blocks = _resolve_steps([item], verdict)
+                logger.info(
+                    "Routing: verdict=%s → %s",
+                    verdict,
+                    branch_blocks if branch_blocks else "(no blocks)",
+                )
+                # Restore original brief for re-routed blocks
+                if "_original_brief" in context:
+                    context["brief"] = context["_original_brief"]
+                pending = branch_blocks + pending
+                continue
+
+            # Normal block execution
+            name = item
+            step = JobStep(
+                job_id=job_id, block_name=name, order=order, status=JobStatus.RUNNING,
+            )
+            step.started_at = datetime.now(timezone.utc)
+            session.add(step)
+            await session.commit()
+
+            try:
+                block_cls = get_block(name)
+                block = block_cls()
+
+                # Snapshot the input context (exclude internal keys for readability)
+                input_snap = {k: v for k, v in context.items() if not k.startswith("_")}
+                step.input_context = json.dumps(input_snap, default=str, ensure_ascii=False)
+
+                await block.validate(context)
+                result = await block.run(context)
+                context.update(result)
+
+                # Store clean output (exclude internal keys)
+                output_snap = {k: v for k, v in result.items() if not k.startswith("_")}
+                step.status = JobStatus.COMPLETED
+                step.output = json.dumps(output_snap, default=str, ensure_ascii=False)
+            except Exception as exc:
+                logger.exception("Block %s failed", name)
+                step.status = JobStatus.FAILED
+                step.error = str(exc)
+                job.status = JobStatus.FAILED
+                job.error = f"Block '{name}' failed: {exc}"
+            finally:
+                step.finished_at = datetime.now(timezone.utc)
+                await session.commit()
+                order += 1
+
+            if job.status == JobStatus.FAILED:
+                break
+
+        else:
+            # All blocks succeeded
+            job.status = JobStatus.COMPLETED
+
+        # Persist generated asset paths at the Job level for easy querying
+        generated_images = context.get("generated_images")
+        if generated_images:
+            job.generated_assets = json.dumps(
+                generated_images, default=str, ensure_ascii=False,
+            )
+
+        job.finished_at = datetime.now(timezone.utc)
+        await session.commit()
