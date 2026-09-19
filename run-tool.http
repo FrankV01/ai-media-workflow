@@ -15,8 +15,25 @@ Content-Type: application/json
   }
 }
 
+### POST request to run workflow
+POST http://127.0.0.1:8000/api/workflows/run
+Content-Type: application/json
 
+{
+  "block_names": [
+    "art_director",
+    "prompt_architect",
+    "media_producer",
+    "art_critic",
+    {"on_good": [], "on_bad": [], "always": ["social_media_specialist"]}
+  ],
+  "context": {
+    "brief": "A high-fashion cinematic editorial shot during the golden hour. The subject is a stunning woman (size 16) with an elegant, confident poise. She wears a sophisticated one-piece swimsuit in deep navy and obsidian black. The aesthetic is sensually evocative, focusing on the curves of her form and the tactile texture of her skin. Lighting is dramatic: one side of her face and body is kissed by warm amber light, while the other falls into deep, velvety shadows. The mood is intimate and sultry. Close-up shots focus on the detail of a wet curl of hair, the curve of her shoulder, and the subtle sheen of damp skin. High-end aesthetic, 8k resolution, shot on a Leica M11 with a 50mm Noctilux lens for creamy bokeh and sharp focal points. The atmosphere is thick with sophisticated allure."
+  }
+}
 
+### GET request to check job status
+GET http://127.0.0.1:8000/api/workflows/jobs/12
 
 ###
 # curl -s -X POST http://127.0.0.1:8000/api/workflows/run
