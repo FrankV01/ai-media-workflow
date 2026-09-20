@@ -85,6 +85,7 @@ class RoleBlock(Block):
         client = AsyncOpenAI(
             base_url=settings.llm_base_url,
             api_key=settings.openai_api_key,
+            timeout=settings.llm_timeout,
         )
 
         response = await client.chat.completions.create(

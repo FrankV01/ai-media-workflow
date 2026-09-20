@@ -29,12 +29,13 @@ class Settings(BaseSettings):
     llm_model: str = "qwen/qwen3.5-9b"
     llm_temperature: float = 0.7
     llm_max_tokens: int = 4096*4
+    llm_timeout: float = 1800.0  # max wait per LLM request (30 min)
 
     # Image generation settings
     generation_backend: str = "comfyui"  # 'comfyui' or 'placeholder'
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_poll_interval: float = 2.0  # seconds between status polls
-    comfyui_timeout: float = 600.0  # max wait for generation (10 min)
+    comfyui_timeout: float = 3600.0  # max wait for generation (1 hour)
     comfyui_checkpoint: str = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
     comfyui_refiner_checkpoint: str = "sd_xl_refiner_1.0.safetensors"
     comfyui_upscale_2x_model: str = "RealESRGAN_x2.pth"
