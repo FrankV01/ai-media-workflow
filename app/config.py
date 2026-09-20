@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     openai_api_key: str = "lm-studio"  # LM Studio ignores this but the client requires a value
     llm_model: str = "qwen/qwen3.5-9b"
     llm_temperature: float = 0.7
-    llm_max_tokens: int = 4096 * 4
+    llm_max_tokens: int = 32768  # reasoning models burn most of this on hidden thinking
+    # False sends reasoning_effort="none" (disables hidden reasoning on thinking models)
+    llm_enable_thinking: bool = False
     llm_timeout: float = 1800.0  # max wait per LLM request (30 min)
 
     # Image generation settings

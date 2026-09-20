@@ -11,9 +11,25 @@ Output: Structured JSON with positive/negative/refiner prompts,
 Suggested next: media_producer
 """
 
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
 from app.blocks.base import BlockMeta
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
+
+logger = logging.getLogger(__name__)
+
+# Keys the Media Producer requires to be present and non-blank
+REQUIRED_PROMPT_KEYS = (
+    "positive_prompt",
+    "negative_prompt",
+    "positive_refiner_prompt",
+    "negative_refiner_prompt",
+)
 
 PROMPT_ARCHITECT_SYSTEM_PROMPT = """\
 You are an expert Realism & Prompt Architect specializing in AI text-to-image generation. \
@@ -65,6 +81,50 @@ Rules:
 """
 
 
+def extract_json_object(raw: str) -> dict | None:
+    """Strip markdown fences / preamble and return the first JSON object, or None."""
+    text = raw.strip()
+
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        if "\n" not in text:
+            return None
+        first_newline = text.index("\n")
+        text = text[first_newline + 1 :]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+
+    # Try direct parse first
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    # Try to find the first { ... } block
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            parsed = json.loads(text[start : end + 1])
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
+def validate_prompt_output(parsed: dict) -> list[str]:
+    """Return the names of required prompt keys that are missing or blank."""
+    missing = []
+    for key in REQUIRED_PROMPT_KEYS:
+        value = parsed.get(key)
+        if not isinstance(value, str) or not value.strip():
+            missing.append(key)
+    return missing
+
+
 @register
 class PromptArchitect(RoleBlock):
     """Converts a creative brief into optimized AI image generation prompts."""
@@ -72,7 +132,7 @@ class PromptArchitect(RoleBlock):
     meta = BlockMeta(
         name="prompt_architect",
         description="Converts photo shoot briefs into structured image generation prompts (JSON)",
-        version="0.2.0",
+        version="0.3.0",
         category="creative",
         inputs=["brief"],
         outputs=["brief", "prompt_architect_output", "generation_params"],
@@ -87,3 +147,32 @@ class PromptArchitect(RoleBlock):
     system_prompt = PROMPT_ARCHITECT_SYSTEM_PROMPT
     suggested_next = "media_producer"
     default_temperature = 0.6
+
+    async def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        """Run the role, then validate and normalize the structured prompt JSON."""
+        result = await super().run(context)
+        raw = result["output_deliverable"]
+
+        parsed = extract_json_object(raw)
+        if parsed is None:
+            raise ValueError("prompt_architect: LLM output is not a JSON object; got: " + raw[:200])
+
+        missing = validate_prompt_output(parsed)
+        if missing:
+            raise ValueError(
+                f"prompt_architect: output missing required prompts: {', '.join(missing)}"
+            )
+
+        clean = json.dumps(parsed, ensure_ascii=False, indent=2)
+        result["brief"] = clean
+        result["output_deliverable"] = clean
+        result["prompt_architect_output"] = clean
+        result["generation_params"] = parsed.get("parameters", {})
+
+        logger.info(
+            "PromptArchitect: validated output — positive_prompt=%d chars, %d variant(s)",
+            len(parsed["positive_prompt"]),
+            len(parsed.get("variants", [])),
+        )
+
+        return result

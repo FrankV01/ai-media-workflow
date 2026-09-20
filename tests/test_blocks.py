@@ -345,3 +345,171 @@ async def test_placeholder_backend_creates_file():
         assert os.path.exists(result.image_paths[0])
     finally:
         settings.generation_backend = original_backend
+
+
+# ── RoleBlock empty-output + PromptArchitect validation tests ────────────
+
+
+_VALID_PROMPT_PAYLOAD = {
+    "positive_prompt": "a majestic lion at golden hour, photorealistic",
+    "negative_prompt": "blurry, text, watermark",
+    "positive_refiner_prompt": "fine fur detail, subsurface scattering",
+    "negative_refiner_prompt": "over-sharpening, plastic fur",
+    "parameters": {"width": 1024, "height": 1024, "steps": 40},
+    "variants": [{"name": "wide", "positive_prompt": "wide shot of a lion"}],
+}
+
+
+def _fake_llm_client(content: str, finish_reason: str = "stop", captured: dict | None = None):
+    """Build a fake AsyncOpenAI client that returns canned content.
+
+    If `captured` is a dict, the kwargs passed to chat.completions.create()
+    are recorded into it.
+    """
+    import types
+
+    message = types.SimpleNamespace(content=content)
+    choice = types.SimpleNamespace(message=message, finish_reason=finish_reason)
+    usage = types.SimpleNamespace(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+    response = types.SimpleNamespace(choices=[choice], usage=usage)
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            if captured is not None:
+                captured.update(kwargs)
+            return response
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    return types.SimpleNamespace(chat=FakeChat())
+
+
+@pytest.mark.asyncio
+async def test_role_block_rejects_empty_llm_output(monkeypatch):
+    """An empty LLM response (e.g. finish_reason=length) must fail the step."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.prompt_architect import PromptArchitect
+
+    monkeypatch.setattr(
+        role_block_module, "AsyncOpenAI", lambda **_: _fake_llm_client("", "length")
+    )
+
+    with pytest.raises(ValueError, match="empty content") as excinfo:
+        await PromptArchitect().run({"brief": "x"})
+    assert "finish_reason=length" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_prompt_architect_run_validates_and_normalizes(monkeypatch):
+    """Valid fenced JSON is validated, normalized, and split into generation_params."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.prompt_architect import PromptArchitect
+
+    payload = _VALID_PROMPT_PAYLOAD
+    raw = "```json\n" + json.dumps(payload) + "\n```"
+    monkeypatch.setattr(role_block_module, "AsyncOpenAI", lambda **_: _fake_llm_client(raw))
+
+    result = await PromptArchitect().run({"brief": "a lion"})
+
+    parsed = json.loads(result["prompt_architect_output"])
+    for key in (
+        "positive_prompt",
+        "negative_prompt",
+        "positive_refiner_prompt",
+        "negative_refiner_prompt",
+    ):
+        assert key in parsed
+    assert result["generation_params"] == payload["parameters"]
+    assert result["brief"] == result["prompt_architect_output"]
+    assert result["suggested_next_role"] == "media_producer"
+
+
+@pytest.mark.asyncio
+async def test_prompt_architect_run_rejects_missing_refiner_prompts(monkeypatch):
+    """JSON missing the refiner prompts must fail with the key names listed."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.prompt_architect import PromptArchitect
+
+    raw = json.dumps({"positive_prompt": "x", "negative_prompt": "y"})
+    monkeypatch.setattr(role_block_module, "AsyncOpenAI", lambda **_: _fake_llm_client(raw))
+
+    with pytest.raises(ValueError, match="positive_refiner_prompt") as excinfo:
+        await PromptArchitect().run({"brief": "x"})
+    assert "negative_refiner_prompt" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_prompt_architect_run_rejects_non_json(monkeypatch):
+    """Plain prose output must fail rather than reach the media producer."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.prompt_architect import PromptArchitect
+
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client("Here is a lovely prompt about sunsets"),
+    )
+
+    with pytest.raises(ValueError, match="not a JSON object"):
+        await PromptArchitect().run({"brief": "x"})
+
+
+def test_validate_prompt_output_blank_values():
+    from app.blocks.prompt_architect import validate_prompt_output
+
+    missing = validate_prompt_output(
+        {
+            "positive_prompt": "  ",
+            "negative_prompt": "x",
+            "positive_refiner_prompt": "y",
+            "negative_refiner_prompt": 3,
+        }
+    )
+    assert missing == ["positive_prompt", "negative_refiner_prompt"]
+
+
+def test_extract_json_object_fenced_and_preamble():
+    from app.blocks.prompt_architect import extract_json_object
+
+    assert extract_json_object('```json\n{"a": 1}\n```') == {"a": 1}
+    assert extract_json_object('Sure! {"a": 1} done') == {"a": 1}
+    assert extract_json_object("no json here") is None
+
+
+@pytest.mark.asyncio
+async def test_role_block_disables_thinking_by_default(monkeypatch):
+    """With llm_enable_thinking=False, create() is called with reasoning_effort='none'."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.prompt_architect import PromptArchitect
+
+    captured = {}
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client(json.dumps(_VALID_PROMPT_PAYLOAD), captured=captured),
+    )
+    monkeypatch.setattr(role_block_module.settings, "llm_enable_thinking", False)
+
+    await PromptArchitect().run({"brief": "a lion"})
+
+    assert captured["reasoning_effort"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_role_block_thinking_enabled_omits_reasoning_effort(monkeypatch):
+    """With llm_enable_thinking=True, reasoning_effort is not sent at all."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.prompt_architect import PromptArchitect
+
+    captured = {}
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client(json.dumps(_VALID_PROMPT_PAYLOAD), captured=captured),
+    )
+    monkeypatch.setattr(role_block_module.settings, "llm_enable_thinking", True)
+
+    await PromptArchitect().run({"brief": "a lion"})
+
+    assert "reasoning_effort" not in captured

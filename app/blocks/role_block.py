@@ -81,28 +81,56 @@ class RoleBlock(Block):
         ]
 
         # Call LLM (OpenAI-compatible API — works with LM Studio, OpenAI, etc.)
-        logger.info("Role [%s] calling %s at %s …", self.role_name, model, settings.llm_base_url)
+        thinking = settings.llm_enable_thinking
+        logger.info(
+            "Role [%s] calling %s at %s (thinking=%s) …",
+            self.role_name,
+            model,
+            settings.llm_base_url,
+            thinking,
+        )
         client = AsyncOpenAI(
             base_url=settings.llm_base_url,
             api_key=settings.openai_api_key,
             timeout=settings.llm_timeout,
         )
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if not thinking:
+            # Disables hidden reasoning on thinking models (LM Studio honors
+            # reasoning_effort="none"); when enabled, omit and let the server default apply
+            create_kwargs["reasoning_effort"] = "none"
+
+        response = await client.chat.completions.create(**create_kwargs)
 
         assistant_content = response.choices[0].message.content or ""
+        finish_reason = response.choices[0].finish_reason
         usage = response.usage
 
         logger.info(
-            "Role [%s] completed — %d tokens",
+            "Role [%s] completed — %d tokens (finish_reason=%s)",
             self.role_name,
             usage.total_tokens if usage else 0,
+            finish_reason,
         )
+
+        if not assistant_content.strip():
+            hint = ""
+            if finish_reason == "length":
+                hint = (
+                    " — the model likely exhausted max_tokens (possibly on reasoning); "
+                    "raise LLM_MAX_TOKENS or use a smaller reasoning budget"
+                )
+            raise ValueError(
+                f"{self.role_name}: LLM returned empty content "
+                f"(finish_reason={finish_reason}, "
+                f"completion_tokens={usage.completion_tokens if usage else 0}){hint}"
+            )
 
         # Determine suggested next role
         next_role = self.suggested_next

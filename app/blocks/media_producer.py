@@ -25,11 +25,11 @@ Suggested next: art_critic
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from app.blocks.base import Block, BlockMeta
+from app.blocks.prompt_architect import extract_json_object
 from app.blocks.registry import register
 from app.services.generation import GenerationRequest, get_backend
 
@@ -53,33 +53,17 @@ def _parse_prompt_output(raw: str) -> dict:
     LLMs sometimes wrap JSON in markdown fences or add preamble text.
     This function strips that away and extracts the JSON object.
     """
-    text = raw.strip()
+    parsed = extract_json_object(raw)
+    if parsed is not None:
+        return parsed
 
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        # Remove opening fence (possibly with language tag)
-        first_newline = text.index("\n")
-        text = text[first_newline + 1 :]
+    # Last resort: treat as unstructured text and build a minimal request
+    text = raw.strip()
+    if text.startswith("```") and "\n" in text:
+        text = text[text.index("\n") + 1 :]
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
-
-    # Try direct parse first
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Try to find the first { ... } block
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            pass
-
-    # Last resort: treat as unstructured text and build a minimal request
     logger.warning("MediaProducer: could not parse structured JSON, using raw text as prompt")
     return {"positive_prompt": text, "negative_prompt": ""}
 
