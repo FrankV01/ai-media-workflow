@@ -26,16 +26,16 @@ class Settings(BaseSettings):
     # LLM settings (defaults target LM Studio local server)
     llm_base_url: str = "http://127.0.0.1:1234/v1"
     openai_api_key: str = "lm-studio"  # LM Studio ignores this but the client requires a value
-    llm_model: str = "google/gemma-4-12b"
+    llm_model: str = "qwen/qwen3.5-9b"
     llm_temperature: float = 0.7
-    llm_max_tokens: int = 4096
+    llm_max_tokens: int = 4096*4
 
     # Image generation settings
     generation_backend: str = "comfyui"  # 'comfyui' or 'placeholder'
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_poll_interval: float = 2.0  # seconds between status polls
     comfyui_timeout: float = 600.0  # max wait for generation (10 min)
-    comfyui_checkpoint: str = "RealVisXL_V5.0_fp16.safetensors"
+    comfyui_checkpoint: str = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
     comfyui_refiner_checkpoint: str = "sd_xl_refiner_1.0.safetensors"
     comfyui_upscale_2x_model: str = "RealESRGAN_x2.pth"
     comfyui_upscale_4x_model: str = "RealESRGAN_x4.pth"
