@@ -18,7 +18,7 @@ used by the dashboard visual and available for API submissions.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.templating import Jinja2Templates
@@ -103,6 +103,7 @@ def _preview(text: str, max_len: int = 120) -> str:
 
 # ── Full pages ───────────────────────────────────────────────────────────
 
+
 @router.get("/")
 async def dashboard(request: Request):
     """Render the main dashboard page."""
@@ -110,9 +111,7 @@ async def dashboard(request: Request):
 
 
 @router.get("/jobs/{job_id}")
-async def job_detail(
-    request: Request, job_id: int, session: AsyncSession = Depends(get_session)
-):
+async def job_detail(request: Request, job_id: int, session: AsyncSession = Depends(get_session)):
     """Render the full job detail page with step-by-step input/output."""
     result = await session.execute(
         select(Job).where(Job.id == job_id).options(selectinload(Job.steps))
@@ -152,6 +151,7 @@ async def job_detail(
 
 # ── HTMX partials ────────────────────────────────────────────────────────
 
+
 def _build_workflow_nodes(workflow: list[str | dict]) -> list[dict]:
     """Convert a workflow step list into visual node dicts for the template."""
     nodes = []
@@ -165,24 +165,28 @@ def _build_workflow_nodes(workflow: list[str | dict]) -> list[dict]:
             except KeyError:
                 desc = ""
                 category = "utility"
-            nodes.append({
-                "type": "block",
-                "name": item,
-                "title": _BLOCK_TITLES.get(item, item.replace("_", " ").title()),
-                "description": desc,
-                "category": category,
-            })
+            nodes.append(
+                {
+                    "type": "block",
+                    "name": item,
+                    "title": _BLOCK_TITLES.get(item, item.replace("_", " ").title()),
+                    "description": desc,
+                    "category": category,
+                }
+            )
         elif isinstance(item, dict):
             # Routing node
             on_good = [_BLOCK_TITLES.get(b, b) for b in item.get("on_good", [])]
             on_bad = [_BLOCK_TITLES.get(b, b) for b in item.get("on_bad", [])]
             always = [_BLOCK_TITLES.get(b, b) for b in item.get("always", [])]
-            nodes.append({
-                "type": "routing",
-                "on_good": on_good,
-                "on_bad": on_bad,
-                "always": always,
-            })
+            nodes.append(
+                {
+                    "type": "routing",
+                    "on_good": on_good,
+                    "on_bad": on_bad,
+                    "always": always,
+                }
+            )
     return nodes
 
 
@@ -190,9 +194,7 @@ def _build_workflow_nodes(workflow: list[str | dict]) -> list[dict]:
 async def partial_workflow(request: Request):
     """Return the workflow pipeline visualization fragment."""
     nodes = _build_workflow_nodes(DEFAULT_WORKFLOW)
-    return templates.TemplateResponse(
-        request, "partials/workflow_visual.html", {"nodes": nodes}
-    )
+    return templates.TemplateResponse(request, "partials/workflow_visual.html", {"nodes": nodes})
 
 
 @router.get("/partials/blocks")
@@ -206,10 +208,7 @@ async def partial_blocks(request: Request):
 async def partial_jobs(request: Request, session: AsyncSession = Depends(get_session)):
     """Return styled HTML fragment listing recent jobs."""
     result = await session.execute(
-        select(Job)
-        .options(selectinload(Job.steps))
-        .order_by(Job.created_at.desc())
-        .limit(20)
+        select(Job).options(selectinload(Job.steps)).order_by(Job.created_at.desc()).limit(20)
     )
     jobs_raw = result.scalars().all()
     jobs = [

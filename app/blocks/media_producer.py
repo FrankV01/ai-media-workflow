@@ -153,8 +153,8 @@ class MediaProducer(Block):
         """
         override = context.get("_generation_backend")
         if override:
-            from app.services.generation.factory import get_backend as _factory
             from app.config import settings
+            from app.services.generation.factory import get_backend as _factory
 
             original = settings.generation_backend
             settings.generation_backend = override

@@ -18,13 +18,12 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
+from app.api import blocks as block_router
+from app.api import workflows as wf_router
+from app.blocks.registry import discover_blocks
 from app.config import settings
 from app.database import init_db
-from app.blocks.registry import discover_blocks
-from app.api import workflows as wf_router
-from app.api import blocks as block_router
 from app.web.routes import router as web_router
 
 logger = logging.getLogger(__name__)

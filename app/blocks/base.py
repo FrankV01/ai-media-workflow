@@ -19,6 +19,7 @@ from typing import Any
 @dataclass
 class BlockMeta:
     """Descriptive metadata for a block, used by the UI and registry."""
+
     name: str
     description: str = ""
     version: str = "0.1.0"

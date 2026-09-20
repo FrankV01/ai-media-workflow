@@ -96,7 +96,9 @@ class SocialMediaSpecialist(RoleBlock):
 
     meta = BlockMeta(
         name="social_media_specialist",
-        description="Creates platform-optimized social media posts from generated assets and reports",
+        description=(
+            "Creates platform-optimized social media posts from generated assets and reports"
+        ),
         version="0.1.0",
         category="creative",
         inputs=[
@@ -127,9 +129,7 @@ class SocialMediaSpecialist(RoleBlock):
 
         art_director = context.get("art_director_output", "")
         if art_director:
-            dossier_parts.append(
-                "=== ART DIRECTOR — CREATIVE BRIEF ===\n" + art_director
-            )
+            dossier_parts.append("=== ART DIRECTOR — CREATIVE BRIEF ===\n" + art_director)
 
         prompt_architect = context.get("prompt_architect_output", "")
         if prompt_architect:
@@ -139,9 +139,7 @@ class SocialMediaSpecialist(RoleBlock):
 
         media_producer = context.get("media_producer_output", "")
         if media_producer:
-            dossier_parts.append(
-                "=== MEDIA PRODUCER — GENERATION RESULTS ===\n" + media_producer
-            )
+            dossier_parts.append("=== MEDIA PRODUCER — GENERATION RESULTS ===\n" + media_producer)
 
         # Include image file paths
         images = context.get("generated_images", [])
@@ -186,7 +184,7 @@ class SocialMediaSpecialist(RoleBlock):
         # Strip markdown fences
         if text.startswith("```"):
             first_nl = text.index("\n")
-            text = text[first_nl + 1:]
+            text = text[first_nl + 1 :]
             if text.endswith("```"):
                 text = text[:-3]
             text = text.strip()
@@ -203,7 +201,7 @@ class SocialMediaSpecialist(RoleBlock):
         end = text.rfind("}")
         if start != -1 and end > start:
             try:
-                data = json.loads(text[start:end + 1])
+                data = json.loads(text[start : end + 1])
                 return data.get("posts", [])
             except json.JSONDecodeError:
                 pass

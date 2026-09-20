@@ -16,10 +16,12 @@ def get_backend() -> GenerationBackend:
 
     if name == "comfyui":
         from app.services.generation.comfyui import ComfyUIBackend
+
         return ComfyUIBackend()
 
     if name == "placeholder":
         from app.services.generation.placeholder import PlaceholderBackend
+
         return PlaceholderBackend()
 
     raise ValueError(

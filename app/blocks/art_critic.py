@@ -166,7 +166,7 @@ class ArtCritic(RoleBlock):
         # Strip markdown fences
         if text.startswith("```"):
             first_nl = text.index("\n")
-            text = text[first_nl + 1:]
+            text = text[first_nl + 1 :]
             if text.endswith("```"):
                 text = text[:-3]
             text = text.strip()
@@ -191,7 +191,7 @@ class ArtCritic(RoleBlock):
         end = text.rfind("}")
         if start != -1 and end > start:
             try:
-                data = json.loads(text[start:end + 1])
+                data = json.loads(text[start : end + 1])
                 verdict = data.get("verdict", "").lower().strip()
                 if verdict in ("good", "bad"):
                     return verdict

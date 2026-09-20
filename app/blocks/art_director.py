@@ -12,8 +12,6 @@ Output: Detailed photo shoot description (context["brief"] for next role)
 Suggested next role: prompt_architect
 """
 
-from typing import Any
-
 from app.blocks.base import BlockMeta
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
@@ -55,9 +53,7 @@ class ArtDirector(RoleBlock):
 
     role_name = "art_director"
     role_title = "Art Director"
-    role_description = (
-        "Transforms high-level concepts into detailed photo shoot creative briefs"
-    )
+    role_description = "Transforms high-level concepts into detailed photo shoot creative briefs"
     system_prompt = ART_DIRECTOR_SYSTEM_PROMPT
     suggested_next = "prompt_architect"
     default_temperature = 0.8

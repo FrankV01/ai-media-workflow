@@ -25,15 +25,16 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 
 class Base(DeclarativeBase):
     """Shared declarative base for all ORM models."""
+
     pass
 
 
 async def init_db() -> None:
     """Create all tables. Replace with Alembic migrations for production."""
     # Import models so they register with Base.metadata
+    import app.models.creative  # noqa: F401
     import app.models.job  # noqa: F401
     import app.models.setting  # noqa: F401
-    import app.models.creative  # noqa: F401
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

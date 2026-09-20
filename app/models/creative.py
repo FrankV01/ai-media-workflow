@@ -25,7 +25,7 @@ Future tables (planned):
 """
 
 import enum
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     DateTime,
@@ -39,7 +39,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
-
 
 # ── CreativeRole ─────────────────────────────────────────────────────────
 
@@ -59,19 +58,17 @@ class CreativeRole(Base):
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text, default="")
     system_prompt: Mapped[str] = mapped_column(Text)
-    output_format: Mapped[str] = mapped_column(
-        String(50), default="text"
-    )  # text, json, markdown
+    output_format: Mapped[str] = mapped_column(String(50), default="text")  # text, json, markdown
     suggested_next_role: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_override: Mapped[str | None] = mapped_column(String(255), nullable=True)
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
     executions: Mapped[list["RoleExecution"]] = relationship(
@@ -106,7 +103,7 @@ class RoleExecution(Base):
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -120,7 +117,7 @@ class RoleExecution(Base):
 # ── Message ──────────────────────────────────────────────────────────────
 
 
-class MessageRole(str, enum.Enum):
+class MessageRole(enum.StrEnum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
@@ -142,7 +139,7 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text)
     ordinal: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
     execution: Mapped["RoleExecution"] = relationship(back_populates="messages")
