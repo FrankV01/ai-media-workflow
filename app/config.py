@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     refiner_sampler: str = "dpmpp_2m"
     refiner_scheduler: str = "karras"
     refiner_denoise: float = 0.25
-    image_output_dir: Path = Path("/Volumes/SanDisk Mac AI/ComfyUI/output")
+    image_output_dir: Path = Path("./data/output")
 
 
 settings = Settings()
