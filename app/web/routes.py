@@ -10,7 +10,8 @@ HTMX partials (return HTML fragments, not full pages):
 - /partials/jobs                — styled recent jobs list
 - /partials/jobs/<id>/preview   — hover preview popover for a job
 - /partials/workflow            — pipeline visual diagram
-- /partials/run                 — execute a workflow and return result fragment
+- /partials/run-pipeline        — queue the full creative pipeline (background)
+- /partials/run-test-pipeline   — same, but with placeholder image backend
 
 Also defines DEFAULT_WORKFLOW — the standard creative agency pipeline
 used by the dashboard visual and available for API submissions.
@@ -27,7 +28,7 @@ from sqlalchemy.orm import selectinload
 
 from app.blocks.registry import get_block, list_blocks
 from app.database import get_session
-from app.models.job import Job, JobStep
+from app.models.job import Job
 from app.pipeline.engine import run_pipeline
 
 # Default workflow — the standard creative agency pipeline
@@ -36,7 +37,7 @@ DEFAULT_WORKFLOW: list[str | dict] = [
     "prompt_architect",
     "media_producer",
     "art_critic",
-    {"on_good": [], "on_bad": ["art_director"], "always": ["social_media_specialist"]},
+    {"on_good": [], "on_bad": [], "always": ["social_media_specialist"]},
 ]
 
 # Human-friendly titles for blocks (used in the visual)
@@ -287,34 +288,27 @@ async def partial_run_pipeline(
     )
 
 
-@router.post("/partials/run")
-async def partial_run(
+@router.post("/partials/run-test-pipeline")
+async def partial_run_test_pipeline(
     request: Request,
-    message: str = Form("Hello, pipeline!"),
-    session: AsyncSession = Depends(get_session),
+    brief: str = Form(""),
 ):
-    """Execute the echo block and return a styled result fragment."""
+    """Queue the default pipeline with the placeholder backend for testing."""
+    brief = brief.strip()
+    if not brief:
+        return templates.TemplateResponse(
+            request,
+            "partials/pipeline_queued.html",
+            {"error": "Brief cannot be empty."},
+        )
     job_id = await run_pipeline(
-        workflow_name="quick_run",
-        block_names=["echo"],
-        context={"message": message},
+        workflow_name="test",
+        block_names=list(DEFAULT_WORKFLOW),
+        context={"brief": brief, "_generation_backend": "placeholder"},
+        start_in_background=True,
     )
-    # Re-fetch with steps loaded
-    result = await session.execute(
-        select(Job).where(Job.id == job_id).options(selectinload(Job.steps))
-    )
-    job = result.scalar_one()
-    steps = [
-        {"block_name": s.block_name, "order": s.order, "output": s.output, "error": s.error}
-        for s in sorted(job.steps, key=lambda s: s.order)
-    ]
     return templates.TemplateResponse(
         request,
-        "partials/run_result.html",
-        {
-            "job_id": job.id,
-            "status": job.status.value,
-            "error": job.error,
-            "steps": steps,
-        },
+        "partials/pipeline_queued.html",
+        {"job_id": job_id, "error": None},
     )

@@ -145,13 +145,32 @@ class MediaProducer(Block):
 
     suggested_next: str | None = "art_critic"
 
+    def _get_backend(self, context: dict[str, Any]) -> Any:
+        """Return the generation backend, honoring a per-run override.
+
+        If context["_generation_backend"] is set (e.g. "placeholder"),
+        that backend is used instead of the globally configured one.
+        """
+        override = context.get("_generation_backend")
+        if override:
+            from app.services.generation.factory import get_backend as _factory
+            from app.config import settings
+
+            original = settings.generation_backend
+            settings.generation_backend = override
+            try:
+                return _factory()
+            finally:
+                settings.generation_backend = original
+        return get_backend()
+
     async def validate(self, context: dict[str, Any]) -> None:
         """Verify prompt completion and generation backend availability."""
         if not context.get("prompt_architect_output"):
             raise ValueError(
                 "MediaProducer requires completed prompt_architect_output before generation"
             )
-        backend = get_backend()
+        backend = self._get_backend(context)
         available = await backend.is_available()
         if not available:
             raise ValueError(
@@ -178,8 +197,8 @@ class MediaProducer(Block):
         # Build generation requests
         requests = _build_requests(parsed)
 
-        # Get the configured backend
-        backend = get_backend()
+        # Get the configured backend (or per-run override)
+        backend = self._get_backend(context)
         logger.info(
             "MediaProducer: using backend '%s' for %d request(s)",
             backend.name,

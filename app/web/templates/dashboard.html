@@ -96,31 +96,34 @@
     <div id="pipeline-result" class="mt-4 min-h-[2rem]"></div>
 </section>
 
-<!-- Quick Run (echo test) -->
+<!-- Test Pipeline (placeholder backend, skips real AI generation) -->
 <section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
-    <h2 class="text-lg font-semibold mb-3">Quick Run</h2>
+    <h2 class="text-lg font-semibold mb-3">Test Pipeline</h2>
     <p class="text-xs text-gray-500 mb-4">
-        Test connectivity by running the <span class="font-mono text-gray-400">echo</span> block.
+        Run the full workflow with a <span class="font-mono text-gray-400">placeholder</span> image generator
+        (gradient + text overlay instead of real AI). Useful for testing the end-to-end flow.
     </p>
-    <form hx-post="/partials/run"
-          hx-target="#run-result"
+    <form hx-post="/partials/run-test-pipeline"
+          hx-target="#test-pipeline-result"
           hx-swap="innerHTML"
-          class="flex flex-wrap gap-3 items-end">
-        <div class="flex-1 min-w-[200px]">
-            <label for="message" class="block text-xs text-gray-500 mb-1">Message</label>
-            <input id="message" name="message" type="text" value="Hello, pipeline!"
-                   class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white
-                          focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30
-                          placeholder-gray-600"
-                   placeholder="Type something…">
+          class="space-y-3">
+        <div>
+            <label for="test-brief" class="block text-xs text-gray-500 mb-1">Creative Brief</label>
+            <textarea id="test-brief" name="brief" rows="2"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white
+                             focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30
+                             placeholder-gray-600 resize-y"
+                      placeholder="Describe your concept…"
+                      oninput="document.getElementById('run-test-btn').disabled = !this.value.trim()"></textarea>
         </div>
-        <button type="submit"
-                class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700
+        <button id="run-test-btn" type="submit" disabled
+                class="bg-amber-600 hover:bg-amber-500 active:bg-amber-700
                        text-white text-sm px-5 py-1.5 rounded font-medium
-                       transition-colors duration-150">
-            Run Echo
+                       transition-colors duration-150
+                       disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-amber-600">
+            Run Test Pipeline
         </button>
     </form>
-    <div id="run-result" class="mt-4 min-h-[2rem]"></div>
+    <div id="test-pipeline-result" class="mt-4 min-h-[2rem]"></div>
 </section>
 {% endblock %}

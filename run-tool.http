@@ -34,8 +34,12 @@ Content-Type: application/json
   }
 }
 
+
 ### GET request to check job status
-GET http://127.0.0.1:8000/api/workflows/jobs/12
+GET http://127.0.0.1:8000/api/workflows/jobs
+
+### GET request to check job status
+GET http://127.0.0.1:8000/api/workflows/jobs/17
 
 ###
 # curl -s -X POST http://127.0.0.1:8000/api/workflows/run
