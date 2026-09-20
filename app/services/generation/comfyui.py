@@ -24,6 +24,7 @@ import httpx
 from app.config import settings
 from app.services.generation.base import GenerationBackend, GenerationRequest, GenerationResult
 from app.services.generation.sdxl_workflow import SdxlWorkflowConfig, build_sdxl_workflow
+from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,10 @@ class ComfyUIBackend(GenerationBackend):
         self.timeout = settings.comfyui_timeout
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:
+        async with workload_guard.hold(f"comfyui-{request.variant_name}"):
+            return await self._generate_unlocked(request)
+
+    async def _generate_unlocked(self, request: GenerationRequest) -> GenerationResult:
         start = time.monotonic()
         client_id = str(uuid.uuid4())
 

@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -40,12 +40,9 @@ from sqlalchemy import select
 from app.blocks.registry import get_block
 from app.database import async_session
 from app.models.job import Job, JobStatus, JobStep
+from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
-
-# Only one pipeline may execute at a time (single-GPU / M-series constraint).
-# Additional submissions queue until the running pipeline finishes.
-_pipeline_lock = asyncio.Semaphore(1)
 
 # Verdicts that blocks can set via context["_verdict"]
 VERDICT_GOOD = "good"
@@ -117,10 +114,8 @@ async def _guarded_execute(
     block_names: list[str | dict],
     context: dict[str, Any],
 ) -> None:
-    """Acquire the pipeline lock, then execute. Queues if another pipeline is running."""
-    if _pipeline_lock.locked():
-        logger.info("Job %d queued — waiting for current pipeline to finish", job_id)
-    async with _pipeline_lock:
+    """Acquire exclusive workload ownership, then execute the complete pipeline."""
+    async with workload_guard.hold(f"pipeline-job-{job_id}"):
         await _execute_pipeline(job_id, block_names, context)
 
 
@@ -131,9 +126,7 @@ async def _execute_pipeline(
 ) -> None:
     """Run blocks sequentially, committing status after each step."""
     async with async_session() as session:
-        result = await session.execute(
-            select(Job).where(Job.id == job_id)
-        )
+        result = await session.execute(select(Job).where(Job.id == job_id))
         job = result.scalar_one()
 
         # Transition from PENDING to RUNNING now that we hold the lock
@@ -169,9 +162,12 @@ async def _execute_pipeline(
             # Normal block execution
             name = item
             step = JobStep(
-                job_id=job_id, block_name=name, order=order, status=JobStatus.RUNNING,
+                job_id=job_id,
+                block_name=name,
+                order=order,
+                status=JobStatus.RUNNING,
             )
-            step.started_at = datetime.now(timezone.utc)
+            step.started_at = datetime.now(UTC)
             session.add(step)
             await session.commit()
 
@@ -198,7 +194,7 @@ async def _execute_pipeline(
                 job.status = JobStatus.FAILED
                 job.error = f"Block '{name}' failed: {exc}"
             finally:
-                step.finished_at = datetime.now(timezone.utc)
+                step.finished_at = datetime.now(UTC)
                 await session.commit()
                 order += 1
 
@@ -213,8 +209,10 @@ async def _execute_pipeline(
         generated_images = context.get("generated_images")
         if generated_images:
             job.generated_assets = json.dumps(
-                generated_images, default=str, ensure_ascii=False,
+                generated_images,
+                default=str,
+                ensure_ascii=False,
             )
 
-        job.finished_at = datetime.now(timezone.utc)
+        job.finished_at = datetime.now(UTC)
         await session.commit()

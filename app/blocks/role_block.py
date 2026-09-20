@@ -17,13 +17,13 @@ execution logging, and context threading (reads "brief", writes
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from app.blocks.base import Block
 from app.config import settings
+from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,11 @@ class RoleBlock(Block):
     default_temperature: float | None = None
 
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        """Execute this LLM role under exclusive workload ownership."""
+        async with workload_guard.hold(f"llm-role-{self.role_name}"):
+            return await self._run_unlocked(context)
+
+    async def _run_unlocked(self, context: dict[str, Any]) -> dict[str, Any]:
         """
         Execute the role: call LLM with system prompt + input brief,
         persist everything, return the deliverable for the next role.

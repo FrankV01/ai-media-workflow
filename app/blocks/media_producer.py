@@ -17,7 +17,7 @@ The block keeps the "employee memo hand-off" metaphor alive: the Media
 Producer receives a detailed production order (the structured prompt JSON)
 and returns a delivery manifest (image paths + generation metadata).
 
-Input:  context["brief"] — JSON string from Prompt Architect
+Input:  context["prompt_architect_output"] — JSON string from Prompt Architect
 Output: context["generated_images"], context["generation_metadata"]
 
 Suggested next: art_critic
@@ -139,14 +139,18 @@ class MediaProducer(Block):
         ),
         version="0.1.0",
         category="production",
-        inputs=["brief"],
+        inputs=["prompt_architect_output"],
         outputs=["generated_images", "generation_metadata"],
     )
 
     suggested_next: str | None = "art_critic"
 
     async def validate(self, context: dict[str, Any]) -> None:
-        """Verify the generation backend is available."""
+        """Verify prompt completion and generation backend availability."""
+        if not context.get("prompt_architect_output"):
+            raise ValueError(
+                "MediaProducer requires completed prompt_architect_output before generation"
+            )
         backend = get_backend()
         available = await backend.is_available()
         if not available:
@@ -157,9 +161,11 @@ class MediaProducer(Block):
 
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """Parse prompts, dispatch to backend, collect results."""
-        raw_brief = context.get("brief", "")
+        raw_brief = context.get("prompt_architect_output", "")
         if not raw_brief:
-            raise ValueError("MediaProducer: No brief found in context")
+            raise ValueError(
+                "MediaProducer requires completed prompt_architect_output before generation"
+            )
 
         # Parse the structured output from Prompt Architect
         parsed = _parse_prompt_output(raw_brief)

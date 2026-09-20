@@ -120,13 +120,15 @@ def test_social_media_specialist_post_parsing_clean():
     from app.blocks.social_media_specialist import SocialMediaSpecialist
 
     specialist = SocialMediaSpecialist()
-    raw = json.dumps({
-        "posts": [
-            {"platform": "instagram", "title": "Mars Bloom", "description": "Wow"},
-            {"platform": "twitter", "title": "Mars Bloom", "description": "Wow"},
-        ],
-        "summary": "Test.",
-    })
+    raw = json.dumps(
+        {
+            "posts": [
+                {"platform": "instagram", "title": "Mars Bloom", "description": "Wow"},
+                {"platform": "twitter", "title": "Mars Bloom", "description": "Wow"},
+            ],
+            "summary": "Test.",
+        }
+    )
     posts = specialist._extract_posts(raw)
     assert len(posts) == 2
     assert posts[0]["platform"] == "instagram"
@@ -253,8 +255,17 @@ def test_media_producer_registered():
     cls = get_block("media_producer")
     assert cls.meta.name == "media_producer"
     assert cls.meta.category == "production"
-    assert "brief" in cls.meta.inputs
+    assert "prompt_architect_output" in cls.meta.inputs
     assert "generated_images" in cls.meta.outputs
+
+
+@pytest.mark.asyncio
+async def test_media_producer_rejects_missing_prompt_architect_output():
+    cls = get_block("media_producer")
+    block = cls()
+
+    with pytest.raises(ValueError, match="completed prompt_architect_output"):
+        await block.validate({"brief": "raw user brief is not a generation prompt"})
 
 
 @pytest.mark.asyncio
@@ -268,18 +279,20 @@ async def test_media_producer_with_placeholder():
         cls = get_block("media_producer")
         block = cls()
 
-        prompt_json = json.dumps({
-            "positive_prompt": "A red rose on a white table, photorealistic, 8k",
-            "negative_prompt": "blurry, watermark, text",
-            "positive_refiner_prompt": "fine petal details, soft light",
-            "negative_refiner_prompt": "over-sharpening, noise",
-            "parameters": {"width": 512, "height": 512, "steps": 10, "cfg_scale": 7.0},
-            "variants": [
-                {"name": "close_up", "positive_prompt": "extreme close-up of a red rose petal"}
-            ],
-        })
+        prompt_json = json.dumps(
+            {
+                "positive_prompt": "A red rose on a white table, photorealistic, 8k",
+                "negative_prompt": "blurry, watermark, text",
+                "positive_refiner_prompt": "fine petal details, soft light",
+                "negative_refiner_prompt": "over-sharpening, noise",
+                "parameters": {"width": 512, "height": 512, "steps": 10, "cfg_scale": 7.0},
+                "variants": [
+                    {"name": "close_up", "positive_prompt": "extreme close-up of a red rose petal"}
+                ],
+            }
+        )
 
-        result = await block.run({"brief": prompt_json})
+        result = await block.run({"prompt_architect_output": prompt_json})
 
         assert "generated_images" in result
         assert len(result["generated_images"]) >= 2  # main + 1 variant
@@ -314,8 +327,8 @@ async def test_placeholder_backend_creates_file():
     """PlaceholderBackend should create an actual file on disk."""
     import os
 
-    from app.services.generation import GenerationRequest, get_backend
     from app.config import settings
+    from app.services.generation import GenerationRequest, get_backend
 
     original_backend = settings.generation_backend
     try:
