@@ -17,6 +17,7 @@ build/
 # Data (keep structure, ignore contents)
 data/*.db
 data/media/
+data/output/
 
 # OS
 .DS_Store
