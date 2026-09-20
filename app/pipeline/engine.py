@@ -131,6 +131,27 @@ async def _execute_pipeline(
 
         # Transition from PENDING to RUNNING now that we hold the lock
         job.status = JobStatus.RUNNING
+
+        # Pre-create PENDING steps for all known blocks so they appear in status
+        # queries immediately.  Routing dicts are skipped — those blocks are
+        # created when the branch is resolved at runtime.
+        order = 0
+        pending: list[str | dict] = list(block_names)
+        step_lookup: dict[int, JobStep] = {}  # order → step (for pre-created steps)
+
+        for item in pending:
+            if isinstance(item, str):
+                step = JobStep(
+                    job_id=job_id,
+                    block_name=item,
+                    order=order,
+                    status=JobStatus.PENDING,
+                )
+                session.add(step)
+                step_lookup[order] = step
+                order += 1
+
+        next_order = order  # track next available order for dynamically-added steps
         await session.commit()
 
         # Preserve the original user brief so re-routed blocks can access it
@@ -138,7 +159,6 @@ async def _execute_pipeline(
             context["_original_brief"] = context["brief"]
 
         # Process blocks: linearly until a routing dict, then resolve the branch
-        pending: list[str | dict] = list(block_names)
         order = 0
 
         while pending:
@@ -156,19 +176,38 @@ async def _execute_pipeline(
                 # Restore original brief for re-routed blocks
                 if "_original_brief" in context:
                     context["brief"] = context["_original_brief"]
+                # Create PENDING steps for newly-resolved blocks
+                for bname in branch_blocks:
+                    step = JobStep(
+                        job_id=job_id,
+                        block_name=bname,
+                        order=next_order,
+                        status=JobStatus.PENDING,
+                    )
+                    session.add(step)
+                    step_lookup[next_order] = step
+                    next_order += 1
+                if branch_blocks:
+                    await session.commit()
                 pending = branch_blocks + pending
                 continue
 
-            # Normal block execution
+            # Normal block execution — use existing pre-created step or the one
+            # just created by routing resolution above
             name = item
-            step = JobStep(
-                job_id=job_id,
-                block_name=name,
-                order=order,
-                status=JobStatus.RUNNING,
-            )
+            step = step_lookup.get(order)
+            if step is None:
+                # Shouldn't happen, but guard against it
+                step = JobStep(
+                    job_id=job_id,
+                    block_name=name,
+                    order=order,
+                    status=JobStatus.PENDING,
+                )
+                session.add(step)
+
+            step.status = JobStatus.RUNNING
             step.started_at = datetime.now(UTC)
-            session.add(step)
             await session.commit()
 
             try:
