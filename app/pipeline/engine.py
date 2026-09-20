@@ -208,15 +208,16 @@ async def _execute_pipeline(
 
             step.status = JobStatus.RUNNING
             step.started_at = datetime.now(UTC)
+
+            # Snapshot the input context and commit before running so it's
+            # visible in status queries while the block executes
+            input_snap = {k: v for k, v in context.items() if not k.startswith("_")}
+            step.input_context = json.dumps(input_snap, default=str, ensure_ascii=False)
             await session.commit()
 
             try:
                 block_cls = get_block(name)
                 block = block_cls()
-
-                # Snapshot the input context (exclude internal keys for readability)
-                input_snap = {k: v for k, v in context.items() if not k.startswith("_")}
-                step.input_context = json.dumps(input_snap, default=str, ensure_ascii=False)
 
                 await block.validate(context)
                 result = await block.run(context)
