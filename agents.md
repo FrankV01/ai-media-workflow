@@ -55,16 +55,18 @@ blocks attached, so the run falls through to the `always` branch.
 Every `RoleBlock` returns `brief` (the next role's input), `output_deliverable`,
 `suggested_next_role`, `_executions`, and `{role_name}_output`, so downstream blocks can
 reference any prior report by name. Roles that need more than the previous `brief` (Art
-Critic, Social Media Specialist) assemble their own enriched input from those keys. The
-engine snapshots the non-underscore context before each step (`JobStep.input_context`) and
-the block's non-underscore result after it (`JobStep.output`).
+Critic, Social Media Specialist) assemble their own enriched input from those keys. Before each
+step, the engine snapshots the full context except `_executions` into `JobStep.input_context`;
+after success, it similarly snapshots the block result into `JobStep.output`. `_executions` is
+excluded from those JSON snapshots because its records are normalized into `CreativeRole`,
+`RoleExecution`, and `Message` rows after each step.
 
 Special context keys:
 - `_verdict` — set by Art Critic (`"good"` or `"bad"`), read by routing dicts
 - `_original_brief` — captured by the engine at pipeline start; restored to `brief` whenever a routing dict is resolved
 - `_job_id` — current job id, set by the engine
 - `_generation_backend` — per-run backend override (`"placeholder"`), used by the UI's test-run button
-- `_executions` — LLM call records accumulated by RoleBlocks. Currently not persisted (see Database)
+- `_executions` — in-memory LLM call records accumulated by RoleBlocks, including failures; after each step the engine persists only the newly added records and their ordered messages into the normalized audit tables
 - `_role_overrides` — `{role_name: {system_prompt, model_override, temperature}}`, read by `RoleBlock`. Nothing populates it yet
 - `photo_shoot_name` — the shoot title. Set by the Art Director from its `PHOTO SHOOT:` header line (falling back to the first words of the concept), unless an API caller already supplied one. The engine copies it to `Job.workflow_name` after each step, which is the job title shown in the UI
 
@@ -169,16 +171,15 @@ time, and `brief` is reset to `_original_brief` before they run.
 ## Database
 
 - **ORM**: SQLAlchemy 2.0 async sessions. Use `Depends(get_session)` in routes; the engine opens its own session per run.
-- **Models in use**: `Job` (`workflow_name` = photo shoot title, `status`, `error`, `generated_assets`) and `JobStep` (`block_name`, `order`, `status`, `input_context`, `output`, `error`, timings).
-- **Models defined but not yet written by the engine**: `CreativeRole`, `RoleExecution`, `Message` (`app/models/creative.py`) and `Setting` (`app/models/setting.py`). Tables exist via migrations; `_executions` and `_role_overrides` are the intended bridge to them.
-- **Job.generated_assets**: JSON list of file paths for generated images.
-- **Migrations**: Alembic with async `env.py` (`migrations/`). Schema changes via `ALTER TABLE` for SQLite. `init_db()` at startup also runs `create_all` for a fresh database.
+- **Models in use**: `Job` (`workflow_name` = photo shoot title, `status`, `error`, `generated_assets`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); and the normalized AI audit models `CreativeRole`, `RoleExecution`, and `Message`.
+- **AI execution audit**: Every attempted LLM call records its effective prompt, input, output when available, model parameters, finish reason, token usage, status, errors, timestamps, and ordered system/user/assistant messages. The engine persists each record against the corresponding `JobStep`, including failed calls.
+- **Models not yet used**: `Setting` (`app/models/setting.py`). `_role_overrides` is the intended bridge for loading role configuration, but nothing populates it yet.
 
 ## Testing
 
 - Framework: pytest + pytest-asyncio (`asyncio_mode = "auto"`, so async tests need no marker)
 - Run: `pytest` from project root
-- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine against a throwaway SQLite file in `tmp_path`, monkeypatching `app.pipeline.engine.async_session`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`
+- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, and structured errors), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`
 - LLM calls are mocked by monkeypatching `app.blocks.role_block.AsyncOpenAI`; see `_fake_llm_client` in `test_blocks.py`
 - Tests that generate files monkeypatch `settings.image_output_dir` to `tmp_path` — never write into the real output dir
 

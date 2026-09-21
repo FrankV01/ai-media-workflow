@@ -5,7 +5,8 @@ Runs blocks sequentially, threading a shared context dict through each.
 Supports conditional branching via verdict-based routing dicts.
 
 Designed for background execution: creates its own DB session and commits
-after each step so progress is visible in real-time via the status API.
+status, context snapshots, structured failures, and normalized LLM audit
+records after each step so progress and model work are queryable in real time.
 
 The workload guard (app.services.workload_guard — a reentrant async lock
 backed by an OS file lock) ensures only one pipeline runs at a time.
@@ -84,6 +85,7 @@ def _resolve_steps(steps: list[str | dict], verdict: str | None) -> list[str]:
 
 
 def _audit_snapshot(values: dict[str, Any]) -> dict[str, Any]:
+    """Return persisted context data without duplicated normalized LLM records."""
     return {key: value for key, value in values.items() if key != "_executions"}
 
 
@@ -92,6 +94,7 @@ async def _persist_role_executions(
     step: JobStep,
     records: list[dict[str, Any]],
 ) -> None:
+    """Persist LLM calls and ordered messages against their pipeline step."""
     for record in records:
         role_result = await session.execute(
             select(CreativeRole).where(CreativeRole.name == record["role_name"])
@@ -204,7 +207,7 @@ async def _execute_pipeline(
     block_names: list[str | dict],
     context: dict[str, Any],
 ) -> None:
-    """Run blocks sequentially, committing status after each step."""
+    """Run blocks sequentially and persist complete audit state after each step."""
     async with async_session() as session:
         result = await session.execute(select(Job).where(Job.id == job_id))
         job = result.scalar_one()
@@ -311,7 +314,7 @@ async def _execute_pipeline(
                 if isinstance(name, str) and name.strip() and name != job.workflow_name:
                     job.workflow_name = resolve_photo_shoot_name(name[:MAX_PHOTO_SHOOT_NAME_LENGTH])
 
-                # Store clean output (exclude internal keys)
+                # Store the block result; LLM executions are normalized separately
                 step.status = JobStatus.COMPLETED
                 step.output = json.dumps(
                     _audit_snapshot(result), default=str, ensure_ascii=False

@@ -141,7 +141,7 @@ app/
   database.py        → async engine, session factory, Base, init_db
   models/            → ORM models
     job.py           → Job, JobStep, JobStatus
-    creative.py      → CreativeRole, RoleExecution, Message (defined; not yet written by the engine)
+    creative.py      → CreativeRole, RoleExecution, Message (normalized LLM execution audit)
     setting.py       → Setting (key/value; not yet used)
   blocks/            → workflow blocks
     base.py          → Abstract Block + BlockMeta

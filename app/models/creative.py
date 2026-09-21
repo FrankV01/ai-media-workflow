@@ -7,9 +7,9 @@ Normalized schema for the role-based creative workflow:
                     with its system prompt, suggested next role, and metadata.
                     One role can be used across many job executions.
 
-- RoleExecution:    One invocation of a role within a specific job step.
-                    Links a CreativeRole to a JobStep.  Captures the input brief,
-                    output deliverable, LLM model used, and token counts.
+- RoleExecution:    One attempted role invocation within a specific job step.
+                    Captures request parameters, output, outcome, errors,
+                    timing, finish reason, and token usage.
 
 - Message:          Individual messages in the LLM conversation for a given
                     role execution.  Provides a full audit trail of the
@@ -81,10 +81,10 @@ class CreativeRole(Base):
 
 class RoleExecution(Base):
     """
-    A single invocation of a creative role within a job step.
+    A single attempted creative-role invocation within a job step.
 
-    Captures the input brief, the LLM-generated output, model metadata,
-    and token usage for cost tracking.
+    Captures the input and output, model request parameters, completion and
+    token metadata, timestamps, and success or failure details.
     """
 
     __tablename__ = "role_executions"
@@ -132,10 +132,10 @@ class MessageRole(enum.StrEnum):
 
 class Message(Base):
     """
-    An individual message in the LLM conversation for a role execution.
+    An individual message sent or received during a role execution.
 
-    Provides full audit trail: the system prompt sent, the user brief,
-    and the assistant's response are each stored as separate rows.
+    Stores the effective system prompt and user input for every attempted call,
+    plus the assistant response when one was returned.
     """
 
     __tablename__ = "messages"

@@ -15,8 +15,10 @@ and context threading (reads "brief", writes "brief", "output_deliverable",
 "suggested_next_role", and "{role_name}_output"). Empty LLM content raises
 ValueError so the step fails instead of passing an empty brief downstream.
 
-Each call is also appended to context["_executions"] as a record shaped for
-the RoleExecution/Message models; nothing persists those records yet.
+Each attempted call is appended to context["_executions"] with its effective
+prompt, messages, model parameters, timing, token usage, output, and error state.
+The pipeline engine persists each new record as CreativeRole, RoleExecution,
+and Message rows associated with the current JobStep.
 """
 
 from __future__ import annotations
@@ -60,8 +62,9 @@ class RoleBlock(Block):
 
     async def _run_unlocked(self, context: dict[str, Any]) -> dict[str, Any]:
         """
-        Execute the role: call LLM with system prompt + input brief,
-        persist everything, return the deliverable for the next role.
+        Call the LLM and append a complete audit record to the shared context.
+
+        The pipeline engine persists the record after the block returns or raises.
         """
         input_brief = context.get("brief", context.get("input_brief", ""))
         if not input_brief:

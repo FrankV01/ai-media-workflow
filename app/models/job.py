@@ -1,8 +1,9 @@
 """
 app.models.job — Job and JobStep ORM models
 
-Job: represents a single pipeline run.
-JobStep: represents a single block execution within that run.
+Job: represents a pipeline run, its outcome, generated assets, and top-level error.
+JobStep: represents a block execution with input/output snapshots, timing,
+status, and structured exception details.
 
 Lifecycle: PENDING → RUNNING → COMPLETED | FAILED
 """
