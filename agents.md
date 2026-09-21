@@ -65,7 +65,7 @@ Special context keys:
 - `_verdict` — set by Art Critic (`"good"` or `"bad"`), read by routing dicts
 - `_original_brief` — captured by the engine at pipeline start; restored to `brief` whenever a routing dict is resolved
 - `_job_id` — current job id, set by the engine
-- `_generation_backend` — per-run backend override (`"placeholder"`), used by the UI's test-run button
+- `_generation_backend` — per-run backend override (`"placeholder"`), used by the UI's test-run button and accepted via the API's `context` field
 - `_executions` — in-memory LLM call records accumulated by RoleBlocks, including failures; after each step the engine persists only the newly added records and their ordered messages into the normalized audit tables
 - `_role_overrides` — `{role_name: {system_prompt, model_override, temperature}}`, read by `RoleBlock`. Nothing populates it yet
 - `photo_shoot_name` — the shoot title. Set by the Art Director from its `PHOTO SHOOT:` header line (falling back to the first words of the concept), unless an API caller already supplied one. The engine copies it to `Job.workflow_name` after each step, which is the job title shown in the UI
@@ -174,6 +174,12 @@ time, and `brief` is reset to `_original_brief` before they run.
 - **Models in use**: `Job` (`workflow_name` = photo shoot title, `status`, `error`, `generated_assets`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); and the normalized AI audit models `CreativeRole`, `RoleExecution`, and `Message`.
 - **AI execution audit**: Every attempted LLM call records its effective prompt, input, output when available, model parameters, finish reason, token usage, status, errors, timestamps, and ordered system/user/assistant messages. The engine persists each record against the corresponding `JobStep`, including failed calls.
 - **Models not yet used**: `Setting` (`app/models/setting.py`). `_role_overrides` is the intended bridge for loading role configuration, but nothing populates it yet.
+
+## Database Migrations
+
+- Tool: Alembic (async `env.py`), migration scripts in `migrations/versions/`
+- Apply pending migrations: `alembic upgrade head` (run from project root)
+- After pulling new code that adds model columns, **always run `alembic upgrade head`** before starting the server; SQLAlchemy will query columns that don't exist yet otherwise
 
 ## Testing
 

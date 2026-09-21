@@ -35,6 +35,25 @@ Content-Type: application/json
 }
 
 
+### Test run — uses the placeholder image backend (no ComfyUI needed)
+POST http://127.0.0.1:8000/api/workflows/run
+Content-Type: application/json
+
+{
+  "photo_shoot_name": "Placeholder Test Run",
+  "block_names": [
+    "art_director",
+    "prompt_architect",
+    "media_producer",
+    "art_critic",
+    {"on_good": [], "on_bad": [], "always": ["social_media_specialist"]}
+  ],
+  "context": {
+    "brief": "A quick test shoot to verify the pipeline end-to-end with placeholder images.",
+    "_generation_backend": "placeholder"
+  }
+}
+
 ### GET request to check job status
 GET http://127.0.0.1:8000/api/workflows/jobs
 

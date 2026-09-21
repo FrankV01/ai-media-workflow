@@ -121,7 +121,7 @@ each prompt variant produces three files.
 |---|---|---|
 | `GET` | `/api/blocks/` | List registered blocks with metadata |
 | `GET` | `/api/blocks/{name}` | Single block detail |
-| `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, `block_names`, `context` |
+| `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, `block_names`, `context` (set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI) |
 | `GET` | `/api/workflows/jobs` | Recent jobs |
 | `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing |
 
@@ -175,6 +175,7 @@ data/                → SQLite DB, media, default image output (gitignored)
 | Task | Command |
 |---|---|
 | Run dev server | `./start.sh` (or `python main.py`) |
+| Apply migrations | `alembic upgrade head` |
 | Run tests | `pytest` |
 | Lint + format | `ruff check --fix app tests && ruff format app tests` |
 | Install deps | `pip install -e ".[dev]"` |
