@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api import blocks as block_router
+from app.api import configurations as config_router
 from app.api import workflows as wf_router
 from app.blocks.registry import discover_blocks
 from app.config import settings
@@ -108,6 +109,7 @@ app = FastAPI(
 # --- Routers ---
 app.include_router(wf_router.router, prefix="/api/workflows", tags=["workflows"])
 app.include_router(block_router.router, prefix="/api/blocks", tags=["blocks"])
+app.include_router(config_router.router, prefix="/api/configurations", tags=["configurations"])
 app.include_router(web_router)  # serves HTML at /
 
 # --- Static files ---

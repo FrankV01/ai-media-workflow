@@ -6,6 +6,7 @@ GET  /api/workflows/jobs      — list recent jobs
 GET  /api/workflows/jobs/{id} — job detail with per-step status, I/O, and timing
 """
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -74,6 +75,7 @@ async def list_jobs(limit: int = 20, session: AsyncSession = Depends(get_session
             "created_at": j.created_at.isoformat() if j.created_at else None,
             "finished_at": j.finished_at.isoformat() if j.finished_at else None,
             "error": j.error,
+            "warnings": json.loads(j.warnings) if j.warnings else [],
         }
         for j in jobs
     ]
@@ -96,6 +98,7 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "error": job.error,
+        "warnings": json.loads(job.warnings) if job.warnings else [],
         "generated_assets": job.generated_assets,
         "steps": [
             {

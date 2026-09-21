@@ -20,6 +20,7 @@ from app.database import Base
 import app.models.job  # noqa: F401
 import app.models.setting  # noqa: F401
 import app.models.creative  # noqa: F401
+import app.models.media  # noqa: F401
 
 # Alembic Config object
 config = context.config

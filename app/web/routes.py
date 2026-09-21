@@ -4,6 +4,7 @@ app.web.routes — HTML routes served via Jinja2 + HTMX
 Full pages:
 - /              — Dashboard (blocks, jobs, pipeline visual, quick run)
 - /jobs/<id>     — Job detail with step-by-step input/output + runtime stats
+- /settings/ai   — AI configuration: LLM role profiles + media model profiles
 
 HTMX partials (return HTML fragments, not full pages):
 - /partials/blocks              — styled block list
@@ -18,18 +19,32 @@ used by the dashboard visual and available for API submissions.
 """
 
 import json
+from dataclasses import replace
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.blocks.media_producer import code_media_defaults, selected_media_model
 from app.blocks.registry import get_block, list_blocks
+from app.config import settings
 from app.database import get_session
 from app.models.job import Job
 from app.pipeline.engine import run_pipeline
+from app.services.configuration.base import MediaProfileSettings
+from app.services.configuration.catalog import is_media_block, registered_role_blocks
+from app.services.configuration.database import DatabaseConfigurationProvider
+from app.services.configuration.schemas import (
+    LlmProfileInput,
+    LlmResetInput,
+    MediaProfileInput,
+    MediaResetInput,
+)
 
 # Default workflow — the standard creative agency pipeline
 DEFAULT_WORKFLOW: list[str | dict] = [
@@ -133,6 +148,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         ),
         "duration": _fmt_duration(job_raw.created_at, job_raw.finished_at),
         "error": job_raw.error,
+        "warnings": json.loads(job_raw.warnings) if job_raw.warnings else [],
         "steps": [
             {
                 "block_name": s.block_name,
@@ -147,6 +163,201 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         ],
     }
     return templates.TemplateResponse(request, "job_detail.html", {"job": job})
+
+
+# ── AI settings page ─────────────────────────────────────────────────────
+
+
+@router.get("/settings/ai")
+async def ai_settings_page(request: Request):
+    """Render the AI configuration page.
+
+    Lazily seeds profiles for the currently selected LLM model and media
+    backend/model so every form is immediately editable; seeded rows keep
+    uses_code_defaults=True and still warn at execution until customized.
+    """
+    provider = DatabaseConfigurationProvider()
+
+    role_blocks = registered_role_blocks()
+    for block in role_blocks.values():
+        await provider.resolve_llm(block.code_defaults())
+
+    backend_name = settings.generation_backend.lower()
+    media_model = selected_media_model(backend_name)
+    await provider.resolve_media(code_media_defaults("media_producer", backend_name, media_model))
+
+    llm_rows = await provider.list_llm_configurations()
+    media_rows = await provider.list_media_configurations()
+
+    media_profiles = [
+        {
+            "block_name": config.block_name,
+            "backend_name": config.backend_name,
+            "model_name": config.model_name,
+            "uses_code_defaults": config.uses_code_defaults,
+            "settings_dict": MediaProfileSettings.from_json(config.settings_json),
+        }
+        for config in media_rows
+    ]
+
+    profiles_by_role: dict[str, list] = {}
+    for role, config in llm_rows:
+        profiles_by_role.setdefault(role.name, []).append(config)
+
+    roles = [
+        {
+            "name": block.role_name,
+            "title": block.role_title,
+            "description": block.role_description,
+            "profiles": profiles_by_role.get(block.role_name, []),
+        }
+        for block in role_blocks.values()
+    ]
+
+    return templates.TemplateResponse(
+        request,
+        "ai_settings.html",
+        {
+            "llm_model": settings.llm_model,
+            "media_backend": backend_name,
+            "media_model": media_model,
+            "roles": roles,
+            "media_profiles": media_profiles,
+            "media_code_defaults": code_media_defaults(
+                "media_producer", backend_name, media_model
+            ).settings,
+            "status": request.query_params.get("status"),
+        },
+    )
+
+
+def _unprocessable(exc: ValidationError) -> HTTPException:
+    """Convert a schema ValidationError into an HTTP 422."""
+    return HTTPException(status_code=422, detail=exc.errors(include_context=False))
+
+
+@router.post("/settings/ai/llm/save")
+async def ai_settings_save_llm(
+    role_name: str = Form(...),
+    model_name: str = Form(...),
+    system_prompt: str = Form(...),
+    temperature: str = Form(...),
+    max_tokens: str = Form(...),
+    enable_thinking: str | None = Form(None),
+):
+    """Save a custom LLM role profile (marks it uses_code_defaults=False)."""
+    block = registered_role_blocks().get(role_name)
+    if block is None:
+        raise HTTPException(404, f"Unknown role '{role_name}'")
+    try:
+        body = LlmProfileInput(
+            model_name=model_name,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            enable_thinking=enable_thinking == "on",
+        )
+    except ValidationError as exc:
+        raise _unprocessable(exc) from exc
+    defaults = replace(block.code_defaults(), model_name=body.model_name.strip())
+    await DatabaseConfigurationProvider().upsert_llm_configuration(
+        defaults,
+        system_prompt=body.system_prompt,
+        temperature=body.temperature,
+        max_tokens=body.max_tokens,
+        enable_thinking=body.enable_thinking,
+    )
+    return RedirectResponse("/settings/ai?status=saved", status_code=303)
+
+
+@router.post("/settings/ai/llm/reset")
+async def ai_settings_reset_llm(
+    role_name: str = Form(...),
+    model_name: str = Form(...),
+):
+    """Reset an LLM role profile back to code defaults."""
+    block = registered_role_blocks().get(role_name)
+    if block is None:
+        raise HTTPException(404, f"Unknown role '{role_name}'")
+    try:
+        body = LlmResetInput(model_name=model_name)
+    except ValidationError as exc:
+        raise _unprocessable(exc) from exc
+    defaults = replace(block.code_defaults(), model_name=body.model_name.strip())
+    await DatabaseConfigurationProvider().reset_llm_configuration(defaults)
+    return RedirectResponse("/settings/ai?status=reset", status_code=303)
+
+
+@router.post("/settings/ai/media/save")
+async def ai_settings_save_media(
+    backend_name: str = Form(...),
+    model_name: str = Form(...),
+    width: str = Form(...),
+    height: str = Form(...),
+    cfg_scale: str = Form(...),
+    steps: str = Form(...),
+    sampler: str = Form(""),
+    scheduler: str = Form(""),
+    clip_skip: str = Form(...),
+    refiner_checkpoint: str = Form(""),
+    upscale_2x_model: str = Form(""),
+    upscale_4x_model: str = Form(""),
+    refiner_steps: str = Form(""),
+    refiner_cfg_scale: str = Form(""),
+    refiner_sampler: str = Form(""),
+    refiner_scheduler: str = Form(""),
+    refiner_denoise: str = Form(""),
+):
+    """Save a custom media model profile (marks it uses_code_defaults=False)."""
+    if not is_media_block("media_producer"):
+        raise HTTPException(404, "Media block not registered")
+    try:
+        body = MediaProfileInput(
+            backend_name=backend_name,
+            model_name=model_name,
+            width=width,
+            height=height,
+            cfg_scale=cfg_scale,
+            steps=steps,
+            sampler=sampler,
+            scheduler=scheduler,
+            clip_skip=clip_skip,
+            refiner_checkpoint=refiner_checkpoint or None,
+            upscale_2x_model=upscale_2x_model or None,
+            upscale_4x_model=upscale_4x_model or None,
+            refiner_steps=int(refiner_steps) if refiner_steps else None,
+            refiner_cfg_scale=float(refiner_cfg_scale) if refiner_cfg_scale else None,
+            refiner_sampler=refiner_sampler or None,
+            refiner_scheduler=refiner_scheduler or None,
+            refiner_denoise=float(refiner_denoise) if refiner_denoise else None,
+        )
+    except (ValidationError, ValueError) as exc:
+        if isinstance(exc, ValidationError):
+            raise _unprocessable(exc) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await DatabaseConfigurationProvider().upsert_media_configuration(
+        "media_producer",
+        body.backend_name.strip().lower(),
+        body.model_name.strip(),
+        body.to_settings(),
+    )
+    return RedirectResponse("/settings/ai?status=saved", status_code=303)
+
+
+@router.post("/settings/ai/media/reset")
+async def ai_settings_reset_media(
+    backend_name: str = Form(...),
+    model_name: str = Form(...),
+):
+    """Reset a media model profile back to code defaults."""
+    try:
+        body = MediaResetInput(backend_name=backend_name, model_name=model_name)
+    except ValidationError as exc:
+        raise _unprocessable(exc) from exc
+    await DatabaseConfigurationProvider().reset_media_configuration(
+        code_media_defaults("media_producer", body.backend_name.strip(), body.model_name.strip())
+    )
+    return RedirectResponse("/settings/ai?status=reset", status_code=303)
 
 
 # ── HTMX partials ────────────────────────────────────────────────────────

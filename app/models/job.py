@@ -35,6 +35,8 @@ class Job(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON list[str] of runtime warnings (e.g. code-default AI configuration in use)
+    warnings: Mapped[str | None] = mapped_column(Text, nullable=True)
     generated_assets: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     steps: Mapped[list["JobStep"]] = relationship(back_populates="job", cascade="all, delete")

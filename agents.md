@@ -14,7 +14,7 @@ For project overview and setup, see [`README.md`](README.md).
 ## Architecture Principles
 
 1. **Blocks are the atomic unit.** Every processing step is a `Block` subclass in `app/blocks/`. Blocks declare metadata (`BlockMeta`: name, description, version, category, inputs, outputs), implement `async run(context)`, and may override `async validate(context)` (called by the engine before `run`; raise to fail the step early).
-2. **RoleBlock for LLM roles.** LLM-powered "employees" subclass `RoleBlock` (`app/blocks/role_block.py`), which handles the OpenAI-compatible chat call, token tracking, and context threading. It raises `ValueError` if the model returns empty content (the step fails instead of silently passing an empty brief downstream), and sends `reasoning_effort="none"` unless `LLM_ENABLE_THINKING=true`, so thinking models don't burn `LLM_MAX_TOKENS` on hidden reasoning.
+2. **RoleBlock for LLM roles.** LLM-powered "employees" subclass `RoleBlock` (`app/blocks/role_block.py`), which resolves the per-(role, model) profile via `app/services/configuration`, handles the OpenAI-compatible chat call, token tracking, and context threading. It raises `ValueError` if the model returns empty content (the step fails instead of silently passing an empty brief downstream), and sends `reasoning_effort="none"` unless the resolved profile has `enable_thinking` set, so thinking models don't burn `max_tokens` on hidden reasoning.
 3. **Pipeline engine supports branching.** `app/pipeline/engine.py` runs blocks sequentially and supports conditional routing via verdict-based dicts (`on_good`/`on_bad`/`always`). The original user brief is preserved across routing.
 4. **One workload at a time.** `app/services/workload_guard.py` provides a reentrant async lock backed by an OS file lock. The engine holds it for the whole pipeline; RoleBlocks and the ComfyUI backend re-acquire it (reentrantly) per call. Additional submissions stay `PENDING` until the running job finishes, so the LLM and ComfyUI are never hit concurrently.
 5. **Registry = auto-discovery.** Decorate a `Block` subclass with `@register` and it's available everywhere. `discover_blocks()` imports every module in `app/blocks/` at startup. No manual wiring.
@@ -56,10 +56,11 @@ Every `RoleBlock` returns `brief` (the next role's input), `output_deliverable`,
 `suggested_next_role`, `_executions`, and `{role_name}_output`, so downstream blocks can
 reference any prior report by name. Roles that need more than the previous `brief` (Art
 Critic, Social Media Specialist) assemble their own enriched input from those keys. Before each
-step, the engine snapshots the full context except `_executions` into `JobStep.input_context`;
-after success, it similarly snapshots the block result into `JobStep.output`. `_executions` is
-excluded from those JSON snapshots because its records are normalized into `CreativeRole`,
-`RoleExecution`, and `Message` rows after each step.
+step, the engine snapshots the full context except `_executions`, `_media_executions`, and
+`_warnings` into `JobStep.input_context`; after success, it similarly snapshots the block
+result into `JobStep.output`. Those keys are excluded because their records are normalized
+into `RoleExecution`/`Message`/`MediaGenerationExecution` rows and `Job.warnings` after
+each step.
 
 Special context keys:
 - `_verdict` — set by Art Critic (`"good"` or `"bad"`), read by routing dicts
@@ -67,7 +68,8 @@ Special context keys:
 - `_job_id` — current job id, set by the engine
 - `_generation_backend` — per-run backend override (`"placeholder"`), used by the UI's test-run button and accepted via the API's `context` field
 - `_executions` — in-memory LLM call records accumulated by RoleBlocks, including failures; after each step the engine persists only the newly added records and their ordered messages into the normalized audit tables
-- `_role_overrides` — `{role_name: {system_prompt, model_override, temperature}}`, read by `RoleBlock`. Nothing populates it yet
+- `_media_executions` — in-memory per-request image generation records accumulated by MediaProducer, including failures; persisted after each step into `MediaGenerationExecution` rows
+- `_warnings` — deduplicated AI-configuration warnings accumulated by blocks; persisted to `Job.warnings` (JSON list) after every step and surfaced in the API and job detail page
 - `photo_shoot_name` — the shoot title. Set by the Art Director from its `PHOTO SHOOT:` header line (falling back to the first words of the concept), unless an API caller already supplied one. The engine copies it to `Job.workflow_name` after each step, which is the job title shown in the UI
 
 ### Prompt Architect contract
@@ -171,15 +173,19 @@ time, and `brief` is reset to `_original_brief` before they run.
 ## Database
 
 - **ORM**: SQLAlchemy 2.0 async sessions. Use `Depends(get_session)` in routes; the engine opens its own session per run.
-- **Models in use**: `Job` (`workflow_name` = photo shoot title, `status`, `error`, `generated_assets`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); and the normalized AI audit models `CreativeRole`, `RoleExecution`, and `Message`.
-- **AI execution audit**: Every attempted LLM call records its effective prompt, input, output when available, model parameters, finish reason, token usage, status, errors, timestamps, and ordered system/user/assistant messages. The engine persists each record against the corresponding `JobStep`, including failed calls.
-- **Models not yet used**: `Setting` (`app/models/setting.py`). `_role_overrides` is the intended bridge for loading role configuration, but nothing populates it yet.
+- **Models in use**: `Job` (`workflow_name` = photo shoot title, `status`, `error`, `warnings`, `generated_assets`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
+- **AI configuration**: `CreativeRole` is stable identity metadata only. Mutable behavior profiles live in `LlmRoleConfiguration` keyed by `(role, model)` — `LLM_MODEL` selects which one is active — and `MediaModelConfiguration` keyed by `(block, backend, model)`. `app/services/configuration/` resolves profiles: missing rows are seeded from code defaults (`uses_code_defaults=True`) and emit a warning on every use until customized via `/settings/ai` or `/api/configurations`. Secrets, URLs, timeouts, poll intervals, and filesystem paths stay env-only.
+- **AI execution audit**: Every attempted LLM call and image-generation request stores an *immutable snapshot* — copied prompt/model/parameters (`RoleExecution.system_prompt`, `MediaGenerationExecution.settings_snapshot`), not the mutable configuration FK, are the audit authority. The engine persists each record against the corresponding `JobStep`, including failed calls, and never updates configuration or role rows.
+- **Media precedence**: explicit Prompt Architect `parameters` override the media profile's request defaults, which override code defaults. Seed is per-request, never a profile default. The ComfyUI backend receives its model/workflow settings via an injected `SdxlWorkflowConfig`; operational URL/poll/timeout/output remain env settings.
+- **Models not yet used**: `Setting` (`app/models/setting.py`).
 
 ## Database Migrations
 
 - Tool: Alembic (async `env.py`), migration scripts in `migrations/versions/`
 - Apply pending migrations: `alembic upgrade head` (run from project root)
 - After pulling new code that adds model columns, **always run `alembic upgrade head`** before starting the server; SQLAlchemy will query columns that don't exist yet otherwise
+- Startup is migration-only: `init_db()` never creates or alters tables. It verifies the database is at the expected Alembic head and that every ORM table/column exists, and refuses to start otherwise — `alembic upgrade head` is required even for a brand-new empty database
+- `tests/test_database.py` covers this contract: rejection of unversioned/stale/falsely-stamped databases and recovery of the mixed schema left by the former create_all startup
 
 ## Testing
 

@@ -23,17 +23,21 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
     media_dir: Path = Path("./data/media")
 
-    # LLM settings (defaults target LM Studio local server)
+    # LLM settings (defaults target LM Studio local server).
+    # These env values select the ACTIVE profile and seed missing rows; the
+    # database (LlmRoleConfiguration) owns existing per-(role, model) behavior.
     llm_base_url: str = "http://127.0.0.1:1234/v1"
     openai_api_key: str = "lm-studio"  # LM Studio ignores this but the client requires a value
-    llm_model: str = "qwen/qwen3.5-9b"
+    llm_model: str = "qwen/qwen3.5-9b"  # selects the active LLM profile key
     llm_temperature: float = 0.7
     llm_max_tokens: int = 32768  # reasoning models burn most of this on hidden thinking
     # False sends reasoning_effort="none" (disables hidden reasoning on thinking models)
     llm_enable_thinking: bool = False
     llm_timeout: float = 1800.0  # max wait per LLM request (30 min)
 
-    # Image generation settings
+    # Image generation settings. Env selects the active (block, backend, model)
+    # media profile and seeds missing rows; MediaModelConfiguration owns
+    # existing request/workflow defaults. URLs/polls/timeouts stay env-only.
     generation_backend: str = "comfyui"  # 'comfyui' or 'placeholder'
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_poll_interval: float = 2.0  # seconds between status polls

@@ -9,16 +9,18 @@ Subclasses define: meta, role_name, role_title, role_description,
 system_prompt, and optionally suggested_next and default_temperature.
 See agents.md § "RoleBlock interface" for the full pattern.
 
-The base class handles: LLM API calls (OpenAI-compatible), reasoning control
-(reasoning_effort="none" unless LLM_ENABLE_THINKING is set), token tracking,
-and context threading (reads "brief", writes "brief", "output_deliverable",
-"suggested_next_role", and "{role_name}_output"). Empty LLM content raises
-ValueError so the step fails instead of passing an empty brief downstream.
+The base class handles: configuration resolution (per-(role, model) database
+profile, falling back to code defaults with a persisted warning), LLM API
+calls (OpenAI-compatible), reasoning control (reasoning_effort="none" unless
+the profile enables thinking), token tracking, and context threading (reads
+"brief", writes "brief", "output_deliverable", "suggested_next_role", and
+"{role_name}_output"). Empty LLM content raises ValueError so the step fails
+instead of passing an empty brief downstream.
 
 Each attempted call is appended to context["_executions"] with its effective
-prompt, messages, model parameters, timing, token usage, output, and error state.
-The pipeline engine persists each new record as CreativeRole, RoleExecution,
-and Message rows associated with the current JobStep.
+prompt, messages, model parameters, configuration id/source, timing, token
+usage, output, and error state. The pipeline engine persists each new record
+as RoleExecution and Message rows associated with the current JobStep.
 """
 
 from __future__ import annotations
@@ -31,6 +33,11 @@ from openai import AsyncOpenAI
 
 from app.blocks.base import Block
 from app.config import settings
+from app.services.configuration.base import (
+    LlmConfigurationProvider,
+    LlmRoleDefaults,
+    ResolvedLlmConfiguration,
+)
 from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
@@ -55,6 +62,48 @@ class RoleBlock(Block):
     output_format: str = "text"
     default_temperature: float | None = None
 
+    def __init__(self, provider: LlmConfigurationProvider | None = None) -> None:
+        # None → resolved lazily so tests can patch app.database.async_session
+        self._configuration_provider = provider
+
+    def _provider(self) -> LlmConfigurationProvider:
+        if self._configuration_provider is None:
+            from app.services.configuration.database import (
+                DatabaseConfigurationProvider,
+            )
+
+            self._configuration_provider = DatabaseConfigurationProvider()
+        return self._configuration_provider
+
+    def code_defaults(self) -> LlmRoleDefaults:
+        """This role's code defaults for the globally selected LLM model."""
+        return LlmRoleDefaults(
+            role_name=self.role_name,
+            role_title=self.role_title,
+            role_description=self.role_description,
+            output_format=self.output_format,
+            suggested_next_role=self.suggested_next,
+            model_name=settings.llm_model,
+            system_prompt=self.system_prompt,
+            temperature=(
+                self.default_temperature
+                if self.default_temperature is not None
+                else settings.llm_temperature
+            ),
+            max_tokens=settings.llm_max_tokens,
+            enable_thinking=settings.llm_enable_thinking,
+        )
+
+    async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:
+        """Resolve the effective (role, model) profile and record any warning."""
+        resolved = await self._provider().resolve_llm(self.code_defaults())
+        if resolved.warning:
+            warnings = context.setdefault("_warnings", [])
+            if resolved.warning not in warnings:
+                warnings.append(resolved.warning)
+            logger.warning("%s", resolved.warning)
+        return resolved
+
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """Execute this LLM role under exclusive workload ownership."""
         async with workload_guard.hold(f"llm-role-{self.role_name}"):
@@ -62,7 +111,7 @@ class RoleBlock(Block):
 
     async def _run_unlocked(self, context: dict[str, Any]) -> dict[str, Any]:
         """
-        Call the LLM and append a complete audit record to the shared context.
+        Resolve configuration, call the LLM, and append an audit record.
 
         The pipeline engine persists the record after the block returns or raises.
         """
@@ -70,19 +119,14 @@ class RoleBlock(Block):
         if not input_brief:
             raise ValueError(f"{self.role_name}: No input brief found in context")
 
-        # Determine LLM parameters (role override > config defaults)
-        model = settings.llm_model
-        temperature = self.default_temperature or settings.llm_temperature
-        max_tokens = settings.llm_max_tokens
-
-        # Per-role overrides (system_prompt / model_override / temperature).
-        # Intended to come from the CreativeRole table; nothing populates this yet.
-        role_overrides = context.get("_role_overrides", {}).get(self.role_name, {})
-        effective_prompt = role_overrides.get("system_prompt", self.system_prompt)
-        if role_overrides.get("model_override"):
-            model = role_overrides["model_override"]
-        if role_overrides.get("temperature") is not None:
-            temperature = role_overrides["temperature"]
+        # Effective config: DB profile for (role, settings.llm_model),
+        # seeded from code defaults on first use
+        resolved = await self.resolve_configuration(context)
+        model = resolved.model_name
+        temperature = resolved.temperature
+        max_tokens = resolved.max_tokens
+        effective_prompt = resolved.system_prompt
+        thinking = resolved.enable_thinking
 
         # Build messages
         messages = [
@@ -91,7 +135,6 @@ class RoleBlock(Block):
         ]
 
         # Call LLM (OpenAI-compatible API — works with LM Studio, OpenAI, etc.)
-        thinking = settings.llm_enable_thinking
         logger.info(
             "Role [%s] calling %s at %s (thinking=%s) …",
             self.role_name,
@@ -122,6 +165,9 @@ class RoleBlock(Block):
             "role_name": self.role_name,
             "role_title": self.role_title,
             "role_description": self.role_description,
+            "role_id": resolved.role_id,
+            "configuration_id": resolved.configuration_id,
+            "configuration_source": resolved.source,
             "system_prompt": effective_prompt,
             "output_format": self.output_format,
             "input_brief": input_brief,

@@ -48,6 +48,7 @@ from app.blocks.registry import get_block
 from app.database import async_session
 from app.models.creative import CreativeRole, Message, MessageRole, RoleExecution
 from app.models.job import Job, JobStatus, JobStep
+from app.models.media import MediaGenerationExecution
 from app.pipeline.naming import MAX_PHOTO_SHOOT_NAME_LENGTH, resolve_photo_shoot_name
 from app.services.workload_guard import workload_guard
 
@@ -84,9 +85,12 @@ def _resolve_steps(steps: list[str | dict], verdict: str | None) -> list[str]:
     return resolved
 
 
+_SNAPSHOT_EXCLUDED_KEYS = {"_executions", "_media_executions", "_warnings"}
+
+
 def _audit_snapshot(values: dict[str, Any]) -> dict[str, Any]:
-    """Return persisted context data without duplicated normalized LLM records."""
-    return {key: value for key, value in values.items() if key != "_executions"}
+    """Return persisted context data without normalized/private records."""
+    return {k: v for k, v in values.items() if k not in _SNAPSHOT_EXCLUDED_KEYS}
 
 
 async def _persist_role_executions(
@@ -94,28 +98,38 @@ async def _persist_role_executions(
     step: JobStep,
     records: list[dict[str, Any]],
 ) -> None:
-    """Persist LLM calls and ordered messages against their pipeline step."""
-    for record in records:
-        role_result = await session.execute(
-            select(CreativeRole).where(CreativeRole.name == record["role_name"])
-        )
-        role = role_result.scalar_one_or_none()
-        if role is None:
-            role = CreativeRole(name=record["role_name"])
-            session.add(role)
+    """Persist LLM calls and ordered messages against their pipeline step.
 
-        role.title = record["role_title"]
-        role.description = record["role_description"]
-        role.system_prompt = record["system_prompt"]
-        role.output_format = record.get("output_format", "text")
-        role.suggested_next_role = record.get("suggested_next_role")
-        role.model_override = record.get("model_used")
-        role.temperature = record.get("temperature")
-        await session.flush()
+    Never mutates CreativeRole or LlmRoleConfiguration — the execution's
+    copied fields are the audit authority; role/config rows are only
+    referenced (or minimally created) by stable lookup.
+    """
+    for record in records:
+        role = None
+        if record.get("role_id"):
+            role = await session.get(CreativeRole, record["role_id"])
+        if role is None:
+            role_result = await session.execute(
+                select(CreativeRole).where(CreativeRole.name == record["role_name"])
+            )
+            role = role_result.scalar_one_or_none()
+        if role is None:
+            role = CreativeRole(
+                name=record["role_name"],
+                title=record.get("role_title", ""),
+                description=record.get("role_description", ""),
+                output_format=record.get("output_format", "text"),
+                suggested_next_role=record.get("suggested_next_role"),
+            )
+            session.add(role)
+            await session.flush()
 
         execution = RoleExecution(
             job_step_id=step.id,
             role_id=role.id,
+            configuration_id=record.get("configuration_id"),
+            configuration_source=record.get("configuration_source", "legacy"),
+            system_prompt=str(record.get("system_prompt", "")),
             input_brief=str(record.get("input_brief", "")),
             output_deliverable=record.get("output_deliverable"),
             suggested_next_role=record.get("suggested_next_role"),
@@ -145,6 +159,46 @@ async def _persist_role_executions(
                     ordinal=int(message_record["ordinal"]),
                 )
             )
+
+
+async def _persist_media_executions(
+    session: Any,
+    step: JobStep,
+    records: list[dict[str, Any]],
+) -> None:
+    """Persist one media-generation audit row per attempted request."""
+    for record in records:
+        session.add(
+            MediaGenerationExecution(
+                job_step_id=step.id,
+                configuration_id=record.get("configuration_id"),
+                configuration_source=record.get("configuration_source", "code_default"),
+                block_name=record.get("block_name", step.block_name),
+                backend_name=str(record.get("backend_name", "")),
+                model_name=str(record.get("model_name", "")),
+                variant_name=str(record.get("variant_name", "main")),
+                positive_prompt=str(record.get("positive_prompt", "")),
+                negative_prompt=str(record.get("negative_prompt", "")),
+                positive_refiner_prompt=str(record.get("positive_refiner_prompt", "")),
+                negative_refiner_prompt=str(record.get("negative_refiner_prompt", "")),
+                settings_snapshot=str(record.get("settings_snapshot", "{}")),
+                seed_used=record.get("seed_used"),
+                backend_metadata=record.get("backend_metadata"),
+                image_paths=record.get("image_paths"),
+                status=record.get("status", "completed"),
+                error_type=record.get("error_type"),
+                error=record.get("error"),
+                started_at=record.get("started_at", step.started_at),
+                finished_at=record.get("finished_at"),
+            )
+        )
+
+
+def _persist_job_warnings(job: Job, context: dict[str, Any]) -> None:
+    """Write deduplicated context['_warnings'] onto the job as JSON."""
+    warnings = context.get("_warnings") or []
+    deduped = list(dict.fromkeys(warnings))
+    job.warnings = json.dumps(deduped) if deduped else None
 
 
 async def run_pipeline(
@@ -299,6 +353,7 @@ async def _execute_pipeline(
                 _audit_snapshot(context), default=str, ensure_ascii=False
             )
             execution_offset = len(context.setdefault("_executions", []))
+            media_offset = len(context.setdefault("_media_executions", []))
             await session.commit()
 
             try:
@@ -316,9 +371,7 @@ async def _execute_pipeline(
 
                 # Store the block result; LLM executions are normalized separately
                 step.status = JobStatus.COMPLETED
-                step.output = json.dumps(
-                    _audit_snapshot(result), default=str, ensure_ascii=False
-                )
+                step.output = json.dumps(_audit_snapshot(result), default=str, ensure_ascii=False)
             except Exception as exc:
                 logger.exception("Block %s failed", name)
                 step.status = JobStatus.FAILED
@@ -334,6 +387,12 @@ async def _execute_pipeline(
                     step,
                     context.get("_executions", [])[execution_offset:],
                 )
+                await _persist_media_executions(
+                    session,
+                    step,
+                    context.get("_media_executions", [])[media_offset:],
+                )
+                _persist_job_warnings(job, context)
                 await session.commit()
                 order += 1
 

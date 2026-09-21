@@ -7,7 +7,10 @@ Dispatches image generation to a running ComfyUI server by:
 3. Polling /history/{prompt_id} until complete
 4. Downloading output image(s) to IMAGE_OUTPUT_DIR
 
-Checkpoint is configurable via COMFYUI_CHECKPOINT in settings.
+AI model/workflow settings (checkpoints, refiner sampling, upscale models)
+are injected via SdxlWorkflowConfig — typically resolved from the media
+model configuration profile. Operational settings (URL, poll interval,
+timeout, output dir) remain env-only.
 """
 
 from __future__ import annotations
@@ -34,10 +37,23 @@ class ComfyUIBackend(GenerationBackend):
 
     name = "comfyui"
 
-    def __init__(self) -> None:
+    def __init__(self, workflow_config: SdxlWorkflowConfig | None = None) -> None:
         self.base_url = settings.comfyui_url.rstrip("/")
         self.poll_interval = settings.comfyui_poll_interval
         self.timeout = settings.comfyui_timeout
+        # Resolved profile normally supplies this; fall back to code/env
+        # defaults so no-arg construction still works (startup checks, tests).
+        self.workflow_config = workflow_config or SdxlWorkflowConfig(
+            base_checkpoint=settings.comfyui_checkpoint,
+            refiner_checkpoint=settings.comfyui_refiner_checkpoint,
+            upscale_2x_model=settings.comfyui_upscale_2x_model,
+            upscale_4x_model=settings.comfyui_upscale_4x_model,
+            refiner_steps=settings.refiner_steps,
+            refiner_cfg_scale=settings.refiner_cfg_scale,
+            refiner_sampler=settings.refiner_sampler,
+            refiner_scheduler=settings.refiner_scheduler,
+            refiner_denoise=settings.refiner_denoise,
+        )
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:
         async with workload_guard.hold(f"comfyui-{request.variant_name}"):
@@ -53,21 +69,7 @@ class ComfyUIBackend(GenerationBackend):
             workflow = self._load_custom_workflow(custom_workflow_path, request, client_id)
             seed = request.seed if request.seed >= 0 else 42
         else:
-            workflow, seed = build_sdxl_workflow(
-                request,
-                client_id,
-                SdxlWorkflowConfig(
-                    base_checkpoint=settings.comfyui_checkpoint,
-                    refiner_checkpoint=settings.comfyui_refiner_checkpoint,
-                    upscale_2x_model=settings.comfyui_upscale_2x_model,
-                    upscale_4x_model=settings.comfyui_upscale_4x_model,
-                    refiner_steps=settings.refiner_steps,
-                    refiner_cfg_scale=settings.refiner_cfg_scale,
-                    refiner_sampler=settings.refiner_sampler,
-                    refiner_scheduler=settings.refiner_scheduler,
-                    refiner_denoise=settings.refiner_denoise,
-                ),
-            )
+            workflow, seed = build_sdxl_workflow(request, client_id, self.workflow_config)
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             # Submit the prompt
@@ -95,12 +97,12 @@ class ComfyUIBackend(GenerationBackend):
                 "width": request.width,
                 "height": request.height,
                 "output_scales": [1, 2, 4],
-                "refiner_checkpoint": settings.comfyui_refiner_checkpoint,
-                "refiner_steps": settings.refiner_steps,
-                "refiner_cfg_scale": settings.refiner_cfg_scale,
-                "refiner_sampler": settings.refiner_sampler,
-                "refiner_scheduler": settings.refiner_scheduler,
-                "refiner_denoise": settings.refiner_denoise,
+                "refiner_checkpoint": self.workflow_config.refiner_checkpoint,
+                "refiner_steps": self.workflow_config.refiner_steps,
+                "refiner_cfg_scale": self.workflow_config.refiner_cfg_scale,
+                "refiner_sampler": self.workflow_config.refiner_sampler,
+                "refiner_scheduler": self.workflow_config.refiner_scheduler,
+                "refiner_denoise": self.workflow_config.refiner_denoise,
             },
         )
 

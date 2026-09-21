@@ -54,6 +54,20 @@
         <p class="text-xs text-red-400/80 mt-1">{{ job.error }}</p>
     </div>
     {% endif %}
+
+    {% if job.warnings %}
+    <div class="mt-4 p-3 rounded bg-amber-900/30 border border-amber-800/50">
+        <p class="text-sm text-amber-300 font-medium">Warnings</p>
+        <ul class="text-xs text-amber-200/80 mt-1 list-disc pl-4 space-y-1">
+            {% for warning in job.warnings %}
+            <li>{{ warning }}</li>
+            {% endfor %}
+        </ul>
+        <p class="text-xs text-amber-400/70 mt-2">
+            Customize profiles at <a href="/settings/ai" class="underline hover:text-amber-200">AI Settings</a>.
+        </p>
+    </div>
+    {% endif %}
 </div>
 
 <!-- Steps -->

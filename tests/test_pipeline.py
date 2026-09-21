@@ -14,8 +14,10 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import app.database
 import app.models.creative  # noqa: F401 — register models on Base.metadata
 import app.models.job  # noqa: F401
+import app.models.media  # noqa: F401
 import app.pipeline.engine as engine_module
 from app.blocks.base import Block, BlockMeta
 from app.blocks.registry import register
@@ -81,6 +83,8 @@ async def session_factory(tmp_path, monkeypatch):
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(engine_module, "async_session", factory)
+    # Configuration providers built lazily inside blocks share this DB
+    monkeypatch.setattr(app.database, "async_session", factory)
     yield factory
     await engine.dispose()
 
@@ -159,19 +163,23 @@ async def test_pipeline_persists_role_execution_and_messages(session_factory, mo
     )
 
     async with session_factory() as session:
-        step = (
-            await session.execute(select(JobStep).where(JobStep.job_id == job_id))
-        ).scalar_one()
+        job = await session.get(Job, job_id)
+        step = (await session.execute(select(JobStep).where(JobStep.job_id == job_id))).scalar_one()
         role = (await session.execute(select(CreativeRole))).scalar_one()
         execution = (await session.execute(select(RoleExecution))).scalar_one()
         messages = (
-            await session.execute(select(Message).order_by(Message.ordinal))
-        ).scalars().all()
+            (await session.execute(select(Message).order_by(Message.ordinal))).scalars().all()
+        )
 
     assert json.loads(step.input_context)["_verdict"] == "good"
     assert role.name == "test_audit_role"
     assert execution.job_step_id == step.id
     assert execution.status == "completed"
+    assert execution.system_prompt == "Return the audited response."
+    assert execution.configuration_source == "code_default"
+    assert execution.configuration_id is not None
+    warnings = json.loads(job.warnings)
+    assert any("code-default" in w for w in warnings)
     assert execution.output_deliverable == "audited response"
     assert execution.finish_reason == "stop"
     assert execution.total_tokens == 7
@@ -188,9 +196,7 @@ async def test_pipeline_persists_structured_step_errors(session_factory):
 
     async with session_factory() as session:
         job = await session.get(Job, job_id)
-        step = (
-            await session.execute(select(JobStep).where(JobStep.job_id == job_id))
-        ).scalar_one()
+        step = (await session.execute(select(JobStep).where(JobStep.job_id == job_id))).scalar_one()
 
     assert job.status == JobStatus.FAILED
     assert step.status == JobStatus.FAILED
@@ -217,8 +223,8 @@ async def test_pipeline_persists_failed_llm_execution(session_factory, monkeypat
     async with session_factory() as session:
         execution = (await session.execute(select(RoleExecution))).scalar_one()
         messages = (
-            await session.execute(select(Message).order_by(Message.ordinal))
-        ).scalars().all()
+            (await session.execute(select(Message).order_by(Message.ordinal))).scalars().all()
+        )
 
     assert execution.status == "failed"
     assert execution.error_type == "ConnectionError"

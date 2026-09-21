@@ -111,9 +111,20 @@ each prompt variant produces three files.
 - **Persistence** — SQLite via SQLAlchemy async. Jobs, steps, input/output
   snapshots, and generated asset paths are all stored.
 - **Web UI** — Jinja2 + HTMX, Tailwind CDN. No JS build step. Dashboard at
-  `/`, job detail at `/jobs/{id}`, run buttons for the real and placeholder
-  backends.
-- **Config** — pydantic-settings reads `.env`. See `.env.example`.
+  `/`, job detail at `/jobs/{id}`, AI configuration at `/settings/ai`, run
+  buttons for the real and placeholder backends.
+- **Config** — split between env and DB. Environment (`.env` via
+  pydantic-settings, see `.env.example`) owns secrets, URLs, timeouts, poll
+  intervals, filesystem paths, and *selects which profile is active*
+  (`LLM_MODEL`, `GENERATION_BACKEND`, `COMFYUI_CHECKPOINT`). Behavior
+  profiles — role system prompts/temperature/max_tokens/thinking per
+  (role, model), and media request/workflow defaults per
+  (block, backend, model) — live in the database and are edited via the web
+  UI (`/settings/ai`) or the `/api/configurations` REST endpoints. Missing
+  profiles are seeded from code defaults on first use and log a persisted
+  warning on every run until customized. Every LLM call and image request
+  stores an immutable snapshot of the exact values used, so editing a
+  profile never rewrites execution history.
 
 ## REST API
 
@@ -123,7 +134,13 @@ each prompt variant produces three files.
 | `GET` | `/api/blocks/{name}` | Single block detail |
 | `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, `block_names`, `context` (set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI) |
 | `GET` | `/api/workflows/jobs` | Recent jobs |
-| `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing |
+| `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings |
+| `GET` | `/api/configurations/llm` | List LLM role profiles |
+| `PUT` | `/api/configurations/llm/{role}` | Save a custom LLM profile (`model_name` in body) |
+| `POST` | `/api/configurations/llm/{role}/reset` | Restore code defaults (`model_name` in body) |
+| `GET` | `/api/configurations/media` | List media model profiles |
+| `PUT` | `/api/configurations/media/{block}` | Save a custom media profile (`backend_name`, `model_name` in body) |
+| `POST` | `/api/configurations/media/{block}/reset` | Restore code defaults (`backend_name`, `model_name` in body) |
 
 Interactive docs at `/docs`. `run-tool.http` contains ready-to-send examples.
 
@@ -140,8 +157,11 @@ app/
   config.py          → pydantic-settings (reads .env)
   database.py        → async engine, session factory, Base, init_db
   models/            → ORM models
-    job.py           → Job, JobStep, JobStatus
-    creative.py      → CreativeRole, RoleExecution, Message (normalized LLM execution audit)
+    job.py           → Job (incl. persisted warnings), JobStep, JobStatus
+    creative.py      → CreativeRole (identity), LlmRoleConfiguration (per-role/model
+                       LLM profile), RoleExecution + Message (immutable audit snapshots)
+    media.py         → MediaModelConfiguration (per-block/backend/model profile),
+                       MediaGenerationExecution (per-request audit snapshot)
     setting.py       → Setting (key/value; not yet used)
   blocks/            → workflow blocks
     base.py          → Abstract Block + BlockMeta
@@ -158,13 +178,14 @@ app/
     naming.py        → photo shoot name normalization, slugs, output subdirs
   services/
     workload_guard.py → exclusive lock for LLM / ComfyUI work
+    configuration/   → typed config dataclasses + DatabaseConfigurationProvider
     generation/      → backend abstraction
       base.py        → GenerationRequest / GenerationResult / GenerationBackend
       factory.py     → get_backend() from GENERATION_BACKEND
       comfyui.py     → ComfyUI REST client
       sdxl_workflow.py → SDXL base + refiner + upscale workflow JSON
       placeholder.py → instant PNGs for testing
-  api/               → REST endpoints (/api/blocks, /api/workflows)
+  api/               → REST endpoints (/api/blocks, /api/workflows, /api/configurations)
   web/               → routes.py (pages + HTMX partials, DEFAULT_WORKFLOW), templates/
 tests/               → pytest suite
 data/                → SQLite DB, media, default image output (gitignored)

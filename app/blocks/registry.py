@@ -39,6 +39,11 @@ def get_block(name: str) -> type[Block]:
     return _registry[name]
 
 
+def list_block_classes() -> list[type[Block]]:
+    """Return all registered block classes."""
+    return list(_registry.values())
+
+
 def list_blocks() -> list[dict]:
     """Return metadata dicts for all registered blocks (for API/UI)."""
     return [

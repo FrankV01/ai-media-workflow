@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+
+{% block title %}AI Settings — AI Media Workflow{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold">AI Settings</h1>
+    <p class="text-sm text-gray-400 mt-1">
+        Behavior profiles for each role/model and media backend are stored in the database.
+        Environment variables still select which profiles are active and own URLs, secrets,
+        timeouts, and paths. Profiles showing a
+        <span class="text-amber-300">default</span> badge still use code defaults and log a
+        warning on every run until customized.
+    </p>
+    <p class="text-sm text-gray-400 mt-2">
+        Active LLM model: <span class="font-mono text-indigo-300">{{ llm_model }}</span>
+        · Active media backend: <span class="font-mono text-indigo-300">{{ media_backend }}</span>
+        · Active media model: <span class="font-mono text-indigo-300">{{ media_model }}</span>
+    </p>
+    {% if status %}
+    <div class="mt-3 p-3 rounded bg-emerald-900/30 border border-emerald-800/50 text-sm text-emerald-300">
+        Configuration {{ status }}.
+    </div>
+    {% endif %}
+</div>
+
+<!-- LLM role profiles -->
+<h2 class="text-lg font-semibold mb-4">LLM Role Profiles</h2>
+<div class="space-y-6 mb-10">
+    {% for role in roles %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <div class="mb-4">
+            <h3 class="font-medium text-white">{{ role.title }} <span class="font-mono text-xs text-indigo-300">({{ role.name }})</span></h3>
+            <p class="text-xs text-gray-500">{{ role.description }}</p>
+        </div>
+
+        {% for profile in role.profiles %}
+        <form method="post" action="/settings/ai/llm/save" class="border border-gray-800 rounded p-4 mb-3 bg-gray-800/30">
+            <input type="hidden" name="role_name" value="{{ role.name }}">
+            <div class="flex items-center gap-2 mb-3">
+                <label class="text-xs text-gray-500">Model</label>
+                <input name="model_name" value="{{ profile.model_name }}" readonly
+                       class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono text-gray-300 flex-1">
+                {% if profile.uses_code_defaults %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300">default</span>
+                {% else %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">custom</span>
+                {% endif %}
+                {% if profile.model_name == llm_model %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300">active</span>
+                {% endif %}
+            </div>
+            <label class="text-xs text-gray-500 block mb-1">System prompt</label>
+            <textarea name="system_prompt" rows="6"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 font-mono">{{ profile.system_prompt }}</textarea>
+            <div class="grid grid-cols-3 gap-3 mt-3">
+                <div>
+                    <label class="text-xs text-gray-500 block mb-1">Temperature</label>
+                    <input name="temperature" type="number" step="0.05" min="0" max="2" value="{{ profile.temperature }}"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500 block mb-1">Max tokens</label>
+                    <input name="max_tokens" type="number" min="1" value="{{ profile.max_tokens }}"
+                           class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm">
+                </div>
+                <div class="flex items-end gap-2 pb-1">
+                    <label class="text-xs text-gray-500 flex items-center gap-2">
+                        <input name="enable_thinking" type="checkbox" {% if profile.enable_thinking %}checked{% endif %}>
+                        Enable thinking
+                    </label>
+                </div>
+            </div>
+            <div class="flex gap-2 mt-4">
+                <button type="submit" class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Save</button>
+                <button type="submit" formaction="/settings/ai/llm/reset"
+                        class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Reset to defaults</button>
+            </div>
+        </form>
+        {% endfor %}
+
+        <!-- Prepare a profile for another model -->
+        <details class="mt-2">
+            <summary class="text-xs text-indigo-300 cursor-pointer">Prepare a profile for another model…</summary>
+            <form method="post" action="/settings/ai/llm/save" class="border border-dashed border-gray-700 rounded p-4 mt-2">
+                <input type="hidden" name="role_name" value="{{ role.name }}">
+                <label class="text-xs text-gray-500 block mb-1">Model name</label>
+                <input name="model_name" value="{{ llm_model }}" required
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono mb-3">
+                <label class="text-xs text-gray-500 block mb-1">System prompt</label>
+                <textarea name="system_prompt" rows="4" required
+                          class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono">{% if role.profiles %}{{ role.profiles[0].system_prompt }}{% endif %}</textarea>
+                <div class="grid grid-cols-3 gap-3 mt-3">
+                    <div>
+                        <label class="text-xs text-gray-500 block mb-1">Temperature</label>
+                        <input name="temperature" type="number" step="0.05" min="0" max="2"
+                               value="{% if role.profiles %}{{ role.profiles[0].temperature }}{% else %}0.7{% endif %}"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-500 block mb-1">Max tokens</label>
+                        <input name="max_tokens" type="number" min="1"
+                               value="{% if role.profiles %}{{ role.profiles[0].max_tokens }}{% else %}32768{% endif %}"
+                               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm">
+                    </div>
+                    <div class="flex items-end gap-2 pb-1">
+                        <label class="text-xs text-gray-500 flex items-center gap-2">
+                            <input name="enable_thinking" type="checkbox">
+                            Enable thinking
+                        </label>
+                    </div>
+                </div>
+                <button type="submit" class="mt-4 px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Save profile</button>
+            </form>
+        </details>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Media model profiles -->
+<h2 class="text-lg font-semibold mb-4">Media Model Profiles</h2>
+<div class="space-y-6">
+    {% for profile in media_profiles %}
+    {% set s = profile.settings_dict %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <form method="post" action="/settings/ai/media/save">
+            <div class="flex items-center gap-2 mb-3">
+                <span class="font-mono text-xs text-gray-400">{{ profile.block_name }}</span>
+                <input name="backend_name" value="{{ profile.backend_name }}" readonly
+                       class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono text-gray-300 w-32">
+                <input name="model_name" value="{{ profile.model_name }}" readonly
+                       class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono text-gray-300 flex-1">
+                {% if profile.uses_code_defaults %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300">default</span>
+                {% else %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">custom</span>
+                {% endif %}
+                {% if profile.backend_name == media_backend and profile.model_name == media_model %}
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300">active</span>
+                {% endif %}
+            </div>
+
+            <p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Request defaults</p>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div><label class="text-xs text-gray-500 block mb-1">Width</label>
+                    <input name="width" type="number" min="1" value="{{ s.width }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Height</label>
+                    <input name="height" type="number" min="1" value="{{ s.height }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">CFG scale</label>
+                    <input name="cfg_scale" type="number" step="0.1" min="0.1" value="{{ s.cfg_scale }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Steps</label>
+                    <input name="steps" type="number" min="1" value="{{ s.steps }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Sampler</label>
+                    <input name="sampler" value="{{ s.sampler }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Scheduler</label>
+                    <input name="scheduler" value="{{ s.scheduler }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">CLIP skip</label>
+                    <input name="clip_skip" type="number" min="1" value="{{ s.clip_skip }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+            </div>
+
+            {% if profile.backend_name == "comfyui" %}
+            <p class="text-xs uppercase tracking-wide text-gray-500 mt-4 mb-2">ComfyUI workflow</p>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div class="col-span-2"><label class="text-xs text-gray-500 block mb-1">Refiner checkpoint</label>
+                    <input name="refiner_checkpoint" value="{{ s.refiner_checkpoint or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Upscale 2x model</label>
+                    <input name="upscale_2x_model" value="{{ s.upscale_2x_model or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Upscale 4x model</label>
+                    <input name="upscale_4x_model" value="{{ s.upscale_4x_model or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Refiner steps</label>
+                    <input name="refiner_steps" type="number" min="1" value="{{ s.refiner_steps or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Refiner CFG</label>
+                    <input name="refiner_cfg_scale" type="number" step="0.1" min="0.1" value="{{ s.refiner_cfg_scale or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Refiner sampler</label>
+                    <input name="refiner_sampler" value="{{ s.refiner_sampler or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Refiner scheduler</label>
+                    <input name="refiner_scheduler" value="{{ s.refiner_scheduler or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                <div><label class="text-xs text-gray-500 block mb-1">Refiner denoise</label>
+                    <input name="refiner_denoise" type="number" step="0.01" min="0" max="1" value="{{ s.refiner_denoise if s.refiner_denoise is not none else '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+            </div>
+            {% endif %}
+
+            <div class="flex gap-2 mt-4">
+                <button type="submit" class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Save</button>
+                <button type="submit" formaction="/settings/ai/media/reset"
+                        class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Reset to defaults</button>
+            </div>
+        </form>
+    </div>
+    {% endfor %}
+
+    <!-- Prepare a profile for another model/backend -->
+    {% set d = media_code_defaults %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <details>
+            <summary class="text-xs text-indigo-300 cursor-pointer">Prepare a media profile for another model…</summary>
+            <form method="post" action="/settings/ai/media/save" class="border border-dashed border-gray-700 rounded p-4 mt-2">
+                <div class="flex items-center gap-2 mb-3">
+                    <select name="backend_name" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono">
+                        <option value="comfyui" {% if media_backend == 'comfyui' %}selected{% endif %}>comfyui</option>
+                        <option value="placeholder" {% if media_backend == 'placeholder' %}selected{% endif %}>placeholder</option>
+                    </select>
+                    <input name="model_name" value="{{ media_model }}" required placeholder="model / checkpoint name"
+                           class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono text-gray-300 flex-1">
+                </div>
+
+                <p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Request defaults</p>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div><label class="text-xs text-gray-500 block mb-1">Width</label>
+                        <input name="width" type="number" min="1" value="{{ d.width }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Height</label>
+                        <input name="height" type="number" min="1" value="{{ d.height }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">CFG scale</label>
+                        <input name="cfg_scale" type="number" step="0.1" min="0.1" value="{{ d.cfg_scale }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Steps</label>
+                        <input name="steps" type="number" min="1" value="{{ d.steps }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Sampler</label>
+                        <input name="sampler" value="{{ d.sampler }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Scheduler</label>
+                        <input name="scheduler" value="{{ d.scheduler }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">CLIP skip</label>
+                        <input name="clip_skip" type="number" min="1" value="{{ d.clip_skip }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                </div>
+
+                <p class="text-xs uppercase tracking-wide text-gray-500 mt-4 mb-2">ComfyUI workflow (required for comfyui profiles)</p>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div class="col-span-2"><label class="text-xs text-gray-500 block mb-1">Refiner checkpoint</label>
+                        <input name="refiner_checkpoint" value="{{ d.refiner_checkpoint or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Upscale 2x model</label>
+                        <input name="upscale_2x_model" value="{{ d.upscale_2x_model or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Upscale 4x model</label>
+                        <input name="upscale_4x_model" value="{{ d.upscale_4x_model or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Refiner steps</label>
+                        <input name="refiner_steps" type="number" min="1" value="{{ d.refiner_steps or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Refiner CFG</label>
+                        <input name="refiner_cfg_scale" type="number" step="0.1" min="0.1" value="{{ d.refiner_cfg_scale or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Refiner sampler</label>
+                        <input name="refiner_sampler" value="{{ d.refiner_sampler or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Refiner scheduler</label>
+                        <input name="refiner_scheduler" value="{{ d.refiner_scheduler or '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                    <div><label class="text-xs text-gray-500 block mb-1">Refiner denoise</label>
+                        <input name="refiner_denoise" type="number" step="0.01" min="0" max="1" value="{{ d.refiner_denoise if d.refiner_denoise is not none else '' }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
+                </div>
+                <button type="submit" class="mt-4 px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Save profile</button>
+            </form>
+        </details>
+    </div>
+</div>
+{% endblock %}
