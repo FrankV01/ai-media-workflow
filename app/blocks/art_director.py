@@ -6,8 +6,13 @@ It takes a high-level concept from the user and transforms it into a
 detailed photo shoot plan: scene composition, lighting, mood, wardrobe,
 props, camera angles, color palette, and creative direction.
 
+The brief opens with a "PHOTO SHOOT: <title>" line; the title becomes
+context["photo_shoot_name"] (falling back to the first words of the concept)
+unless a caller already supplied one. The engine copies it to the job title.
+
 Input:  High-level concept / idea (context["brief"])
-Output: Detailed photo shoot description (context["brief"] for next role)
+Output: Detailed photo shoot description (context["brief"] for next role,
+        context["art_director_output"]) and context["photo_shoot_name"]
 
 Suggested next role: prompt_architect
 """

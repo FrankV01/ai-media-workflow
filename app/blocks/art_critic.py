@@ -6,9 +6,9 @@ This is a subjective evaluation — the critic produces both a detailed expert
 report and a binary verdict ("good" or "bad") that drives pipeline routing.
 
 The verdict is stored in context["_verdict"] which the pipeline engine uses
-for conditional branching:
-- "good" → proceed to publishing / delivery blocks
-- "bad"  → loop back for revision or flag for human review
+for conditional branching (on_good / on_bad / always). In the default
+workflow neither verdict attaches extra blocks — both fall through to the
+"always" branch (Social Media Specialist); there is no retry loop.
 
 Input:  context["brief"] — typically the media_producer summary + image paths
         context["art_director_output"] — original creative brief (for comparison)

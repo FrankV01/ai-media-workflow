@@ -8,19 +8,20 @@ For project overview and setup, see [`README.md`](README.md).
 - **Name**: ai-media-workflow
 - **Purpose**: A "creative agency" workflow engine — LLM-powered roles collaborate to produce images from concepts
 - **Stack**: Python 3.11+, FastAPI, SQLAlchemy 2.0 (async), SQLite + aiosqlite, Jinja2 + HTMX, Tailwind CDN
-- **External services**: LM Studio (LLM, `localhost:1234`), ComfyUI (image gen, `localhost:8188`)
+- **External services**: LM Studio (LLM, `localhost:1234`), ComfyUI (image gen, `localhost:8188`, only when `GENERATION_BACKEND=comfyui`)
 - **IDE**: PyCharm
 
 ## Architecture Principles
 
-1. **Blocks are the atomic unit.** Every processing step is a `Block` subclass in `app/blocks/`. Blocks declare metadata, inputs, outputs, and implement `run(context)`.
-2. **RoleBlock for LLM roles.** LLM-powered "employees" subclass `RoleBlock` (`app/blocks/role_block.py`) which handles LLM calls, prompt management, token tracking, and context threading.
+1. **Blocks are the atomic unit.** Every processing step is a `Block` subclass in `app/blocks/`. Blocks declare metadata (`BlockMeta`: name, description, version, category, inputs, outputs), implement `async run(context)`, and may override `async validate(context)` (called by the engine before `run`; raise to fail the step early).
+2. **RoleBlock for LLM roles.** LLM-powered "employees" subclass `RoleBlock` (`app/blocks/role_block.py`), which handles the OpenAI-compatible chat call, token tracking, and context threading. It raises `ValueError` if the model returns empty content (the step fails instead of silently passing an empty brief downstream), and sends `reasoning_effort="none"` unless `LLM_ENABLE_THINKING=true`, so thinking models don't burn `LLM_MAX_TOKENS` on hidden reasoning.
 3. **Pipeline engine supports branching.** `app/pipeline/engine.py` runs blocks sequentially and supports conditional routing via verdict-based dicts (`on_good`/`on_bad`/`always`). The original user brief is preserved across routing.
-4. **Registry = auto-discovery.** Decorate a `Block` subclass with `@register` and it's available everywhere. No manual wiring.
-5. **Generation backends are pluggable.** `app/services/generation/` provides `ComfyUIBackend` (production) and `PlaceholderBackend` (fast testing). Switch via `GENERATION_BACKEND` in `.env`.
-6. **UI is server-rendered.** Jinja2 templates + HTMX. No JS build step. Tailwind via CDN.
-7. **Config via environment.** `pydantic-settings` reads `.env`. See `.env.example` for all settings.
-8. **Startup health checks.** `app/main.py` verifies LLM, ComfyUI (when configured), and output directory before accepting requests.
+4. **One workload at a time.** `app/services/workload_guard.py` provides a reentrant async lock backed by an OS file lock. The engine holds it for the whole pipeline; RoleBlocks and the ComfyUI backend re-acquire it (reentrantly) per call. Additional submissions stay `PENDING` until the running job finishes, so the LLM and ComfyUI are never hit concurrently.
+5. **Registry = auto-discovery.** Decorate a `Block` subclass with `@register` and it's available everywhere. `discover_blocks()` imports every module in `app/blocks/` at startup. No manual wiring.
+6. **Generation backends are pluggable.** `app/services/generation/` provides `ComfyUIBackend` (production; SDXL base → refiner → 2x/4x upscale workflow built in `sdxl_workflow.py`) and `PlaceholderBackend` (fast testing). Switch via `GENERATION_BACKEND` in `.env`, or per run via `context["_generation_backend"]`.
+7. **UI is server-rendered.** Jinja2 templates + HTMX. No JS build step. Tailwind via CDN.
+8. **Config via environment.** `pydantic-settings` reads `.env`. See `.env.example` for all settings; defaults live in `app/config.py`.
+9. **Startup health checks.** `app/main.py` verifies the LLM endpoint, ComfyUI (only when it's the configured backend), and output directory writability before accepting requests, and refuses to start otherwise.
 
 ## Current Pipeline
 
@@ -35,37 +36,70 @@ concept → Art Director → Prompt Architect → Media Producer → Art Critic
                                                     to always)
 ```
 
+Defined as `DEFAULT_WORKFLOW` in `app/web/routes.py`. There is no retry loop: a bad verdict has no
+blocks attached, so the run falls through to the `always` branch.
+
 ### Active Blocks
 
 | Block | Type | Purpose | Key output |
 |---|---|---|---|
-| `art_director` | RoleBlock | Expands concept into creative brief | `art_director_output`, `photo_shoot_name` |
-| `prompt_architect` | RoleBlock | Converts brief to structured JSON prompts | `prompt_architect_output` |
-| `media_producer` | Block | Dispatches to generation backend, collects images | `generated_images`, `generation_metadata` |
+| `art_director` | RoleBlock | Expands concept into creative brief; names the shoot | `art_director_output`, `photo_shoot_name` |
+| `prompt_architect` | RoleBlock | Converts brief to structured JSON prompts; fails the step unless all four prompts are present | `prompt_architect_output`, `generation_params` |
+| `media_producer` | Block | Dispatches to generation backend, collects images | `generated_images`, `generation_metadata`, `media_producer_output` |
 | `art_critic` | RoleBlock | Evaluates quality, sets verdict | `art_critic_output`, `_verdict` |
-| `social_media_specialist` | RoleBlock | Creates platform-optimized post suggestions | `social_media_posts` |
-| `echo` | Block | Test/utility block | `echo_output` |
+| `social_media_specialist` | RoleBlock | Creates platform-optimized post suggestions | `social_media_output`, `social_media_posts` |
+| `echo` | Block | Test/utility block (`example_block.py`) | `echo_result` |
 
 ### Context flow
 
-Each RoleBlock writes `context["{role_name}_output"]` so downstream blocks can reference any prior report. The pipeline engine stores input/output snapshots per step in the DB.
+Every `RoleBlock` returns `brief` (the next role's input), `output_deliverable`,
+`suggested_next_role`, `_executions`, and `{role_name}_output`, so downstream blocks can
+reference any prior report by name. Roles that need more than the previous `brief` (Art
+Critic, Social Media Specialist) assemble their own enriched input from those keys. The
+engine snapshots the non-underscore context before each step (`JobStep.input_context`) and
+the block's non-underscore result after it (`JobStep.output`).
 
 Special context keys:
 - `_verdict` — set by Art Critic (`"good"` or `"bad"`), read by routing dicts
-- `_original_brief` — preserved by engine at pipeline start for re-routing
-- `_executions` — accumulated LLM call records (internal)
-- `_job_id` — current job id, set by the engine (internal)
-- `photo_shoot_name` — set by the Art Director (or supplied by an API caller); the engine copies it to `Job.workflow_name`, which is the job title shown in the UI
+- `_original_brief` — captured by the engine at pipeline start; restored to `brief` whenever a routing dict is resolved
+- `_job_id` — current job id, set by the engine
+- `_generation_backend` — per-run backend override (`"placeholder"`), used by the UI's test-run button
+- `_executions` — LLM call records accumulated by RoleBlocks. Currently not persisted (see Database)
+- `_role_overrides` — `{role_name: {system_prompt, model_override, temperature}}`, read by `RoleBlock`. Nothing populates it yet
+- `photo_shoot_name` — the shoot title. Set by the Art Director from its `PHOTO SHOOT:` header line (falling back to the first words of the concept), unless an API caller already supplied one. The engine copies it to `Job.workflow_name` after each step, which is the job title shown in the UI
+
+### Prompt Architect contract
+
+The Prompt Architect must emit a JSON object with `positive_prompt`, `negative_prompt`,
+`positive_refiner_prompt`, and `negative_refiner_prompt` (all non-blank), plus optional
+`parameters` and `variants`. `PromptArchitect.run` parses the response (tolerating markdown
+fences/preamble), raises `ValueError` if the JSON is missing or any required prompt is blank,
+and rewrites `prompt_architect_output`/`brief` as clean JSON. The Media Producer builds one
+`GenerationRequest` for the main prompt plus one per variant.
+
+### Job naming
+
+- **Web UI** (`/partials/run-pipeline`, `/partials/run-test-pipeline`) passes
+  `workflow_name=None`. The job is created as `"Untitled shoot"` and retitled mid-run once the
+  Art Director sets `photo_shoot_name`.
+- **API** (`POST /api/workflows/run`) requires `photo_shoot_name` (legacy `workflow_name` is
+  accepted as a fallback). The engine seeds it into `context["photo_shoot_name"]`, so the Art
+  Director keeps the caller's name.
+- Helpers live in `app/pipeline/naming.py`: `resolve_photo_shoot_name` (normalize/validate),
+  `slugify_photo_shoot_name`, `output_subdir`.
 
 ### Output layout
 
 Generated images land in `IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/` (e.g.
-`data/output/cyber-chic/job25/aimw_main_refined_1x_00001_.png`). The slug is
-derived from `photo_shoot_name`; jobs without a name use `untitled-shoot`.
+`data/output/cyber-chic/job25/aimw_main_refined_1x_00001_.png`). The slug is derived from
+`photo_shoot_name`; jobs without a name use `untitled-shoot`. The Media Producer passes the
+subdir via `GenerationRequest.extras["output_subdir"]`; both backends save under it, and the
+ComfyUI `filename_prefix` includes it so ComfyUI's own output folder is grouped the same way.
+Each variant yields three files: `_refined_1x`, `_upscaled_2x`, `_upscaled_4x`.
 
 ## Code Style & Conventions
 
-- **Formatting**: Ruff with line-length 100. Run `ruff check --fix . && ruff format .`.
+- **Formatting**: Ruff with line-length 100. Run `ruff check --fix . && ruff format .` (note: `migrations/` has pre-existing lint findings; prefer `ruff check --fix app tests`).
 - **Type hints**: Use them everywhere. Prefer `dict[str, Any]` over `Dict[str, Any]`.
 - **Async by default**: All DB operations and block `run()` methods are async.
 - **Imports**: stdlib → third-party → local, separated by blank lines. Ruff enforces this.
@@ -80,6 +114,7 @@ derived from `photo_shoot_name`; jobs without a name use `untitled-shoot`.
 3. Decorate the class with `@register`
 4. Add tests in `tests/test_blocks.py`
 5. The block is now available in the API and UI — no other wiring needed
+6. Update the "Active Blocks" table above and the README pipeline diagram if the default workflow changes
 
 ### Block interface (non-LLM)
 ```python
@@ -115,28 +150,37 @@ class MyRole(RoleBlock):
     role_description = "What this role does"
     system_prompt = "You are a ..."
     suggested_next = "next_block_name"  # or None
+    default_temperature = 0.7  # optional; falls back to LLM_TEMPERATURE
 ```
+
+To post-process the LLM response (parse JSON, set a verdict, name the shoot), override `run`,
+call `result = await super().run(context)`, and mutate `result` — see `art_critic.py`,
+`prompt_architect.py`, and `art_director.py`.
 
 ### Pipeline routing
 The engine accepts a mixed list of block names and routing dicts:
 ```python
-["art_director", "art_critic", {"on_good": ["publisher"], "on_bad": ["art_director"], "always": ["archiver"]}]
+["art_director", "art_critic", {"on_good": ["publisher"], "on_bad": ["revise"], "always": ["archiver"]}]
 ```
-Routing reads `context["_verdict"]` set by the preceding block.
+Routing reads `context["_verdict"]` set by the preceding block. If no verdict is set, only the
+`always` branch runs. Blocks in the chosen branch get `JobStep` rows created at resolution
+time, and `brief` is reset to `_original_brief` before they run.
 
 ## Database
 
-- **ORM**: SQLAlchemy 2.0 async sessions. Use `Depends(get_session)` in routes.
-- **Models**: `Job`, `JobStep` (pipeline tracking), `CreativeRole`, `RoleExecution`, `Message` (creative audit trail), `Setting` (key/value config)
-- **Job.generated_assets**: JSON list of file paths for generated images
-- **Migrations**: Alembic with async `env.py`. Schema changes via `ALTER TABLE` for SQLite.
+- **ORM**: SQLAlchemy 2.0 async sessions. Use `Depends(get_session)` in routes; the engine opens its own session per run.
+- **Models in use**: `Job` (`workflow_name` = photo shoot title, `status`, `error`, `generated_assets`) and `JobStep` (`block_name`, `order`, `status`, `input_context`, `output`, `error`, timings).
+- **Models defined but not yet written by the engine**: `CreativeRole`, `RoleExecution`, `Message` (`app/models/creative.py`) and `Setting` (`app/models/setting.py`). Tables exist via migrations; `_executions` and `_role_overrides` are the intended bridge to them.
+- **Job.generated_assets**: JSON list of file paths for generated images.
+- **Migrations**: Alembic with async `env.py` (`migrations/`). Schema changes via `ALTER TABLE` for SQLite. `init_db()` at startup also runs `create_all` for a fresh database.
 
 ## Testing
 
-- Framework: pytest + pytest-asyncio
+- Framework: pytest + pytest-asyncio (`asyncio_mode = "auto"`, so async tests need no marker)
 - Run: `pytest` from project root
-- DB tests use in-memory SQLite (override `DATABASE_URL`)
-- Block tests cover: registration, metadata, verdict parsing, JSON extraction, routing logic
+- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine against a throwaway SQLite file in `tmp_path`, monkeypatching `app.pipeline.engine.async_session`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`
+- LLM calls are mocked by monkeypatching `app.blocks.role_block.AsyncOpenAI`; see `_fake_llm_client` in `test_blocks.py`
+- Tests that generate files monkeypatch `settings.image_output_dir` to `tmp_path` — never write into the real output dir
 
 ## Guiding Questions
 
@@ -145,5 +189,6 @@ When proposing changes:
 2. Is the change backward-compatible with existing pipelines?
 3. Are there tests covering the new/changed behavior?
 4. Does the UI need updating to reflect the change?
-5. Should any new settings be added to `config.py`?
+5. Should any new settings be added to `config.py` **and** `.env.example`?
 6. Does the pipeline routing need to be updated in `app/web/routes.py` (`DEFAULT_WORKFLOW`)?
+7. Do this file and `README.md` still describe the code accurately?

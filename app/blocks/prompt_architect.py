@@ -5,8 +5,11 @@ Converts Art Director's creative brief into structured JSON for the
 Media Producer's generation backend (currently SDXL via ComfyUI).
 
 Input:  context["brief"] — creative brief from Art Director
-Output: Structured JSON with positive/negative/refiner prompts,
-        generation parameters, and optional variants.
+Output: Structured JSON with positive/negative/refiner prompts (all four
+        required — the step fails if any is missing or blank), generation
+        parameters, and optional variants. Written as clean JSON to
+        context["prompt_architect_output"] and context["brief"];
+        parameters are also exposed as context["generation_params"].
 
 Suggested next: media_producer
 """
@@ -141,8 +144,8 @@ class PromptArchitect(RoleBlock):
     role_name = "prompt_architect"
     role_title = "Realism & Prompt Architect"
     role_description = (
-        "Converts creative briefs into optimized text-to-image prompts "
-        "for AI models like Midjourney, DALL-E, and Stable Diffusion"
+        "Converts creative briefs into structured, validated text-to-image prompts "
+        "for Stable Diffusion XL / ComfyUI workflows"
     )
     system_prompt = PROMPT_ARCHITECT_SYSTEM_PROMPT
     suggested_next = "media_producer"

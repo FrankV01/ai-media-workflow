@@ -10,15 +10,19 @@ Responsibilities:
 1. Parse the structured JSON output from the Prompt Architect
    (positive_prompt, negative_prompt, refiner prompts, parameters, variants)
 2. Dispatch generation request(s) to the configured backend
-3. Collect output image paths and metadata
-4. Return everything in the pipeline context for downstream blocks
+3. Group outputs under IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/ (via
+   GenerationRequest.extras["output_subdir"])
+4. Collect output image paths and metadata
+5. Return everything in the pipeline context for downstream blocks
 
 The block keeps the "employee memo hand-off" metaphor alive: the Media
 Producer receives a detailed production order (the structured prompt JSON)
 and returns a delivery manifest (image paths + generation metadata).
 
 Input:  context["prompt_architect_output"] — JSON string from Prompt Architect
-Output: context["generated_images"], context["generation_metadata"]
+        context["photo_shoot_name"], context["_job_id"] — for the output subdir
+Output: context["generated_images"], context["generation_metadata"],
+        context["media_producer_output"] / context["brief"] — delivery summary
 
 Suggested next: art_critic
 """

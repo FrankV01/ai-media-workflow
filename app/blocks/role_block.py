@@ -9,9 +9,14 @@ Subclasses define: meta, role_name, role_title, role_description,
 system_prompt, and optionally suggested_next and default_temperature.
 See agents.md § "RoleBlock interface" for the full pattern.
 
-The base class handles: LLM API calls (OpenAI-compatible), token tracking,
-execution logging, and context threading (reads "brief", writes
-"{role_name}_output").
+The base class handles: LLM API calls (OpenAI-compatible), reasoning control
+(reasoning_effort="none" unless LLM_ENABLE_THINKING is set), token tracking,
+and context threading (reads "brief", writes "brief", "output_deliverable",
+"suggested_next_role", and "{role_name}_output"). Empty LLM content raises
+ValueError so the step fails instead of passing an empty brief downstream.
+
+Each call is also appended to context["_executions"] as a record shaped for
+the RoleExecution/Message models; nothing persists those records yet.
 """
 
 from __future__ import annotations
@@ -66,7 +71,8 @@ class RoleBlock(Block):
         temperature = self.default_temperature or settings.llm_temperature
         max_tokens = settings.llm_max_tokens
 
-        # Check for DB-stored role overrides in context (populated by engine)
+        # Per-role overrides (system_prompt / model_override / temperature).
+        # Intended to come from the CreativeRole table; nothing populates this yet.
         role_overrides = context.get("_role_overrides", {}).get(self.role_name, {})
         effective_prompt = role_overrides.get("system_prompt", self.system_prompt)
         if role_overrides.get("model_override"):
@@ -135,7 +141,7 @@ class RoleBlock(Block):
         # Determine suggested next role
         next_role = self.suggested_next
 
-        # Build execution record for DB persistence (engine will save it)
+        # Build execution record shaped for RoleExecution/Message (not persisted yet)
         execution_record = {
             "role_name": self.role_name,
             "role_title": self.role_title,

@@ -7,7 +7,8 @@ Supports conditional branching via verdict-based routing dicts.
 Designed for background execution: creates its own DB session and commits
 after each step so progress is visible in real-time via the status API.
 
-A module-level semaphore ensures only one pipeline runs at a time.
+The workload guard (app.services.workload_guard — a reentrant async lock
+backed by an OS file lock) ensures only one pipeline runs at a time.
 Additional submissions queue (PENDING) until the running pipeline finishes.
 This prevents concurrent LLM / ComfyUI calls that would overwhelm the host.
 
