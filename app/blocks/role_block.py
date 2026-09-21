@@ -22,6 +22,7 @@ the RoleExecution/Message models; nothing persists those records yet.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -107,63 +108,97 @@ class RoleBlock(Block):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        if not thinking:
+        reasoning_effort = None if thinking else "none"
+        if reasoning_effort is not None:
             # Disables hidden reasoning on thinking models (LM Studio honors
             # reasoning_effort="none"); when enabled, omit and let the server default apply
-            create_kwargs["reasoning_effort"] = "none"
+            create_kwargs["reasoning_effort"] = reasoning_effort
 
-        response = await client.chat.completions.create(**create_kwargs)
-
-        assistant_content = response.choices[0].message.content or ""
-        finish_reason = response.choices[0].finish_reason
-        usage = response.usage
-
-        logger.info(
-            "Role [%s] completed — %d tokens (finish_reason=%s)",
-            self.role_name,
-            usage.total_tokens if usage else 0,
-            finish_reason,
-        )
-
-        if not assistant_content.strip():
-            hint = ""
-            if finish_reason == "length":
-                hint = (
-                    " — the model likely exhausted max_tokens (possibly on reasoning); "
-                    "raise LLM_MAX_TOKENS or use a smaller reasoning budget"
-                )
-            raise ValueError(
-                f"{self.role_name}: LLM returned empty content "
-                f"(finish_reason={finish_reason}, "
-                f"completion_tokens={usage.completion_tokens if usage else 0}){hint}"
-            )
-
-        # Determine suggested next role
-        next_role = self.suggested_next
-
-        # Build execution record shaped for RoleExecution/Message (not persisted yet)
+        started_at = datetime.now(UTC)
         execution_record = {
             "role_name": self.role_name,
             "role_title": self.role_title,
             "role_description": self.role_description,
             "system_prompt": effective_prompt,
+            "output_format": self.output_format,
             "input_brief": input_brief,
-            "output_deliverable": assistant_content,
-            "suggested_next_role": next_role,
+            "output_deliverable": None,
+            "suggested_next_role": self.suggested_next,
             "model_used": model,
-            "prompt_tokens": usage.prompt_tokens if usage else None,
-            "completion_tokens": usage.completion_tokens if usage else None,
-            "total_tokens": usage.total_tokens if usage else None,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "reasoning_effort": reasoning_effort,
+            "finish_reason": None,
+            "status": "running",
+            "error_type": None,
+            "error": None,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "started_at": started_at,
+            "finished_at": None,
             "messages": [
                 {"role": "system", "content": effective_prompt, "ordinal": 0},
                 {"role": "user", "content": input_brief, "ordinal": 1},
-                {"role": "assistant", "content": assistant_content, "ordinal": 2},
             ],
         }
+        executions = context.setdefault("_executions", [])
 
-        # Append to execution log in context (engine persists these)
-        executions = context.get("_executions", [])
+        try:
+            response = await client.chat.completions.create(**create_kwargs)
+
+            assistant_content = response.choices[0].message.content or ""
+            finish_reason = response.choices[0].finish_reason
+            usage = response.usage
+            execution_record.update(
+                {
+                    "output_deliverable": assistant_content,
+                    "finish_reason": finish_reason,
+                    "prompt_tokens": usage.prompt_tokens if usage else None,
+                    "completion_tokens": usage.completion_tokens if usage else None,
+                    "total_tokens": usage.total_tokens if usage else None,
+                }
+            )
+            execution_record["messages"].append(
+                {"role": "assistant", "content": assistant_content, "ordinal": 2}
+            )
+
+            logger.info(
+                "Role [%s] completed — %d tokens (finish_reason=%s)",
+                self.role_name,
+                usage.total_tokens if usage else 0,
+                finish_reason,
+            )
+
+            if not assistant_content.strip():
+                hint = ""
+                if finish_reason == "length":
+                    hint = (
+                        " — the model likely exhausted max_tokens (possibly on reasoning); "
+                        "raise LLM_MAX_TOKENS or use a smaller reasoning budget"
+                    )
+                raise ValueError(
+                    f"{self.role_name}: LLM returned empty content "
+                    f"(finish_reason={finish_reason}, "
+                    f"completion_tokens={usage.completion_tokens if usage else 0}){hint}"
+                )
+        except Exception as exc:
+            execution_record.update(
+                {
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "finished_at": datetime.now(UTC),
+                }
+            )
+            executions.append(execution_record)
+            raise
+
+        execution_record.update({"status": "completed", "finished_at": datetime.now(UTC)})
         executions.append(execution_record)
+
+        # Determine suggested next role
+        next_role = self.suggested_next
 
         return {
             "brief": assistant_content,  # next role reads this as its input

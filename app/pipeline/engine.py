@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import traceback
 from datetime import UTC, datetime
 from typing import Any
 
@@ -44,6 +45,7 @@ from sqlalchemy import select
 
 from app.blocks.registry import get_block
 from app.database import async_session
+from app.models.creative import CreativeRole, Message, MessageRole, RoleExecution
 from app.models.job import Job, JobStatus, JobStep
 from app.pipeline.naming import MAX_PHOTO_SHOOT_NAME_LENGTH, resolve_photo_shoot_name
 from app.services.workload_guard import workload_guard
@@ -79,6 +81,67 @@ def _resolve_steps(steps: list[str | dict], verdict: str | None) -> list[str]:
                 logger.warning("Routing dict with no verdict set — running 'always' only")
             resolved.extend(always_blocks)
     return resolved
+
+
+def _audit_snapshot(values: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in values.items() if key != "_executions"}
+
+
+async def _persist_role_executions(
+    session: Any,
+    step: JobStep,
+    records: list[dict[str, Any]],
+) -> None:
+    for record in records:
+        role_result = await session.execute(
+            select(CreativeRole).where(CreativeRole.name == record["role_name"])
+        )
+        role = role_result.scalar_one_or_none()
+        if role is None:
+            role = CreativeRole(name=record["role_name"])
+            session.add(role)
+
+        role.title = record["role_title"]
+        role.description = record["role_description"]
+        role.system_prompt = record["system_prompt"]
+        role.output_format = record.get("output_format", "text")
+        role.suggested_next_role = record.get("suggested_next_role")
+        role.model_override = record.get("model_used")
+        role.temperature = record.get("temperature")
+        await session.flush()
+
+        execution = RoleExecution(
+            job_step_id=step.id,
+            role_id=role.id,
+            input_brief=str(record.get("input_brief", "")),
+            output_deliverable=record.get("output_deliverable"),
+            suggested_next_role=record.get("suggested_next_role"),
+            model_used=record.get("model_used"),
+            temperature=record.get("temperature"),
+            max_tokens=record.get("max_tokens"),
+            reasoning_effort=record.get("reasoning_effort"),
+            finish_reason=record.get("finish_reason"),
+            status=record.get("status", "completed"),
+            error_type=record.get("error_type"),
+            error=record.get("error"),
+            prompt_tokens=record.get("prompt_tokens"),
+            completion_tokens=record.get("completion_tokens"),
+            total_tokens=record.get("total_tokens"),
+            started_at=record.get("started_at", step.started_at),
+            finished_at=record.get("finished_at"),
+        )
+        session.add(execution)
+        await session.flush()
+
+        for message_record in record.get("messages", []):
+            session.add(
+                Message(
+                    execution_id=execution.id,
+                    role=MessageRole(message_record["role"]),
+                    content=str(message_record.get("content", "")),
+                    ordinal=int(message_record["ordinal"]),
+                )
+            )
 
 
 async def run_pipeline(
@@ -229,8 +292,10 @@ async def _execute_pipeline(
 
             # Snapshot the input context and commit before running so it's
             # visible in status queries while the block executes
-            input_snap = {k: v for k, v in context.items() if not k.startswith("_")}
-            step.input_context = json.dumps(input_snap, default=str, ensure_ascii=False)
+            step.input_context = json.dumps(
+                _audit_snapshot(context), default=str, ensure_ascii=False
+            )
+            execution_offset = len(context.setdefault("_executions", []))
             await session.commit()
 
             try:
@@ -247,17 +312,25 @@ async def _execute_pipeline(
                     job.workflow_name = resolve_photo_shoot_name(name[:MAX_PHOTO_SHOOT_NAME_LENGTH])
 
                 # Store clean output (exclude internal keys)
-                output_snap = {k: v for k, v in result.items() if not k.startswith("_")}
                 step.status = JobStatus.COMPLETED
-                step.output = json.dumps(output_snap, default=str, ensure_ascii=False)
+                step.output = json.dumps(
+                    _audit_snapshot(result), default=str, ensure_ascii=False
+                )
             except Exception as exc:
                 logger.exception("Block %s failed", name)
                 step.status = JobStatus.FAILED
                 step.error = str(exc)
+                step.error_type = type(exc).__name__
+                step.error_traceback = traceback.format_exc()
                 job.status = JobStatus.FAILED
                 job.error = f"Block '{name}' failed: {exc}"
             finally:
                 step.finished_at = datetime.now(UTC)
+                await _persist_role_executions(
+                    session,
+                    step,
+                    context.get("_executions", [])[execution_offset:],
+                )
                 await session.commit()
                 order += 1
 

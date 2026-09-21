@@ -98,6 +98,13 @@ class RoleExecution(Base):
     suggested_next_role: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     model_used: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    finish_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="completed")
+    error_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
