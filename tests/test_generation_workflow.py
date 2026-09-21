@@ -64,6 +64,25 @@ def test_workflow_builds_base_refiner_and_upscale_stages(
     assert nodes["19"]["inputs"]["images"] == ["18", 0]
 
 
+def test_save_image_prefix_includes_output_subdir(
+    workflow_config: SdxlWorkflowConfig,
+) -> None:
+    request = GenerationRequest(
+        positive_prompt="person riding a motorcycle",
+        extras={"output_subdir": "cyber-chic/job1"},
+    )
+
+    workflow, _ = build_sdxl_workflow(request, "client-id", workflow_config)
+    prefixes = [
+        node["inputs"]["filename_prefix"]
+        for node in workflow["prompt"].values()
+        if node["class_type"] == "SaveImage"
+    ]
+
+    assert len(prefixes) == 3
+    assert all(p.startswith("cyber-chic/job1/aimw_main") for p in prefixes)
+
+
 def test_refiner_denoise_must_be_valid_for_comfyui() -> None:
     with pytest.raises(ValueError, match="between 0.0 and 1.0"):
         SdxlWorkflowConfig(

@@ -11,6 +11,10 @@ A module-level semaphore ensures only one pipeline runs at a time.
 Additional submissions queue (PENDING) until the running pipeline finishes.
 This prevents concurrent LLM / ComfyUI calls that would overwhelm the host.
 
+The engine exposes context["_job_id"] (the current job's id) to blocks, and
+copies context["photo_shoot_name"] onto Job.workflow_name mid-run so a block
+(e.g. the Art Director) can title the job while it executes.
+
 Step format (simple):
     ["art_director", "prompt_architect", "media_producer"]
 
@@ -20,7 +24,7 @@ Step format (with routing):
         "prompt_architect",
         "media_producer",
         "art_critic",
-        {"on_good": ["publisher"], "on_bad": ["art_director"], "always": ["archiver"]},
+        {"on_good": ["publisher"], "on_bad": ["revise"], "always": ["archiver"]},
     ]
 
 Routing reads context["_verdict"] set by the preceding block.
@@ -40,6 +44,7 @@ from sqlalchemy import select
 from app.blocks.registry import get_block
 from app.database import async_session
 from app.models.job import Job, JobStatus, JobStep
+from app.pipeline.naming import MAX_PHOTO_SHOOT_NAME_LENGTH, resolve_photo_shoot_name
 from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
@@ -47,6 +52,9 @@ logger = logging.getLogger(__name__)
 # Verdicts that blocks can set via context["_verdict"]
 VERDICT_GOOD = "good"
 VERDICT_BAD = "bad"
+
+# Job title used until a block names the shoot (context["photo_shoot_name"])
+UNTITLED_SHOOT = "Untitled shoot"
 
 
 def _resolve_steps(steps: list[str | dict], verdict: str | None) -> list[str]:
@@ -73,7 +81,7 @@ def _resolve_steps(steps: list[str | dict], verdict: str | None) -> list[str]:
 
 
 async def run_pipeline(
-    workflow_name: str,
+    workflow_name: str | None,
     block_names: list[str | dict],
     context: dict[str, Any],
     *,
@@ -91,9 +99,17 @@ async def run_pipeline(
 
     Returns the job ID (int).
     """
+    if workflow_name is None:
+        # Untitled — a block (e.g. Art Director) may name the shoot mid-run
+        job_name = UNTITLED_SHOOT
+    else:
+        job_name = workflow_name
+        # Prevents the Art Director from inventing a different name
+        context.setdefault("photo_shoot_name", workflow_name)
+
     # Create the job row as PENDING — it transitions to RUNNING once the lock is acquired
     async with async_session() as session:
-        job = Job(workflow_name=workflow_name, status=JobStatus.PENDING)
+        job = Job(workflow_name=job_name, status=JobStatus.PENDING)
         session.add(job)
         await session.commit()
         job_id = job.id
@@ -131,6 +147,7 @@ async def _execute_pipeline(
 
         # Transition from PENDING to RUNNING now that we hold the lock
         job.status = JobStatus.RUNNING
+        context["_job_id"] = job_id
 
         # Pre-create PENDING steps for all known blocks so they appear in status
         # queries immediately.  Routing dicts are skipped — those blocks are
@@ -222,6 +239,11 @@ async def _execute_pipeline(
                 await block.validate(context)
                 result = await block.run(context)
                 context.update(result)
+
+                # A block may have named the shoot — retitle the job mid-run
+                name = context.get("photo_shoot_name")
+                if isinstance(name, str) and name.strip() and name != job.workflow_name:
+                    job.workflow_name = resolve_photo_shoot_name(name[:MAX_PHOTO_SHOOT_NAME_LENGTH])
 
                 # Store clean output (exclude internal keys)
                 output_snap = {k: v for k, v in result.items() if not k.startswith("_")}

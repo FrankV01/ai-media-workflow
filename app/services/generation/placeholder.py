@@ -95,6 +95,9 @@ class PlaceholderBackend(GenerationBackend):
         start = time.monotonic()
 
         output_dir = Path(settings.image_output_dir)
+        output_subdir = request.extras.get("output_subdir")
+        if output_subdir:
+            output_dir = output_dir / output_subdir
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Deterministic filename from prompt content

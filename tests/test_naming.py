@@ -4,7 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from app.api.workflows import RunRequest
-from app.pipeline.naming import PhotoShootNameError, resolve_photo_shoot_name
+from app.pipeline.naming import (
+    PhotoShootNameError,
+    output_subdir,
+    resolve_photo_shoot_name,
+    slugify_photo_shoot_name,
+)
 
 
 def test_photo_shoot_name_is_normalized() -> None:
@@ -43,3 +48,14 @@ def test_run_request_requires_photo_shoot_name() -> None:
 def test_photo_shoot_name_rejects_database_overflow() -> None:
     with pytest.raises(PhotoShootNameError, match="255 characters or fewer"):
         resolve_photo_shoot_name("x" * 256)
+
+
+def test_slugify_photo_shoot_name() -> None:
+    assert slugify_photo_shoot_name("  Cyber-Chic: Neo Tokyo!! ") == "cyber-chic-neo-tokyo"
+    assert slugify_photo_shoot_name("") == "untitled-shoot"
+    assert slugify_photo_shoot_name(None) == "untitled-shoot"
+
+
+def test_output_subdir() -> None:
+    assert output_subdir("Cyber Chic", 25) == "cyber-chic/job25"
+    assert output_subdir("Cyber Chic", None) == "cyber-chic"

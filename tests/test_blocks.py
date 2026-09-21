@@ -513,3 +513,118 @@ async def test_role_block_thinking_enabled_omits_reasoning_effort(monkeypatch):
     await PromptArchitect().run({"brief": "a lion"})
 
     assert "reasoning_effort" not in captured
+
+
+# ── Art Director photo-shoot naming tests ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_art_director_extracts_photo_shoot_name(monkeypatch):
+    """A 'PHOTO SHOOT:' header in the brief becomes context['photo_shoot_name']."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.art_director import ArtDirector
+
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client("# PHOTO SHOOT: **Cyber Chic**\n\n### 1. Scene…"),
+    )
+
+    result = await ArtDirector().run({"brief": "a concept"})
+
+    assert result["photo_shoot_name"] == "Cyber Chic"
+    assert "Scene" in result["brief"]
+
+
+@pytest.mark.asyncio
+async def test_art_director_accepts_project_header(monkeypatch):
+    """'PROJECT:' / markdown-emphasized headers are accepted too."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.art_director import ArtDirector
+
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client("**PROJECT: CYBER-CHIC**\nbody"),
+    )
+
+    result = await ArtDirector().run({"brief": "a concept"})
+
+    assert result["photo_shoot_name"] == "CYBER-CHIC"
+
+
+@pytest.mark.asyncio
+async def test_art_director_falls_back_to_concept(monkeypatch):
+    """No title line → derive the name from the input brief."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.art_director import ArtDirector
+
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client("A moody editorial shoot with neon lighting."),
+    )
+
+    result = await ArtDirector().run(
+        {"brief": "women riding a motorcycle in a sci-fi setting at night"}
+    )
+
+    name = result["photo_shoot_name"]
+    assert name == "Women Riding A Motorcycle In A"
+    assert len(name) <= 60
+    assert name.startswith("Women Riding")
+
+
+@pytest.mark.asyncio
+async def test_art_director_respects_preset_name(monkeypatch):
+    """A caller-supplied photo_shoot_name is never overridden."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.art_director import ArtDirector
+
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client("# PHOTO SHOOT: Something Else\n\nbody"),
+    )
+
+    result = await ArtDirector().run({"brief": "x", "photo_shoot_name": "Client Shoot"})
+
+    assert result.get("photo_shoot_name", "Client Shoot") == "Client Shoot"
+
+
+@pytest.mark.asyncio
+async def test_media_producer_groups_output_by_shoot(monkeypatch, tmp_path):
+    """With photo_shoot_name + _job_id in context, images go to <slug>/job<id>/."""
+    import os
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", tmp_path)
+
+    cls = get_block("media_producer")
+    block = cls()
+
+    prompt_json = json.dumps(
+        {
+            "positive_prompt": "A red rose on a white table, photorealistic, 8k",
+            "negative_prompt": "blurry, watermark, text",
+            "positive_refiner_prompt": "fine petal details, soft light",
+            "negative_refiner_prompt": "over-sharpening, noise",
+        }
+    )
+
+    result = await block.run(
+        {
+            "prompt_architect_output": prompt_json,
+            "photo_shoot_name": "Cyber Chic",
+            "_job_id": 7,
+            "_generation_backend": "placeholder",
+        }
+    )
+
+    for path in result["generated_images"]:
+        p = os.fspath(path)
+        assert "cyber-chic" in p and "job7" in p
+        assert os.path.exists(p)
+    for meta in result["generation_metadata"]:
+        assert meta["output_subdir"] == "cyber-chic/job7"

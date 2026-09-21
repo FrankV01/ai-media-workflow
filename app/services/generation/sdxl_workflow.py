@@ -38,6 +38,10 @@ def build_sdxl_workflow(
     positive_refiner = request.positive_refiner_prompt or request.positive_prompt
     negative_refiner = request.negative_refiner_prompt or request.negative_prompt
     prefix = f"aimw_{request.variant_name}"
+    output_subdir = request.extras.get("output_subdir")
+    if output_subdir:
+        # ComfyUI treats '/' in filename_prefix as a subfolder of its output dir
+        prefix = f"{output_subdir}/aimw_{request.variant_name}"
 
     prompt = {
         "1": {

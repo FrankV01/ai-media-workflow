@@ -30,15 +30,16 @@ concept → Art Director → Prompt Architect → Media Producer → Art Critic
                                                           ┌──────┴──────┐
                                                        on_bad        always
                                                           │              │
-                                                    Art Director   Social Media
-                                                    (retry)        Specialist
+                                                   (nothing —      Social Media
+                                                    continues        Specialist
+                                                    to always)
 ```
 
 ### Active Blocks
 
 | Block | Type | Purpose | Key output |
 |---|---|---|---|
-| `art_director` | RoleBlock | Expands concept into creative brief | `art_director_output` |
+| `art_director` | RoleBlock | Expands concept into creative brief | `art_director_output`, `photo_shoot_name` |
 | `prompt_architect` | RoleBlock | Converts brief to structured JSON prompts | `prompt_architect_output` |
 | `media_producer` | Block | Dispatches to generation backend, collects images | `generated_images`, `generation_metadata` |
 | `art_critic` | RoleBlock | Evaluates quality, sets verdict | `art_critic_output`, `_verdict` |
@@ -53,6 +54,14 @@ Special context keys:
 - `_verdict` — set by Art Critic (`"good"` or `"bad"`), read by routing dicts
 - `_original_brief` — preserved by engine at pipeline start for re-routing
 - `_executions` — accumulated LLM call records (internal)
+- `_job_id` — current job id, set by the engine (internal)
+- `photo_shoot_name` — set by the Art Director (or supplied by an API caller); the engine copies it to `Job.workflow_name`, which is the job title shown in the UI
+
+### Output layout
+
+Generated images land in `IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/` (e.g.
+`data/output/cyber-chic/job25/aimw_main_refined_1x_00001_.png`). The slug is
+derived from `photo_shoot_name`; jobs without a name use `untitled-shoot`.
 
 ## Code Style & Conventions
 

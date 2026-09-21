@@ -12,9 +12,17 @@ Output: Detailed photo shoot description (context["brief"] for next role)
 Suggested next role: prompt_architect
 """
 
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any
+
 from app.blocks.base import BlockMeta
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
+
+logger = logging.getLogger(__name__)
 
 ART_DIRECTOR_SYSTEM_PROMPT = """\
 You are a world-class Art Director at a premium creative agency. You specialize \
@@ -32,10 +40,41 @@ When given a high-level concept, you produce a comprehensive creative brief that
 8. **Reference Style** — Name specific photographers, art movements, or visual styles as reference
 9. **Technical Notes** — Any special requirements (resolution, aspect ratio, post-processing style)
 
+Begin your response with a single line in exactly this form, then a blank line:
+PHOTO SHOOT: <a short, evocative 2-5 word title for this shoot>
+
 Write in clear, evocative language. Be specific enough that a Prompt Architect can \
 convert your vision into a precise AI image generation prompt. Do not include any \
-preamble — go straight into the creative brief.\
+preamble — the PHOTO SHOOT title line is the only exception; after it, go straight \
+into the creative brief.\
 """
+
+
+# Matches a title header like "PHOTO SHOOT: Cyber Chic", "# PROJECT: Neo Tokyo",
+# or "**TITLE: Golden Hour**" near the top of the brief
+_TITLE_RE = re.compile(
+    r"^\s*[#*\s]*(?:PHOTO\s*SHOOT|PROJECT|TITLE)\s*[:\-—]\s*(.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def extract_photo_shoot_name(text: str) -> str | None:
+    """Extract a 'PHOTO SHOOT:' style title from the first lines of a brief, or None."""
+    for line in [line for line in text.splitlines() if line.strip()][:5]:
+        match = _TITLE_RE.match(line)
+        if not match:
+            continue
+        title = match.group(1).strip(" *_#\"'").rstrip(".!:").strip()
+        title = " ".join(title.split())
+        if title:
+            return title
+    return None
+
+
+def fallback_photo_shoot_name(concept: str) -> str:
+    """Derive a shoot name from the concept when the LLM emitted no title line."""
+    title = " ".join(concept.split()[:6]).title()[:60].strip()
+    return title or "Untitled Shoot"
 
 
 @register
@@ -45,10 +84,10 @@ class ArtDirector(RoleBlock):
     meta = BlockMeta(
         name="art_director",
         description="Transforms a high-level concept into a detailed photo shoot creative brief",
-        version="0.1.0",
+        version="0.2.0",
         category="creative",
         inputs=["brief"],
-        outputs=["brief", "art_director_output"],
+        outputs=["brief", "art_director_output", "photo_shoot_name"],
     )
 
     role_name = "art_director"
@@ -57,3 +96,18 @@ class ArtDirector(RoleBlock):
     system_prompt = ART_DIRECTOR_SYSTEM_PROMPT
     suggested_next = "prompt_architect"
     default_temperature = 0.8
+
+    async def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        """Run the role, then name the shoot from the brief's title line."""
+        result = await super().run(context)
+
+        # An explicit name from the caller (e.g. the API) always wins
+        if context.get("photo_shoot_name"):
+            return result
+
+        name = extract_photo_shoot_name(result["output_deliverable"]) or (
+            fallback_photo_shoot_name(context.get("_original_brief") or context.get("brief", ""))
+        )
+        result["photo_shoot_name"] = name
+        logger.info("ArtDirector: photo shoot name = %r", name)
+        return result

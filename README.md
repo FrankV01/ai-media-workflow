@@ -39,7 +39,7 @@ User prompt
   → Media Producer        (dispatches prompts to ComfyUI, collects images)
   → Art Critic            (evaluates quality, sets verdict: good / bad)
   → Routing               (branches based on verdict)
-      ├─ on_bad  → Art Director (retry with original brief)
+      ├─ on_bad  → (no retry; falls through to always)
       └─ always  → Social Media Specialist (creates platform posts)
 ```
 
@@ -58,6 +58,7 @@ routing dicts (see `app/pipeline/engine.py`).
   branching via verdict-based routing dicts (`on_good`/`on_bad`/`always`).
 - **Generation backends** — pluggable image generation in
   `app/services/generation/`. ComfyUI for production, placeholder for testing.
+  Images are grouped under `IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/`.
 - **Persistence** — SQLite via SQLAlchemy async. Jobs, steps, input/output
   snapshots, and generated asset paths are all stored.
 - **Web UI** — Jinja2 + HTMX, Tailwind CDN. No JS build step.

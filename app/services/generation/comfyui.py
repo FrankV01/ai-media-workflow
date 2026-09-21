@@ -78,7 +78,8 @@ class ComfyUIBackend(GenerationBackend):
             logger.info("ComfyUI: prompt_id=%s, polling for completion…", prompt_id)
 
             # Poll for completion
-            image_paths = await self._poll_until_done(client, prompt_id)
+            output_subdir = request.extras.get("output_subdir")
+            image_paths = await self._poll_until_done(client, prompt_id, output_subdir)
 
         elapsed = time.monotonic() - start
         logger.info("ComfyUI: generation complete in %.1fs, %d image(s)", elapsed, len(image_paths))
@@ -103,7 +104,12 @@ class ComfyUIBackend(GenerationBackend):
             },
         )
 
-    async def _poll_until_done(self, client: httpx.AsyncClient, prompt_id: str) -> list[Path]:
+    async def _poll_until_done(
+        self,
+        client: httpx.AsyncClient,
+        prompt_id: str,
+        output_subdir: str | None = None,
+    ) -> list[Path]:
         """Poll /history/{prompt_id} until the job finishes or times out."""
         deadline = time.monotonic() + self.timeout
 
@@ -124,7 +130,7 @@ class ComfyUIBackend(GenerationBackend):
                 images = node_output.get("images", [])
                 for img_info in images:
                     # Download the image from ComfyUI
-                    local_path = await self._download_image(client, img_info)
+                    local_path = await self._download_image(client, img_info, output_subdir)
                     if local_path:
                         image_paths.append(local_path)
 
@@ -134,7 +140,12 @@ class ComfyUIBackend(GenerationBackend):
             f"ComfyUI generation timed out after {self.timeout}s for prompt {prompt_id}"
         )
 
-    async def _download_image(self, client: httpx.AsyncClient, img_info: dict) -> Path | None:
+    async def _download_image(
+        self,
+        client: httpx.AsyncClient,
+        img_info: dict,
+        output_subdir: str | None = None,
+    ) -> Path | None:
         """Download a generated image from ComfyUI to local storage."""
         filename = img_info.get("filename")
         subfolder = img_info.get("subfolder", "")
@@ -144,6 +155,8 @@ class ComfyUIBackend(GenerationBackend):
             return None
 
         output_dir = Path(settings.image_output_dir)
+        if output_subdir:
+            output_dir = output_dir / output_subdir
         output_dir.mkdir(parents=True, exist_ok=True)
         local_path = output_dir / filename
 

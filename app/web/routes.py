@@ -275,7 +275,7 @@ async def partial_run_pipeline(
             {"error": "Brief cannot be empty."},
         )
     job_id = await run_pipeline(
-        workflow_name="default",
+        workflow_name=None,
         block_names=list(DEFAULT_WORKFLOW),
         context={"brief": brief},
         start_in_background=True,
@@ -301,7 +301,7 @@ async def partial_run_test_pipeline(
             {"error": "Brief cannot be empty."},
         )
     job_id = await run_pipeline(
-        workflow_name="test",
+        workflow_name=None,
         block_names=list(DEFAULT_WORKFLOW),
         context={"brief": brief, "_generation_backend": "placeholder"},
         start_in_background=True,

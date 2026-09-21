@@ -31,6 +31,7 @@ from typing import Any
 from app.blocks.base import Block, BlockMeta
 from app.blocks.prompt_architect import extract_json_object
 from app.blocks.registry import register
+from app.pipeline.naming import output_subdir
 from app.services.generation import GenerationRequest, get_backend
 
 logger = logging.getLogger(__name__)
@@ -68,9 +69,10 @@ def _parse_prompt_output(raw: str) -> dict:
     return {"positive_prompt": text, "negative_prompt": ""}
 
 
-def _build_requests(parsed: dict) -> list[GenerationRequest]:
+def _build_requests(parsed: dict, subdir: str | None = None) -> list[GenerationRequest]:
     """Build GenerationRequest(s) from the parsed Prompt Architect output."""
     params = parsed.get("parameters", {})
+    extras = {"output_subdir": subdir} if subdir else {}
 
     # Main request
     main = GenerationRequest(
@@ -87,6 +89,7 @@ def _build_requests(parsed: dict) -> list[GenerationRequest]:
         clip_skip=params.get("clip_skip", DEFAULT_PARAMS["clip_skip"]),
         seed=params.get("seed", -1),
         variant_name="main",
+        extras=extras,
     )
 
     requests = [main]
@@ -106,6 +109,7 @@ def _build_requests(parsed: dict) -> list[GenerationRequest]:
             scheduler=main.scheduler,
             clip_skip=main.clip_skip,
             variant_name=variant.get("name", f"variant_{len(requests)}"),
+            extras=dict(extras),
         )
         requests.append(vr)
 
@@ -123,7 +127,7 @@ class MediaProducer(Block):
         ),
         version="0.1.0",
         category="production",
-        inputs=["prompt_architect_output"],
+        inputs=["prompt_architect_output", "photo_shoot_name"],
         outputs=["generated_images", "generation_metadata"],
     )
 
@@ -178,8 +182,11 @@ class MediaProducer(Block):
             len(parsed.get("variants", [])),
         )
 
+        # Group outputs under <shoot-slug>/job<id>/ when the shoot is named
+        subdir = output_subdir(context.get("photo_shoot_name"), context.get("_job_id"))
+
         # Build generation requests
-        requests = _build_requests(parsed)
+        requests = _build_requests(parsed, subdir)
 
         # Get the configured backend (or per-run override)
         backend = self._get_backend(context)
@@ -202,6 +209,7 @@ class MediaProducer(Block):
             all_metadata.append(
                 {
                     "variant_name": req.variant_name,
+                    "output_subdir": subdir,
                     "image_paths": paths,
                     "seed_used": result.seed_used,
                     "backend": result.backend_name,
@@ -219,7 +227,7 @@ class MediaProducer(Block):
 
         # Build a human-readable summary for the brief chain
         summary_lines = [
-            f"Generated {len(all_image_paths)} image(s) via {backend.name}:",
+            f"Generated {len(all_image_paths)} image(s) via {backend.name} into {subdir}:",
         ]
         for meta in all_metadata:
             for p in meta["image_paths"]:
