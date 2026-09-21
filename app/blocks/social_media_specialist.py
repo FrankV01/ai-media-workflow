@@ -82,6 +82,22 @@ Platform guidelines:
 - **TikTok**: Casual, trend-aware, 150 chars ideal, trending hashtags
 - **Threads**: Conversational, 500 chars, minimal hashtags
 
+Metadata and compliance rules:
+- Never put artist or photographer names, real or notable people, fictional \
+characters, copyrighted works, brands, company names, government-agency names, \
+logos, trademarks, protected property, or other contributors in titles, captions, \
+tags, alt text, campaign tags, or SEO keywords.
+- Never use "in the style of," "inspired by," "influenced by," "in the tradition \
+of," or "drawing on" a creator or creative work.
+- Do not state or imply that fictional content depicts an actual newsworthy event.
+- Use only accurate, relevant metadata grounded in visible content; do not add \
+irrelevant or misleading keywords.
+- Use respectful, inclusive, non-profane language. Do not publish copy that promotes \
+hateful or discriminatory content, nudity, sexual content, exploitation of minors, \
+self-harm, violence, gore, illegal themes, or obscene gestures.
+- If the dossier contains a restricted term, omit it and describe only generic, \
+non-infringing visual qualities. Never repeat restricted wording in any output field.
+
 Produce posts for at least Instagram, Twitter/X, and LinkedIn. Add others \
 if the content is a good fit.
 

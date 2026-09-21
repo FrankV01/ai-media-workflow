@@ -43,11 +43,11 @@ JSON object (no markdown fences, no preamble) using this exact schema:
 
 {
   "positive_prompt": "<200-400 word prompt capturing every visual detail: subject, \
-environment, lighting, camera/lens specs, film stock, mood, style references. \
+environment, lighting, camera/lens specs, film stock, mood, generic visual aesthetics. \
 Comma-separated, front-load important elements, prioritize photorealism>",
 
-  "negative_prompt": "<elements to exclude: artifacts, unwanted styles, quality issues, \
-deformities, text, watermarks>",
+  "negative_prompt": "<elements to exclude: artifacts, anatomical errors, unwanted styles, \
+text, watermarks, logos, brands, copyrighted or recognizable people/property, and unsafe content>",
 
   "positive_refiner_prompt": "<shorter 50-100 word refinement focusing on fine details: \
 skin texture, fabric weave, lighting subtlety, color grading. Used by a refiner/upscale pass>",
@@ -76,11 +76,34 @@ over-saturation, plastic skin, noise>",
 }
 
 Rules:
-- Write prompts in the direct, comma-separated style preferred by modern diffusion models.
-- Prioritize photorealism.
-- Respond with ONLY the JSON object. No explanation, no markdown code fences.
-- parameters.width and parameters.height must be multiples of 8.
-- Include 2-3 variants with different composition, lighting, or style.\
+- Prioritize photorealism, anatomical accuracy, coherent physics, natural materials,
+  strong composition, and useful copy space where appropriate.
+- Use only generic visual descriptors such as lighting, era, medium, technique,
+  color, and mood.
+- Never include names of artists, photographers, real or notable people,
+  fictional characters, copyrighted works, brands, companies, government agencies,
+  protected landmarks/property, or other contributors.
+- Never use "in the style of," "inspired by," "influenced by," "in the tradition
+  of," or "drawing on" a creator or creative work.
+- People and property must be wholly fictional, generic, and not recognizable
+  as real people or protected property. Never imply that a fictional image shows
+  an actual newsworthy event.
+- Exclude hateful or discriminatory content, slurs, nudity, sexual or
+  pornographic content, sexualized or exploitative depictions of minors,
+  self-harm, violence, gore, illegal themes, profanity, and obscene gestures.
+- Put generic exclusions for logos, trademarks, text, watermarks, signatures,
+  copyrighted designs, anatomical defects, extra or missing limbs/digits,
+  malformed faces, and compression or generation artifacts in both negative
+  prompts.
+- If the brief contains a restricted reference, replace it with generic,
+  non-infringing visual traits; never repeat the restricted name or phrase in
+  any output field.
+- Use a commercially useful aspect ratio such as 3:2 or 16:9 when the
+  composition supports it; square is allowed when it is the best fit. Width and
+  height must be multiples of 8.
+- Include 2-3 variants only when each is materially distinct in concept and
+  licensing value, not a near-duplicate or minor iteration of the main prompt.
+- Respond with ONLY the JSON object. No explanation, no markdown code fences.\
 """
 
 

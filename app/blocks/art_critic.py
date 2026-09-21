@@ -70,6 +70,11 @@ exact structure (no markdown fences, no preamble):
     "realism": {
       "score": <1-10>,
       "notes": "<anatomical accuracy, physics, material textures, environmental consistency>"
+    },
+    "stock_compliance": {
+      "score": <1-10>,
+      "notes": "<IP, recognizable people/property, safety, originality, \
+commercial utility, submission risks>"
     }
   },
 
@@ -87,7 +92,35 @@ Scoring guidelines:
 - 4-5:  Mediocre, notable problems. Verdict: "bad"
 - 1-3:  Poor quality, significant rework needed. Verdict: "bad"
 
-The verdict threshold is an overall_score of 6 or above = "good", below 6 = "bad".
+Adobe Stock compliance is mandatory regardless of the numeric average. Return a \
+"bad" verdict if the brief, prompts, or reported output includes or appears to \
+include:
+
+- Artist or photographer names; real or notable people; fictional characters;
+  copyrighted works; brands, logos, trademarks, copyrighted designs, company or
+  government-agency names; protected landmarks/property; or imitation of another
+  contributor.
+
+- "In the style of," "inspired by," "influenced by," "in the tradition of," or
+  "drawing on" a creator or creative work.
+
+- A fictional scene presented as an actual newsworthy event, or recognizable
+  people/property without an appropriate release.
+
+- Hateful or discriminatory material, slurs, nudity, sexual or pornographic
+  content, sexualized or exploitative minors, self-harm, violence, gore, illegal
+  themes, profanity, or obscene gestures.
+
+- Anatomical errors, incoherent physics, malformed faces or limbs, extra or
+  missing digits, text, watermarks, signatures, compression artifacts, or other
+  conspicuous generation defects.
+
+- Near-duplicate variants or minor iterations that lack distinct licensing value.
+
+Do not infer that a release exists unless the dossier explicitly says so. Treat
+wholly fictional, non-recognizable people/property as acceptable but note that
+they must be labeled fictional at submission. All generated content must be
+labeled as created using generative AI at submission.
 
 Be honest but constructive. Even "good" work should receive specific feedback. \
 Respond with ONLY the JSON object.\
@@ -200,11 +233,57 @@ class ArtCritic(RoleBlock):
             except (json.JSONDecodeError, AttributeError):
                 pass
 
-        # Last resort: keyword search
+        # Check for Adobe Stock compliance issues
         lower = raw.lower()
-        if '"verdict": "good"' in lower or '"verdict":"good"' in lower:
-            return "good"
-        if '"verdict": "bad"' in lower or '"verdict":"bad"' in lower:
+        if (
+            "artist" in lower
+            or "photographer" in lower
+            or "real people" in lower
+            or "notable people" in lower
+            or "fictional characters" in lower
+            or "copyrighted works" in lower
+            or "brands" in lower
+            or "logos" in lower
+            or "trademarks" in lower
+            or "copyrighted designs" in lower
+            or "company" in lower
+            or "government-agency" in lower
+            or "protected landmarks" in lower
+            or "property" in lower
+            or "imitation" in lower
+            or "in the style of" in lower
+            or "inspired by" in lower
+            or "influenced by" in lower
+            or "in the tradition of" in lower
+            or "drawing on" in lower
+            or "hateful" in lower
+            or "discriminatory" in lower
+            or "slurs" in lower
+            or "nudity" in lower
+            or "sexual" in lower
+            or "pornographic" in lower
+            or "sexualized" in lower
+            or "exploitative" in lower
+            or "minors" in lower
+            or "self-harm" in lower
+            or "violence" in lower
+            or "gore" in lower
+            or "illegal" in lower
+            or "profanity" in lower
+            or "obscene" in lower
+            or "anatomical errors" in lower
+            or "incoherent physics" in lower
+            or "malformed faces" in lower
+            or "limbs" in lower
+            or "extra digits" in lower
+            or "missing digits" in lower
+            or "text" in lower
+            or "watermarks" in lower
+            or "signatures" in lower
+            or "compression artifacts" in lower
+            or "near-duplicate" in lower
+            or "minor iterations" in lower
+        ):
             return "bad"
 
         logger.warning("ArtCritic: could not parse verdict, defaulting to 'bad'")
