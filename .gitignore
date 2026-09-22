@@ -22,3 +22,4 @@ data/output/
 # OS
 .DS_Store
 Thumbs.db
+/data/app.db.*.bak
