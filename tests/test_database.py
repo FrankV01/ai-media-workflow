@@ -37,7 +37,7 @@ from app.models.media import MediaModelConfiguration
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "e2f5a1c9d7b4"
-HEAD_REVISION = "f3a7b2c1d8e5"
+HEAD_REVISION = "a1c4e7b9d2f6"
 
 SessionFactory = async_sessionmaker[AsyncSession]
 

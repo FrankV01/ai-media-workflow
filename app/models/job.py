@@ -38,6 +38,8 @@ class Job(Base):
     # JSON list[str] of runtime warnings (e.g. code-default AI configuration in use)
     warnings: Mapped[str | None] = mapped_column(Text, nullable=True)
     generated_assets: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON list[str] of markdown report paths written by report blocks
+    report_files: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     steps: Mapped[list["JobStep"]] = relationship(back_populates="job", cascade="all, delete")
 

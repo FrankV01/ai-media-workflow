@@ -663,3 +663,164 @@ def test_role_prompts_enforce_adobe_stock_compliance():
     assert "materially distinct" in PROMPT_ARCHITECT_SYSTEM_PROMPT.lower()
     assert "near-duplicate variants" in ART_CRITIC_SYSTEM_PROMPT.lower()
     assert "accurate, relevant metadata" in SOCIAL_MEDIA_SYSTEM_PROMPT.lower()
+
+
+def test_report_blocks_registered():
+    for name in ("art_critic_report", "social_media_report"):
+        cls = get_block(name)
+        assert cls.meta.name == name
+        assert cls.meta.category == "utility"
+
+
+@pytest.mark.asyncio
+async def test_art_critic_report_writes_markdown(monkeypatch, tmp_path):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    images = [str(tmp_path / "a_1x.png"), str(tmp_path / "a_2x.png")]
+    context = {
+        "photo_shoot_name": "Cyber Chic",
+        "_job_id": 7,
+        "art_critic_output": json.dumps({"verdict": "good", "overall_score": 8, "summary": "Nice"}),
+        "art_critic_verdict": "good",
+        "generated_images": images,
+        "generation_metadata": [
+            {
+                "variant_name": "main",
+                "image_paths": images,
+                "seed_used": 42,
+                "backend": "placeholder",
+            }
+        ],
+    }
+
+    block = get_block("art_critic_report")()
+    result = await block.run(context)
+
+    path = tmp_path / "cyber-chic" / "job7" / "art_critic_report.md"
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "## Critique" in text
+    assert "```json" in text
+    assert "## a_1x.png" in text
+    assert "## a_2x.png" in text
+    assert "**good**" in text
+    assert "Variant: main" in text
+    assert result["art_critic_report_path"] == str(path)
+    assert result["report_files"] == [str(path)]
+
+
+@pytest.mark.asyncio
+async def test_art_critic_report_non_json_fallback(monkeypatch, tmp_path):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    context = {
+        "photo_shoot_name": "Cyber Chic",
+        "_job_id": 7,
+        "art_critic_output": "not json at all",
+    }
+
+    block = get_block("art_critic_report")()
+    result = await block.run(context)
+
+    path = tmp_path / "cyber-chic" / "job7" / "art_critic_report.md"
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "not json at all" in text
+    assert "_No generated images recorded._" in text
+    assert "```json" not in text
+    assert result["report_files"] == [str(path)]
+
+
+@pytest.mark.asyncio
+async def test_report_blocks_validate_require_source():
+    for name in ("art_critic_report", "social_media_report"):
+        block = get_block(name)()
+        with pytest.raises(ValueError):
+            await block.validate({})
+
+
+@pytest.mark.asyncio
+async def test_social_media_report_writes_markdown(monkeypatch, tmp_path):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    context = {
+        "photo_shoot_name": "Cyber Chic",
+        "_job_id": 7,
+        "social_media_specialist_output": json.dumps(
+            {"posts": [{"platform": "instagram"}], "summary": "x"}
+        ),
+        "social_media_posts": [
+            {"platform": "instagram", "title": "Hi"},
+            {"platform": "twitter", "title": "Yo"},
+        ],
+        "generated_images": [str(tmp_path / "a_1x.png")],
+        "report_files": ["/prev/report.md"],
+    }
+
+    block = get_block("social_media_report")()
+    result = await block.run(context)
+
+    path = tmp_path / "cyber-chic" / "job7" / "social_media_specialist.md"
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "## Assets" in text
+    assert "## Full Strategy" in text
+    assert "## Posts" in text
+    assert "### instagram" in text
+    assert "### twitter" in text
+    assert result["report_files"] == ["/prev/report.md", str(path)]
+
+
+def test_default_workflow_contains_report_blocks():
+    from app.web.routes import DEFAULT_WORKFLOW
+
+    assert DEFAULT_WORKFLOW.index("art_critic_report") == DEFAULT_WORKFLOW.index("art_critic") + 1
+    routing = next(item for item in DEFAULT_WORKFLOW if isinstance(item, dict))
+    assert routing["always"] == ["social_media_specialist", "social_media_report"]
+
+
+def test_report_blocks_read_role_output_keys():
+    """Report blocks must read the actual {role_name}_output keys RoleBlock emits."""
+    from app.blocks.art_critic import ArtCritic
+    from app.blocks.report_writer import ArtCriticReport, SocialMediaReport
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+
+    assert SocialMediaReport.source_key == f"{SocialMediaSpecialist.role_name}_output"
+    assert ArtCriticReport.source_key == f"{ArtCritic.role_name}_output"
+
+
+@pytest.mark.asyncio
+async def test_social_media_specialist_chains_into_report(monkeypatch, tmp_path):
+    """The specialist's real output key feeds social_media_report's validate/run."""
+    import app.blocks.role_block as role_block_module
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client(
+            json.dumps({"posts": [{"platform": "instagram", "title": "Hi"}], "summary": "x"})
+        ),
+    )
+
+    context = {
+        "brief": "concept",
+        "photo_shoot_name": "Cyber Chic",
+        "_job_id": 9,
+        "generated_images": [str(tmp_path / "a_1x.png")],
+    }
+    result = await get_block("social_media_specialist")().run(context)
+    context.update(result)
+
+    report = get_block("social_media_report")()
+    await report.validate(context)
+    report_result = await report.run(context)
+
+    path = tmp_path / "cyber-chic" / "job9" / "social_media_specialist.md"
+    assert path.exists()
+    assert "### instagram" in path.read_text(encoding="utf-8")
+    assert report_result["social_media_report_path"] == str(path)

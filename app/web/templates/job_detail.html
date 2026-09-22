@@ -68,6 +68,17 @@
         </p>
     </div>
     {% endif %}
+
+    {% if job.report_files %}
+    <div class="mt-4 p-3 rounded bg-gray-800/60 border border-gray-700/50">
+        <p class="text-sm text-gray-300 font-medium">Reports</p>
+        <ul class="mt-1 space-y-1">
+            {% for path in job.report_files %}
+            <li><code class="font-mono text-xs text-gray-400">{{ path }}</code></li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
 </div>
 
 <!-- Steps -->

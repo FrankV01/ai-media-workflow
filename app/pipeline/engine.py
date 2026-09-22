@@ -412,5 +412,10 @@ async def _execute_pipeline(
                 ensure_ascii=False,
             )
 
+        # Persist markdown report paths written by report blocks
+        report_files = context.get("report_files")
+        if report_files:
+            job.report_files = json.dumps(report_files, default=str, ensure_ascii=False)
+
         job.finished_at = datetime.now(UTC)
         await session.commit()

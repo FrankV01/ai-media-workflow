@@ -52,7 +52,8 @@ DEFAULT_WORKFLOW: list[str | dict] = [
     "prompt_architect",
     "media_producer",
     "art_critic",
-    {"on_good": [], "on_bad": [], "always": ["social_media_specialist"]},
+    "art_critic_report",
+    {"on_good": [], "on_bad": [], "always": ["social_media_specialist", "social_media_report"]},
 ]
 
 # Human-friendly titles for blocks (used in the visual)
@@ -62,6 +63,8 @@ _BLOCK_TITLES = {
     "media_producer": "Media Producer",
     "art_critic": "Art Critic",
     "social_media_specialist": "Social Media",
+    "art_critic_report": "Critic Report",
+    "social_media_report": "Social Report",
     "echo": "Echo",
 }
 
@@ -149,6 +152,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         "duration": _fmt_duration(job_raw.created_at, job_raw.finished_at),
         "error": job_raw.error,
         "warnings": json.loads(job_raw.warnings) if job_raw.warnings else [],
+        "report_files": json.loads(job_raw.report_files) if job_raw.report_files else [],
         "steps": [
             {
                 "block_name": s.block_name,

@@ -231,3 +231,31 @@ async def test_pipeline_persists_failed_llm_execution(session_factory, monkeypat
     assert execution.error == "LLM unavailable"
     assert execution.output_deliverable is None
     assert [message.role.value for message in messages] == ["system", "user"]
+
+
+@register
+class ReportFilesBlock(Block):
+    """Test block that emits report_files for the engine to persist."""
+
+    meta = BlockMeta(
+        name="test_report_files_block",
+        description="Emits report_files — engine tests only",
+        category="test",
+        inputs=["brief"],
+        outputs=["report_files"],
+    )
+
+    async def run(self, context):
+        return {"report_files": ["/tmp/x.md"]}
+
+
+async def test_pipeline_persists_report_files(session_factory):
+    """context['report_files'] is persisted to Job.report_files as JSON."""
+    job_id = await engine_module.run_pipeline(
+        workflow_name=None,
+        block_names=["test_report_files_block"],
+        context={"brief": "c"},
+    )
+
+    job = await _get_job(session_factory, job_id)
+    assert json.loads(job.report_files) == ["/tmp/x.md"]

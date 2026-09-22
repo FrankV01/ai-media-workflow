@@ -56,9 +56,11 @@ User prompt
                            positive / negative / refiner-positive / refiner-negative prompts)
   → Media Producer        (dispatches prompts to the generation backend, collects images)
   → Art Critic            (evaluates quality, sets verdict: good / bad)
+  → Critic Report         (writes art_critic_report.md next to the images)
   → Routing               (branches based on verdict)
       ├─ on_bad  → (no retry; falls through to always)
       └─ always  → Social Media Specialist (creates platform posts)
+                 → Social Report (writes social_media_specialist.md)
 ```
 
 Each block writes its report into the pipeline context as
@@ -88,6 +90,8 @@ IMAGE_OUTPUT_DIR/
       aimw_main_upscaled_2x_00001_.png
       aimw_main_upscaled_4x_00001_.png
       aimw_<variant name>_refined_1x_00001_.png
+      art_critic_report.md
+      social_media_specialist.md
       …
 ```
 

@@ -100,6 +100,7 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
         "error": job.error,
         "warnings": json.loads(job.warnings) if job.warnings else [],
         "generated_assets": job.generated_assets,
+        "report_files": json.loads(job.report_files) if job.report_files else [],
         "steps": [
             {
                 "block_name": s.block_name,

@@ -16,7 +16,7 @@ including titles, descriptions, tags, and platform-specific metadata.
 
 Input:  Full pipeline context (all *_output keys + generated_images)
 Output: context["brief"] — human-readable summary
-        context["social_media_output"] — full JSON post suggestions
+        context["social_media_specialist_output"] — full JSON post suggestions
         context["social_media_posts"] — parsed list of post dicts
 
 Suggested next role: None (terminal for now)
@@ -125,7 +125,7 @@ class SocialMediaSpecialist(RoleBlock):
             "art_critic_output",
             "generated_images",
         ],
-        outputs=["brief", "social_media_output", "social_media_posts"],
+        outputs=["brief", "social_media_specialist_output", "social_media_posts"],
     )
 
     role_name = "social_media_specialist"

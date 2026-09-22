@@ -26,14 +26,14 @@ For project overview and setup, see [`README.md`](README.md).
 ## Current Pipeline
 
 ```
-concept → Art Director → Prompt Architect → Media Producer → Art Critic
+concept → Art Director → Prompt Architect → Media Producer → Art Critic → Critic Report
                                                                  │
                                                           ┌──────┴──────┐
                                                        on_bad        always
                                                           │              │
                                                    (nothing —      Social Media
-                                                    continues        Specialist
-                                                    to always)
+                                                    continues    Specialist →
+                                                    to always)   Social Report
 ```
 
 Defined as `DEFAULT_WORKFLOW` in `app/web/routes.py`. There is no retry loop: a bad verdict has no
@@ -47,7 +47,9 @@ blocks attached, so the run falls through to the `always` branch.
 | `prompt_architect` | RoleBlock | Converts brief to structured JSON prompts; fails the step unless all four prompts are present | `prompt_architect_output`, `generation_params` |
 | `media_producer` | Block | Dispatches to generation backend, collects images | `generated_images`, `generation_metadata`, `media_producer_output` |
 | `art_critic` | RoleBlock | Evaluates quality, sets verdict | `art_critic_output`, `_verdict` |
-| `social_media_specialist` | RoleBlock | Creates platform-optimized post suggestions | `social_media_output`, `social_media_posts` |
+| `social_media_specialist` | RoleBlock | Creates platform-optimized post suggestions | `social_media_specialist_output`, `social_media_posts` |
+| `art_critic_report` | Block | Writes critique to art_critic_report.md | `art_critic_report_path`, `report_files` |
+| `social_media_report` | Block | Writes post suggestions to social_media_specialist.md | `social_media_report_path`, `report_files` |
 | `echo` | Block | Test/utility block (`example_block.py`) | `echo_result` |
 
 ### Context flow
@@ -70,6 +72,7 @@ Special context keys:
 - `_executions` — in-memory LLM call records accumulated by RoleBlocks, including failures; after each step the engine persists only the newly added records and their ordered messages into the normalized audit tables
 - `_media_executions` — in-memory per-request image generation records accumulated by MediaProducer, including failures; persisted after each step into `MediaGenerationExecution` rows
 - `_warnings` — deduplicated AI-configuration warnings accumulated by blocks; persisted to `Job.warnings` (JSON list) after every step and surfaced in the API and job detail page
+- `report_files` — list of markdown report paths written by report blocks; the engine copies it to `Job.report_files`
 - `photo_shoot_name` — the shoot title. Set by the Art Director from its `PHOTO SHOOT:` header line (falling back to the first words of the concept), unless an API caller already supplied one. The engine copies it to `Job.workflow_name` after each step, which is the job title shown in the UI
 
 ### Prompt Architect contract
@@ -100,6 +103,8 @@ Generated images land in `IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/` (e.g.
 subdir via `GenerationRequest.extras["output_subdir"]`; both backends save under it, and the
 ComfyUI `filename_prefix` includes it so ComfyUI's own output folder is grouped the same way.
 Each variant yields three files: `_refined_1x`, `_upscaled_2x`, `_upscaled_4x`.
+Report blocks also write `art_critic_report.md` and `social_media_specialist.md`
+into the same per-job directory.
 
 ## Code Style & Conventions
 
@@ -173,7 +178,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 ## Database
 
 - **ORM**: SQLAlchemy 2.0 async sessions. Use `Depends(get_session)` in routes; the engine opens its own session per run.
-- **Models in use**: `Job` (`workflow_name` = photo shoot title, `status`, `error`, `warnings`, `generated_assets`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
+- **Models in use**: `Job` (`workflow_name` = photo shoot title, `status`, `error`, `warnings`, `generated_assets`, `report_files`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
 - **AI configuration**: `CreativeRole` is stable identity metadata only. Mutable behavior profiles live in `LlmRoleConfiguration` keyed by `(role, model)` — `LLM_MODEL` selects which one is active — and `MediaModelConfiguration` keyed by `(block, backend, model)`. `app/services/configuration/` resolves profiles: missing rows are seeded from code defaults (`uses_code_defaults=True`) and emit a warning on every use until customized via `/settings/ai` or `/api/configurations`. Secrets, URLs, timeouts, poll intervals, and filesystem paths stay env-only.
 - **AI execution audit**: Every attempted LLM call and image-generation request stores an *immutable snapshot* — copied prompt/model/parameters (`RoleExecution.system_prompt`, `MediaGenerationExecution.settings_snapshot`), not the mutable configuration FK, are the audit authority. The engine persists each record against the corresponding `JobStep`, including failed calls, and never updates configuration or role rows.
 - **Media precedence**: explicit Prompt Architect `parameters` override the media profile's request defaults, which override code defaults. Seed is per-request, never a profile default. The ComfyUI backend receives its model/workflow settings via an injected `SdxlWorkflowConfig`; operational URL/poll/timeout/output remain env settings.
