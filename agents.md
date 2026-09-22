@@ -98,7 +98,10 @@ and rewrites `prompt_architect_output`/`brief` as clean JSON. The Media Producer
 ### Output layout
 
 Generated images land in `IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/` (e.g.
-`data/output/cyber-chic/job25/aimw_main_refined_1x_00001_.png`). The slug is derived from
+`/Volumes/SanDisk Mac AI/ComfyUI/output/cyber-chic/job25/aimw_main_refined_1x_00001_.png`).
+`IMAGE_OUTPUT_DIR` must be an absolute path and defaults to
+`/Volumes/SanDisk Mac AI/ComfyUI/output`; `scripts/convert_pngs_to_jpegs.py` shares that
+default unless `--output-dir` is given. The slug is derived from
 `photo_shoot_name`; jobs without a name use `untitled-shoot`. The Media Producer passes the
 subdir via `GenerationRequest.extras["output_subdir"]`; both backends save under it, and the
 ComfyUI `filename_prefix` includes it so ComfyUI's own output folder is grouped the same way.

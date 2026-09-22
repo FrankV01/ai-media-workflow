@@ -4,11 +4,13 @@ tests.test_configuration — Database-backed AI configuration tests
 Covers: profile seeding on first use, idempotent re-resolution, custom
 profiles silencing warnings, reset re-enabling warnings, (role, model)
 isolation, 0.0 temperature, immutable execution snapshots across edits,
-failed-LLM snapshots, media precedence/injection/audit, and the REST API.
+failed-LLM snapshots, media precedence/injection/audit, the REST API, and
+environment output configuration (IMAGE_OUTPUT_DIR).
 """
 
 import json
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +23,7 @@ from app.blocks.base import BlockMeta
 from app.blocks.media_producer import MediaProducer, _build_requests
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
-from app.config import settings
+from app.config import Settings, settings
 from app.database import Base
 from app.models.creative import CreativeRole, LlmRoleConfiguration, RoleExecution
 from app.models.job import Job, JobStatus
@@ -85,6 +87,30 @@ def _defaults(model="model-a", temperature=0.5) -> LlmRoleDefaults:
         max_tokens=1024,
         enable_thinking=False,
     )
+
+
+def test_image_output_dir_defaults_to_comfyui_output(monkeypatch):
+    monkeypatch.delenv("IMAGE_OUTPUT_DIR", raising=False)
+
+    configured = Settings(_env_file=None)
+
+    assert configured.image_output_dir == Path("/Volumes/SanDisk Mac AI/ComfyUI/output")
+
+
+def test_image_output_dir_environment_override(monkeypatch, tmp_path):
+    output_dir = tmp_path / "generated"
+    monkeypatch.setenv("IMAGE_OUTPUT_DIR", str(output_dir))
+
+    configured = Settings(_env_file=None)
+
+    assert configured.image_output_dir == output_dir
+
+
+def test_image_output_dir_rejects_relative_path(monkeypatch):
+    monkeypatch.setenv("IMAGE_OUTPUT_DIR", "./data/output")
+
+    with pytest.raises(ValueError, match="IMAGE_OUTPUT_DIR must be an absolute path"):
+        Settings(_env_file=None)
 
 
 # ── Provider behavior ────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ See `.env.example` for all available settings and defaults.
 
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,7 +52,15 @@ class Settings(BaseSettings):
     refiner_sampler: str = "dpmpp_2m"
     refiner_scheduler: str = "karras"
     refiner_denoise: float = 0.25
-    image_output_dir: Path = Path("./data/output")
+    image_output_dir: Path = Path("/Volumes/SanDisk Mac AI/ComfyUI/output")
+
+    @field_validator("image_output_dir")
+    @classmethod
+    def require_absolute_image_output_dir(cls, value: Path) -> Path:
+        output_dir = value.expanduser()
+        if not output_dir.is_absolute():
+            raise ValueError("IMAGE_OUTPUT_DIR must be an absolute path")
+        return output_dir
 
 
 settings = Settings()

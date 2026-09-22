@@ -95,6 +95,11 @@ IMAGE_OUTPUT_DIR/
       …
 ```
 
+`IMAGE_OUTPUT_DIR` defaults to `/Volumes/SanDisk Mac AI/ComfyUI/output`, must be
+an absolute path, and can be overridden via the environment.
+`scripts/convert_pngs_to_jpegs.py` writes to `IMAGE_OUTPUT_DIR` when
+`--output-dir` is omitted; an explicit `--output-dir` overrides it.
+
 The ComfyUI backend runs an SDXL base → refiner → 2x/4x upscale workflow, so
 each prompt variant produces three files.
 

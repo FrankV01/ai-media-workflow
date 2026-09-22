@@ -9,6 +9,8 @@ from pathlib import Path
 
 from PIL import Image, ImageCms, ImageOps
 
+from app.config import settings
+
 MIN_MEGAPIXELS = 4.0
 MAX_MEGAPIXELS = 100.0
 JPEG_QUALITY = 95
@@ -77,9 +79,10 @@ def convert_pngs_to_jpegs(
     if min_megapixels <= 0 or max_megapixels < min_megapixels:
         raise ValueError("megapixel limits must be positive and ordered")
 
-    destination = Path(output_dir).expanduser() if output_dir is not None else None
-    if destination is not None:
-        destination.mkdir(parents=True, exist_ok=True)
+    destination = (
+        Path(output_dir).expanduser() if output_dir is not None else settings.image_output_dir
+    )
+    destination.mkdir(parents=True, exist_ok=True)
 
     outputs: list[Path] = []
     srgb_profile = _srgb_profile_bytes()
@@ -91,8 +94,7 @@ def convert_pngs_to_jpegs(
         if source.suffix.lower() != ".png":
             raise ValueError(f"Expected a PNG file: {source}")
 
-        target_dir = destination or source.parent
-        target = target_dir / f"{source.stem}.jpg"
+        target = destination / f"{source.stem}.jpg"
         if target.exists():
             raise FileExistsError(f"Refusing to overwrite existing file: {target}")
 
@@ -123,7 +125,11 @@ def _parse_args() -> argparse.Namespace:
         description="Convert PNG files to high-quality sRGB JPEGs for Adobe Stock.",
     )
     parser.add_argument("files", nargs="+", type=Path, help="PNG files to convert")
-    parser.add_argument("--output-dir", type=Path, help="Directory for converted JPEG files")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Directory for converted JPEG files (default: IMAGE_OUTPUT_DIR)",
+    )
     parser.add_argument(
         "--no-upscale",
         action="store_true",
