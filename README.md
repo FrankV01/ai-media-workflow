@@ -66,7 +66,7 @@ User prompt
   → Critic Report         (writes art_critic_report.md next to the images)
   → Routing               (branches based on verdict)
       ├─ on_bad  → (no retry; falls through to always)
-      └─ always  → Social Media Specialist (creates platform posts)
+      └─ always  → Social Media Specialist (creates marketing content: social posts + licensing metadata)
                  → Social Report (writes social_media_specialist.md)
 ```
 

@@ -11,12 +11,18 @@ She has access to:
 - The generation results and file paths (Media Producer)
 - The quality critique and verdict (Art Critic)
 
-From these she produces structured JSON with per-platform post suggestions
-including titles, descriptions, tags, and platform-specific metadata.
+From these she produces structured JSON with marketing content for two
+channel categories: per-channel social media post suggestions and listing
+metadata for content licensing platforms.
+
+The JSON response contract is defined in code (SOCIAL_MEDIA_RESPONSE_SCHEMA)
+and appended to the resolved system prompt at run time, so it applies to
+default and customized prompts alike. Any JSON object embedded in a custom
+prompt is merged over the schema — official key names always remain.
 
 Input:  Full pipeline context (all *_output keys + generated_images)
 Output: context["brief"] — human-readable summary
-        context["social_media_specialist_output"] — full JSON post suggestions
+        context["social_media_specialist_output"] — full JSON marketing content
         context["social_media_posts"] — parsed list of post dicts
 
 Suggested next role: None (terminal for now)
@@ -26,18 +32,21 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any
 
 from app.blocks.base import BlockMeta
+from app.blocks.prompt_architect import build_output_contract
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
+from app.services.configuration.base import ResolvedLlmConfiguration
 
 logger = logging.getLogger(__name__)
 
 SOCIAL_MEDIA_SYSTEM_PROMPT = """\
-You are a top-tier Social Media Strategist and Content Creator with expertise \
-across all major platforms. You understand algorithmic reach, engagement \
-psychology, and platform-specific best practices.
+You are a top-tier Content Strategist and Marketing Specialist for visual media. \
+You understand audience engagement, channel conventions, and what makes visual \
+assets discoverable and marketable.
 
 You will receive a complete production dossier containing:
 1. The original creative brief from the Art Director
@@ -45,65 +54,58 @@ You will receive a complete production dossier containing:
 3. A summary of the generated assets (including file paths)
 4. A quality critique from the Art Critic
 
-Your task is to create platform-optimized social media post suggestions for \
-the generated visual content. Produce a JSON response with this exact structure \
-(no markdown fences, no preamble):
+Your task is to create marketing content for the generated assets across two \
+categories of distribution channels:
 
-{
-  "posts": [
-    {
-      "platform": "<instagram|twitter|linkedin|facebook|pinterest|tiktok|threads>",
-      "title": "<post title or headline — keep punchy and attention-grabbing>",
-      "description": "<the full post caption/body text, platform-appropriate length>",
-      "tags": ["<hashtag1>", "<hashtag2>", "...up to 30 for IG, 5 for Twitter, etc."],
-      "alt_text": "<accessibility alt-text describing the image for screen readers>",
-      "suggested_time": "<best posting time, e.g. 'Tuesday 10am EST'>",
-      "content_type": "<image|carousel|reel|story>",
-      "call_to_action": "<suggested CTA, e.g. 'Link in bio', 'Save for later'>",
-      "notes": "<any platform-specific tips or considerations>"
-    }
-  ],
+- **Social media** — post suggestions tailored to each channel's conventions: \
+format, caption length, tag usage, and tone. Each post should feel native to \
+its channel, not like a cross-post.
+- **Content licensing platforms** — listing metadata for each asset: a concise \
+descriptive title, an accurate description grounded in the visible content, \
+relevant search keywords, and a suggested category.
 
-  "brand_voice": "<1-2 sentence summary of the tone/voice used across posts>",
-
-  "campaign_tags": ["<3-5 overarching campaign hashtags>"],
-
-  "seo_keywords": ["<5-10 SEO keywords for discoverability>"],
-
-  "summary": "<brief executive summary of the social media strategy>"
-}
-
-Platform guidelines:
-- **Instagram**: Up to 2,200 chars caption, 30 hashtags max, visual-first, use line breaks
-- **Twitter/X**: 280 chars max, 2-5 hashtags, punchy and conversational
-- **LinkedIn**: Professional tone, 1,300 chars ideal, 3-5 hashtags, thought leadership angle
-- **Facebook**: 1-2 paragraphs, conversational, encourage shares and comments
-- **Pinterest**: SEO-rich description, 500 chars, keyword-heavy tags
-- **TikTok**: Casual, trend-aware, 150 chars ideal, trending hashtags
-- **Threads**: Conversational, 500 chars, minimal hashtags
-
-Metadata and compliance rules:
-- Never put artist or photographer names, real or notable people, fictional \
-characters, copyrighted works, brands, company names, government-agency names, \
-logos, trademarks, protected property, or other contributors in titles, captions, \
-tags, alt text, campaign tags, or SEO keywords.
-- Never use "in the style of," "inspired by," "influenced by," "in the tradition \
-of," or "drawing on" a creator or creative work.
-- Do not state or imply that fictional content depicts an actual newsworthy event.
-- Use only accurate, relevant metadata grounded in visible content; do not add \
+Guidelines:
+- Adapt tone, length, and format to each channel rather than reusing identical copy.
+- Keep all metadata accurate and grounded in the visible content; do not add \
 irrelevant or misleading keywords.
-- Use respectful, inclusive, non-profane language. Do not publish copy that promotes \
-hateful or discriminatory content, nudity, sexual content, exploitation of minors, \
-self-harm, violence, gore, illegal themes, or obscene gestures.
-- If the dossier contains a restricted term, omit it and describe only generic, \
-non-infringing visual qualities. Never repeat restricted wording in any output field.
+- Keep the content original and broadly usable: avoid naming real artists, \
+brands, people, or copyrighted works; describe qualities generically.
+- Use respectful, inclusive, non-profane language.
 
-Produce posts for at least Instagram, Twitter/X, and LinkedIn. Add others \
-if the content is a good fit.
-
-Be creative, authentic, and strategic. Each post should feel native to its \
-platform, not like a cross-post. Respond with ONLY the JSON object.\
+Be creative, authentic, and strategic.\
 """
+
+SOCIAL_MEDIA_RESPONSE_SCHEMA: dict[str, Any] = {
+    "posts": [
+        {
+            "platform": "<social channel name or type, e.g. image feed, microblog, "
+            "professional network, short-video app>",
+            "title": "<post title or headline — punchy and attention-grabbing>",
+            "description": "<full post caption/body text, channel-appropriate length>",
+            "tags": ["<hashtag or topic tag>", "..."],
+            "alt_text": "<accessibility alt-text describing the image>",
+            "suggested_time": "<best posting time, e.g. 'Tuesday 10am'>",
+            "content_type": "<format suited to the channel: single image, carousel, "
+            "short video, story>",
+            "call_to_action": "<suggested CTA, e.g. 'Link in bio', 'Save for later'>",
+            "notes": "<channel-specific tips or considerations>",
+        }
+    ],
+    "licensing": [
+        {
+            "platform": "<content licensing platform or marketplace>",
+            "title": "<concise, descriptive asset title>",
+            "description": "<accurate listing description grounded in the visible content>",
+            "keywords": ["<relevant search keyword>", "..."],
+            "category": "<suggested asset category>",
+            "notes": "<platform-specific considerations>",
+        }
+    ],
+    "brand_voice": "<1-2 sentence summary of the tone/voice used>",
+    "campaign_tags": ["<3-5 overarching campaign tags>"],
+    "seo_keywords": ["<5-10 search keywords for discoverability>"],
+    "summary": "<brief executive summary of the marketing strategy>",
+}
 
 
 @register
@@ -115,7 +117,7 @@ class SocialMediaSpecialist(RoleBlock):
         description=(
             "Creates platform-optimized social media posts from generated assets and reports"
         ),
-        version="0.1.0",
+        version="0.2.0",
         category="creative",
         inputs=[
             "brief",
@@ -129,14 +131,27 @@ class SocialMediaSpecialist(RoleBlock):
     )
 
     role_name = "social_media_specialist"
-    role_title = "Social Media Strategist & Content Creator"
+    role_title = "Marketing & Content Strategist"
     role_description = (
-        "Crafts platform-optimized social media post suggestions "
-        "from generated assets and the full production dossier"
+        "Crafts marketing content for social channels and content licensing "
+        "platforms from generated assets and the full production dossier"
     )
     system_prompt = SOCIAL_MEDIA_SYSTEM_PROMPT
     suggested_next = None  # Terminal block for now
     default_temperature = 0.7
+
+    async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:
+        """Resolve the profile, then append the canonical JSON response contract.
+
+        The contract applies whether the prompt is the code default or a user
+        customization, so the specialist's output stays parseable either way.
+        """
+        resolved = await super().resolve_configuration(context)
+        return replace(
+            resolved,
+            system_prompt=resolved.system_prompt
+            + build_output_contract(resolved.system_prompt, SOCIAL_MEDIA_RESPONSE_SCHEMA),
+        )
 
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """Compile the full dossier and pass to the LLM for post suggestions."""

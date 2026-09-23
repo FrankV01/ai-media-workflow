@@ -172,4 +172,17 @@ class SocialMediaReport(MarkdownReportBlock):
                     "```json\n" + json.dumps(post, indent=2, ensure_ascii=False) + "\n```",
                 ]
 
+        output = context.get("social_media_specialist_output")
+        parsed = extract_json_object(output) if isinstance(output, str) else None
+        licensing = (parsed or {}).get("licensing") or []
+        if licensing:
+            lines += ["", "## Licensing"]
+            for entry in licensing:
+                lines += [
+                    "",
+                    f"### {entry.get('platform') or 'unknown'}",
+                    "",
+                    "```json\n" + json.dumps(entry, indent=2, ensure_ascii=False) + "\n```",
+                ]
+
         return "\n".join(lines).rstrip("\n") + "\n"

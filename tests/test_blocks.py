@@ -152,6 +152,80 @@ def test_social_media_specialist_post_parsing_fallback():
     assert posts == []
 
 
+def test_social_media_prompt_is_generic():
+    from app.blocks.social_media_specialist import SOCIAL_MEDIA_SYSTEM_PROMPT
+
+    normalized = SOCIAL_MEDIA_SYSTEM_PROMPT.lower()
+    vendors = (
+        "instagram",
+        "twitter",
+        "linkedin",
+        "facebook",
+        "pinterest",
+        "tiktok",
+        "threads",
+        "adobe",
+    )
+    for vendor in vendors:
+        assert vendor not in normalized
+    assert "brand_voice" not in SOCIAL_MEDIA_SYSTEM_PROMPT
+
+
+def test_social_media_output_contract_contains_schema():
+    from app.blocks.prompt_architect import build_output_contract
+    from app.blocks.social_media_specialist import (
+        SOCIAL_MEDIA_RESPONSE_SCHEMA,
+        SOCIAL_MEDIA_SYSTEM_PROMPT,
+    )
+
+    contract = build_output_contract(SOCIAL_MEDIA_SYSTEM_PROMPT, SOCIAL_MEDIA_RESPONSE_SCHEMA)
+    assert "Respond with ONLY a JSON object" in contract
+    keys = ("posts", "licensing", "brand_voice", "campaign_tags", "seo_keywords", "summary")
+    for key in keys:
+        assert f'"{key}"' in contract
+    for vendor in ("instagram", "twitter", "adobe"):
+        assert vendor not in contract.lower()
+
+
+def test_social_media_output_contract_merges_user_json():
+    """User JSON redefines official keys and adds keys; official keys remain."""
+    from app.blocks.prompt_architect import build_output_contract
+    from app.blocks.social_media_specialist import SOCIAL_MEDIA_RESPONSE_SCHEMA
+
+    prompt = 'Custom strategist. Return {"summary": "<one line>", "extra_key": "<x>"}'
+    contract = build_output_contract(prompt, SOCIAL_MEDIA_RESPONSE_SCHEMA)
+    assert "<one line>" in contract
+    assert '"posts"' in contract
+    assert '"extra_key"' in contract
+
+
+@pytest.mark.asyncio
+async def test_social_media_appends_contract_to_resolved_prompt():
+    """The JSON contract is appended post-resolution for custom prompts too."""
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+    from app.services.configuration.base import ResolvedLlmConfiguration
+
+    class _StubProvider:
+        async def resolve_llm(self, defaults):
+            return ResolvedLlmConfiguration(
+                configuration_id=1,
+                role_id=1,
+                source="custom",
+                warning=None,
+                system_prompt="You are a custom strategist.",
+                model_name="m",
+                temperature=0.7,
+                max_tokens=1000,
+                enable_thinking=False,
+            )
+
+    specialist = SocialMediaSpecialist(provider=_StubProvider())
+    resolved = await specialist.resolve_configuration({})
+    assert resolved.system_prompt.startswith("You are a custom strategist.")
+    assert '"licensing"' in resolved.system_prompt
+    assert "Respond with ONLY a JSON object" in resolved.system_prompt
+
+
 # ── Art Critic block tests ─────────────────────────────────────────────
 
 
@@ -933,3 +1007,34 @@ async def test_social_media_specialist_chains_into_report(monkeypatch, tmp_path)
     assert path.exists()
     assert "### instagram" in path.read_text(encoding="utf-8")
     assert report_result["social_media_report_path"] == str(path)
+
+
+@pytest.mark.asyncio
+async def test_social_media_report_renders_licensing(monkeypatch, tmp_path):
+    """Licensing entries in the specialist output get their own report section."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    context = {
+        "photo_shoot_name": "Cyber Chic",
+        "_job_id": 11,
+        "_job_created_date": "2026-09-23",
+        "social_media_specialist_output": json.dumps(
+            {
+                "posts": [{"platform": "image feed", "title": "Hi"}],
+                "licensing": [{"platform": "stock marketplace", "title": "Neon Portrait"}],
+                "summary": "x",
+            }
+        ),
+        "social_media_posts": [{"platform": "image feed", "title": "Hi"}],
+        "generated_images": [str(tmp_path / "a_1x.png")],
+    }
+
+    report = get_block("social_media_report")()
+    result = await report.run(context)
+
+    report_path = tmp_path / "2026-09-23" / "cyber-chic" / "job11" / "social_media_specialist.md"
+    text = report_path.read_text(encoding="utf-8")
+    assert "## Licensing" in text
+    assert "### stock marketplace" in text
+    assert result["social_media_report_path"].endswith("social_media_specialist.md")
