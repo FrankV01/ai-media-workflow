@@ -1,4 +1,26 @@
-"""Convert PNG files to high-quality, Adobe Stock-oriented JPEG files."""
+"""
+    Convert PNG files to high-quality, Adobe Stock-oriented JPEG files.
+
+
+Example usage:
+
+    # Convert a single PNG (writes to IMAGE_OUTPUT_DIR)
+    python scripts/convert_pngs_to_jpegs.py image.png
+
+    # Convert several PNGs at once
+    python scripts/convert_pngs_to_jpegs.py shot1.png shot2.png shot3.png
+
+    # Write JPEGs to a specific directory
+    python scripts/convert_pngs_to_jpegs.py image.png --output-dir ./stock_uploads
+
+    # Keep small images at their original size instead of upscaling to 4 MP
+    python scripts/convert_pngs_to_jpegs.py image.png --no-upscale
+
+    # From Python code
+    from scripts.convert_pngs_to_jpegs import convert_pngs_to_jpegs
+    outputs = convert_pngs_to_jpegs(["image.png"], output_dir="./stock_uploads")
+
+"""
 
 from __future__ import annotations
 
