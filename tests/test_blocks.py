@@ -631,14 +631,19 @@ async def test_media_producer_groups_output_by_shoot(monkeypatch, tmp_path):
         assert meta["output_subdir"] == "2026-09-23/cyber-chic/job7"
 
 
+def test_art_director_prompt_is_generic():
+    from app.blocks.art_director import ART_DIRECTOR_SYSTEM_PROMPT
+
+    assert "adobe" not in ART_DIRECTOR_SYSTEM_PROMPT.lower()
+    assert "PHOTO SHOOT:" in ART_DIRECTOR_SYSTEM_PROMPT
+
+
 def test_role_prompts_enforce_adobe_stock_compliance():
     from app.blocks.art_critic import ART_CRITIC_SYSTEM_PROMPT
-    from app.blocks.art_director import ART_DIRECTOR_SYSTEM_PROMPT
     from app.blocks.prompt_architect import PROMPT_ARCHITECT_SYSTEM_PROMPT
     from app.blocks.social_media_specialist import SOCIAL_MEDIA_SYSTEM_PROMPT
 
     prompts = (
-        ART_DIRECTOR_SYSTEM_PROMPT,
         PROMPT_ARCHITECT_SYSTEM_PROMPT,
         ART_CRITIC_SYSTEM_PROMPT,
         SOCIAL_MEDIA_SYSTEM_PROMPT,
