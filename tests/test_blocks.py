@@ -696,34 +696,78 @@ def test_art_director_prompt_is_generic():
     assert "PHOTO SHOOT:" in ART_DIRECTOR_SYSTEM_PROMPT
 
 
-def test_role_prompts_enforce_adobe_stock_compliance():
+def test_prompt_architect_prompt_is_generic():
     from app.blocks.prompt_architect import PROMPT_ARCHITECT_SYSTEM_PROMPT
-    from app.blocks.social_media_specialist import SOCIAL_MEDIA_SYSTEM_PROMPT
 
-    prompts = (
+    normalized = PROMPT_ARCHITECT_SYSTEM_PROMPT.lower()
+    for vendor in ("adobe", "stable diffusion", "comfyui", "flux"):
+        assert vendor not in normalized
+    assert "positive_prompt" not in PROMPT_ARCHITECT_SYSTEM_PROMPT
+
+
+def test_prompt_architect_output_contract_contains_schema():
+    from app.blocks.prompt_architect import (
+        PROMPT_ARCHITECT_RESPONSE_SCHEMA,
         PROMPT_ARCHITECT_SYSTEM_PROMPT,
-        SOCIAL_MEDIA_SYSTEM_PROMPT,
-    )
-    required_rules = (
-        "in the style of",
-        "real or notable people",
-        "fictional characters",
-        "government",
-        "newsworthy event",
-        "hateful or discriminatory",
-        "nudity",
-        "self-harm",
-        "violence",
-        "gore",
+        build_output_contract,
     )
 
-    for prompt in prompts:
-        normalized = prompt.lower()
-        for rule in required_rules:
-            assert rule in normalized
+    contract = build_output_contract(
+        PROMPT_ARCHITECT_SYSTEM_PROMPT, PROMPT_ARCHITECT_RESPONSE_SCHEMA
+    )
+    assert "Respond with ONLY a JSON object" in contract
+    keys = (
+        "positive_prompt",
+        "negative_prompt",
+        "positive_refiner_prompt",
+        "negative_refiner_prompt",
+        "parameters",
+        "variants",
+    )
+    for key in keys:
+        assert f'"{key}"' in contract
+    assert "aspect_ratio" not in contract
 
-    assert "materially distinct" in PROMPT_ARCHITECT_SYSTEM_PROMPT.lower()
-    assert "accurate, relevant metadata" in SOCIAL_MEDIA_SYSTEM_PROMPT.lower()
+
+def test_prompt_architect_output_contract_merges_user_json():
+    """User JSON redefines official keys and adds keys; official keys remain."""
+    from app.blocks.prompt_architect import (
+        PROMPT_ARCHITECT_RESPONSE_SCHEMA,
+        build_output_contract,
+    )
+
+    prompt = 'Custom architect. Return {"positive_prompt": "<short punchy>", "extra_key": "<x>"}'
+    contract = build_output_contract(prompt, PROMPT_ARCHITECT_RESPONSE_SCHEMA)
+    assert "<short punchy>" in contract
+    assert '"negative_prompt"' in contract
+    assert '"extra_key"' in contract
+
+
+@pytest.mark.asyncio
+async def test_prompt_architect_appends_contract_to_resolved_prompt():
+    """The JSON contract is appended post-resolution for custom prompts too."""
+    from app.blocks.prompt_architect import PromptArchitect
+    from app.services.configuration.base import ResolvedLlmConfiguration
+
+    class _StubProvider:
+        async def resolve_llm(self, defaults):
+            return ResolvedLlmConfiguration(
+                configuration_id=1,
+                role_id=1,
+                source="custom",
+                warning=None,
+                system_prompt="You are a custom architect.",
+                model_name="m",
+                temperature=0.6,
+                max_tokens=1000,
+                enable_thinking=False,
+            )
+
+    architect = PromptArchitect(provider=_StubProvider())
+    resolved = await architect.resolve_configuration({})
+    assert resolved.system_prompt.startswith("You are a custom architect.")
+    assert '"positive_prompt"' in resolved.system_prompt
+    assert "Respond with ONLY a JSON object" in resolved.system_prompt
 
 
 def test_report_blocks_registered():

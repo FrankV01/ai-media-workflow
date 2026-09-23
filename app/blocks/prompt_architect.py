@@ -2,7 +2,12 @@
 app.blocks.prompt_architect — Prompt Architect creative role
 
 Converts Art Director's creative brief into structured JSON for the
-Media Producer's generation backend (currently SDXL via ComfyUI).
+Media Producer's generation backend.
+
+The JSON response contract is defined in code (PROMPT_ARCHITECT_RESPONSE_SCHEMA)
+and appended to the resolved system prompt at run time, so it applies to
+default and customized prompts alike. Any JSON object embedded in a custom
+prompt is merged over the schema — official key names always remain.
 
 Input:  context["brief"] — creative brief from Art Director
 Output: Structured JSON with positive/negative/refiner prompts (all four
@@ -18,11 +23,13 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any
 
 from app.blocks.base import BlockMeta
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
+from app.services.configuration.base import ResolvedLlmConfiguration
 
 logger = logging.getLogger(__name__)
 
@@ -35,76 +42,53 @@ REQUIRED_PROMPT_KEYS = (
 )
 
 PROMPT_ARCHITECT_SYSTEM_PROMPT = """\
-You are an expert Realism & Prompt Architect specializing in AI text-to-image generation. \
-You have deep expertise in crafting prompts for Stable Diffusion XL, Flux, and ComfyUI workflows.
+You are an expert Prompt Architect specializing in AI text-to-image generation. \
+You have deep expertise in translating creative briefs into precise, effective \
+prompts for modern image-generation models and workflows.
 
-When given a detailed creative brief from an Art Director, you MUST respond with ONLY a valid \
-JSON object (no markdown fences, no preamble) using this exact schema:
+When given a detailed creative brief from an Art Director, convert it into \
+structured generation prompts that faithfully capture the brief's intent.
 
-{
-  "positive_prompt": "<200-400 word prompt capturing every visual detail: subject, \
-environment, lighting, camera/lens specs, film stock, mood, generic visual aesthetics. \
-Comma-separated, front-load important elements, prioritize photorealism>",
+Guidelines:
+- Front-load the most important visual elements; favor concrete, specific \
+  descriptors over abstract ones.
+- Use generic visual descriptors — lighting, era, medium, technique, color, mood — \
+  rather than naming specific artists, brands, people, or copyrighted works; \
+  describe qualities generically when the brief references something specific.
+- When overriding generation parameters, keep width and height as multiples of 8.
+- Offer variants only when each is materially distinct in concept — a genuinely \
+  different take, not a minor iteration of the main prompt.
 
-  "negative_prompt": "<elements to exclude: artifacts, anatomical errors, unwanted styles, \
-text, watermarks, logos, brands, copyrighted or recognizable people/property, and unsafe content>",
-
-  "positive_refiner_prompt": "<shorter 50-100 word refinement focusing on fine details: \
-skin texture, fabric weave, lighting subtlety, color grading. Used by a refiner/upscale pass>",
-
-  "negative_refiner_prompt": "<refiner-specific exclusions: over-sharpening, \
-over-saturation, plastic skin, noise>",
-
-  "parameters": {
-    "width": 1024,
-    "height": 1024,
-    "cfg_scale": 7.0,
-    "steps": 69,
-    "sampler": "dpmpp_2m",
-    "scheduler": "karras",
-    "clip_skip": 1,
-    "aspect_ratio": "1:1"
-  },
-
-  "variants": [
-    {
-      "name": "<short label>",
-      "positive_prompt": "<alternative angle/mood/composition>",
-      "negative_prompt": "<if different from main>"
-    }
-  ]
-}
-
-Rules:
-- Prioritize photorealism, anatomical accuracy, coherent physics, natural materials,
-  strong composition, and useful copy space where appropriate.
-- Use only generic visual descriptors such as lighting, era, medium, technique,
-  color, and mood.
-- Never include names of artists, photographers, real or notable people,
-  fictional characters, copyrighted works, brands, companies, government agencies,
-  protected landmarks/property, or other contributors.
-- Never use "in the style of," "inspired by," "influenced by," "in the tradition
-  of," or "drawing on" a creator or creative work.
-- People and property must be wholly fictional, generic, and not recognizable
-  as real people or protected property. Never imply that a fictional image shows
-  an actual newsworthy event.
-- Exclude hateful or discriminatory content, slurs, nudity, sexual or
-  pornographic content, sexualized or exploitative depictions of minors,
-  self-harm, violence, gore, illegal themes, profanity, and obscene gestures.
-- Put generic exclusions for logos, trademarks, text, watermarks, signatures,
-  copyrighted designs, anatomical defects, extra or missing limbs/digits,
-  malformed faces, and compression or generation artifacts in both negative
-  prompts.
-- If the brief contains a restricted reference, replace it with generic,
-  non-infringing visual traits; never repeat the restricted name or phrase in
-  any output field.
-- Use a commercially useful aspect ratio such as 3:2 or 16:9 when the
-  composition supports it; square is allowed when it is the best fit. Width and
-  height must be multiples of 8.
-- Include 2-3 variants only when each is materially distinct in concept and
-  licensing value, not a near-duplicate or minor iteration of the main prompt.
-- Respond with ONLY the JSON object. No explanation, no markdown code fences.\
+Be precise and economical — every word in a prompt should earn its place.\
 """
+
+PROMPT_ARCHITECT_RESPONSE_SCHEMA: dict[str, Any] = {
+    "positive_prompt": "<200-400 word prompt capturing every visual detail from the "
+    "brief: subject, environment, lighting, camera/lens specs, mood, visual "
+    "aesthetics. Comma-separated, front-load important elements>",
+    "negative_prompt": "<elements to exclude: artifacts, anatomical errors, "
+    "unwanted styles, text, watermarks, logos, and other defects or distractions>",
+    "positive_refiner_prompt": "<shorter 50-100 word refinement of fine details: "
+    "textures, lighting subtlety, color grading — used by a refiner/upscale pass>",
+    "negative_refiner_prompt": "<refiner-specific exclusions: over-sharpening, "
+    "over-saturation, plastic skin, noise>",
+    "parameters": {
+        "width": 1024,
+        "height": 1024,
+        "cfg_scale": 7.0,
+        "steps": 69,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras",
+        "clip_skip": 1,
+    },
+    "variants": [
+        {
+            "name": "<short label>",
+            "positive_prompt": "<alternative angle/mood/composition>",
+            "negative_prompt": "<if different from main>",
+        }
+    ],
+}
 
 
 def extract_json_object(raw: str) -> dict | None:
@@ -141,6 +125,22 @@ def extract_json_object(raw: str) -> dict | None:
     return None
 
 
+def build_output_contract(system_prompt: str, schema: dict[str, Any]) -> str:
+    """Return a JSON response contract to append to a system prompt.
+
+    Any JSON object embedded in the prompt is merged over the canonical
+    schema: official key names always remain (they can't be removed or
+    renamed), while user values may redefine them and extra user keys
+    pass through.
+    """
+    user_schema = extract_json_object(system_prompt) or {}
+    merged = {**schema, **user_schema}
+    return (
+        "\n\nRespond with ONLY a JSON object (no markdown fences, no preamble) "
+        "using this exact structure:\n\n" + json.dumps(merged, indent=2)
+    )
+
+
 def validate_prompt_output(parsed: dict) -> list[str]:
     """Return the names of required prompt keys that are missing or blank."""
     missing = []
@@ -158,7 +158,7 @@ class PromptArchitect(RoleBlock):
     meta = BlockMeta(
         name="prompt_architect",
         description="Converts photo shoot briefs into structured image generation prompts (JSON)",
-        version="0.3.0",
+        version="0.4.0",
         category="creative",
         inputs=["brief"],
         outputs=["brief", "prompt_architect_output", "generation_params"],
@@ -168,11 +168,24 @@ class PromptArchitect(RoleBlock):
     role_title = "Realism & Prompt Architect"
     role_description = (
         "Converts creative briefs into structured, validated text-to-image prompts "
-        "for Stable Diffusion XL / ComfyUI workflows"
+        "for modern image-generation backends"
     )
     system_prompt = PROMPT_ARCHITECT_SYSTEM_PROMPT
     suggested_next = "media_producer"
     default_temperature = 0.6
+
+    async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:
+        """Resolve the profile, then append the canonical JSON response contract.
+
+        The contract applies whether the prompt is the code default or a user
+        customization, so the architect's output stays parseable either way.
+        """
+        resolved = await super().resolve_configuration(context)
+        return replace(
+            resolved,
+            system_prompt=resolved.system_prompt
+            + build_output_contract(resolved.system_prompt, PROMPT_ARCHITECT_RESPONSE_SCHEMA),
+        )
 
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """Run the role, then validate and normalize the structured prompt JSON."""

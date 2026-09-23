@@ -14,7 +14,7 @@ For project overview and setup, see [`README.md`](README.md).
 ## Architecture Principles
 
 1. **Blocks are the atomic unit.** Every processing step is a `Block` subclass in `app/blocks/`. Blocks declare metadata (`BlockMeta`: name, description, version, category, inputs, outputs), implement `async run(context)`, and may override `async validate(context)` (called by the engine before `run`; raise to fail the step early).
-2. **RoleBlock for LLM roles.** LLM-powered "employees" subclass `RoleBlock` (`app/blocks/role_block.py`), which resolves the per-(role, model) profile via `app/services/configuration`, handles the OpenAI-compatible chat call, token tracking, and context threading. It raises `ValueError` if the model returns empty content (the step fails instead of silently passing an empty brief downstream), and sends `reasoning_effort="none"` unless the resolved profile has `enable_thinking` set, so thinking models don't burn `max_tokens` on hidden reasoning. `art_critic` additionally overrides `resolve_configuration` to append a canonical JSON response contract (`ART_CRITIC_RESPONSE_SCHEMA`) to the resolved prompt — applied to default and customized prompts alike; a JSON object embedded in a custom prompt merges over the schema (official key names always remain).
+2. **RoleBlock for LLM roles.** LLM-powered "employees" subclass `RoleBlock` (`app/blocks/role_block.py`), which resolves the per-(role, model) profile via `app/services/configuration`, handles the OpenAI-compatible chat call, token tracking, and context threading. It raises `ValueError` if the model returns empty content (the step fails instead of silently passing an empty brief downstream), and sends `reasoning_effort="none"` unless the resolved profile has `enable_thinking` set, so thinking models don't burn `max_tokens` on hidden reasoning. `art_critic` and `prompt_architect` additionally override `resolve_configuration` to append a canonical JSON response contract (`ART_CRITIC_RESPONSE_SCHEMA` / `PROMPT_ARCHITECT_RESPONSE_SCHEMA`, rendered by `build_output_contract` in `prompt_architect.py`) to the resolved prompt — applied to default and customized prompts alike; a JSON object embedded in a custom prompt merges over the schema (official key names always remain).
 3. **Pipeline engine supports branching.** `app/pipeline/engine.py` runs blocks sequentially and supports conditional routing via verdict-based dicts (`on_good`/`on_bad`/`always`). The original user brief is preserved across routing.
 4. **One workload at a time.** `app/services/workload_guard.py` provides a reentrant async lock backed by an OS file lock. The engine holds it for the whole pipeline; RoleBlocks and the ComfyUI backend re-acquire it (reentrantly) per call. Additional submissions stay `PENDING` until the running job finishes, so the LLM and ComfyUI are never hit concurrently.
 5. **Registry = auto-discovery.** Decorate a `Block` subclass with `@register` and it's available everywhere. `discover_blocks()` imports every module in `app/blocks/` at startup. No manual wiring.
@@ -44,7 +44,7 @@ blocks attached, so the run falls through to the `always` branch.
 | Block | Type | Purpose | Key output |
 |---|---|---|---|
 | `art_director` | RoleBlock | Expands concept into creative brief; names the shoot | `art_director_output`, `photo_shoot_name` |
-| `prompt_architect` | RoleBlock | Converts brief to structured JSON prompts; fails the step unless all four prompts are present | `prompt_architect_output`, `generation_params` |
+| `prompt_architect` | RoleBlock | Converts brief to structured JSON prompts; appends canonical JSON contract to resolved prompt; fails the step unless all four prompts are present | `prompt_architect_output`, `generation_params` |
 | `media_producer` | Block | Dispatches to generation backend, collects images | `generated_images`, `generation_metadata`, `media_producer_output` |
 | `art_critic` | RoleBlock | Evaluates quality, sets verdict; appends canonical JSON contract to resolved prompt | `art_critic_output`, `_verdict` |
 | `social_media_specialist` | RoleBlock | Creates platform-optimized post suggestions | `social_media_specialist_output`, `social_media_posts` |
@@ -78,12 +78,15 @@ Special context keys:
 
 ### Prompt Architect contract
 
-The Prompt Architect must emit a JSON object with `positive_prompt`, `negative_prompt`,
-`positive_refiner_prompt`, and `negative_refiner_prompt` (all non-blank), plus optional
-`parameters` and `variants`. `PromptArchitect.run` parses the response (tolerating markdown
-fences/preamble), raises `ValueError` if the JSON is missing or any required prompt is blank,
-and rewrites `prompt_architect_output`/`brief` as clean JSON. The Media Producer builds one
-`GenerationRequest` for the main prompt plus one per variant.
+The canonical response schema (`PROMPT_ARCHITECT_RESPONSE_SCHEMA`) is appended to the
+resolved system prompt at run time — applied to default and customized prompts alike,
+with any JSON embedded in a custom prompt merged over it (official key names always
+remain). It requires `positive_prompt`, `negative_prompt`, `positive_refiner_prompt`,
+and `negative_refiner_prompt` (all non-blank), plus optional `parameters` (a per-request
+override of the media profile) and `variants`. `PromptArchitect.run` parses the response
+(tolerating markdown fences/preamble), raises `ValueError` if the JSON is missing or any
+required prompt is blank, and rewrites `prompt_architect_output`/`brief` as clean JSON.
+The Media Producer builds one `GenerationRequest` for the main prompt plus one per variant.
 
 ### Job naming
 

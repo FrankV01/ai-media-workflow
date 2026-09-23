@@ -33,7 +33,7 @@ from dataclasses import replace
 from typing import Any
 
 from app.blocks.base import BlockMeta
-from app.blocks.prompt_architect import extract_json_object
+from app.blocks.prompt_architect import build_output_contract as _build_contract
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
 from app.services.configuration.base import ResolvedLlmConfiguration
@@ -84,12 +84,7 @@ def build_output_contract(system_prompt: str) -> str:
     be removed or renamed), while user values may redefine them and extra
     user keys pass through.
     """
-    user_schema = extract_json_object(system_prompt) or {}
-    schema = {**ART_CRITIC_RESPONSE_SCHEMA, **user_schema}
-    return (
-        "\n\nRespond with ONLY a JSON object (no markdown fences, no preamble) "
-        "using this exact structure:\n\n" + json.dumps(schema, indent=2)
-    )
+    return _build_contract(system_prompt, ART_CRITIC_RESPONSE_SCHEMA)
 
 
 @register
