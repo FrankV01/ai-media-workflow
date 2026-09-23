@@ -10,6 +10,11 @@ for conditional branching (on_good / on_bad / always). In the default
 workflow neither verdict attaches extra blocks — both fall through to the
 "always" branch (Social Media Specialist); there is no retry loop.
 
+The JSON response contract is defined in code (ART_CRITIC_RESPONSE_SCHEMA)
+and appended to the resolved system prompt at run time, so it applies to
+default and customized prompts alike. Any JSON object embedded in a custom
+prompt is merged over the schema — official key names always remain.
+
 Input:  context["brief"] — typically the media_producer summary + image paths
         context["art_director_output"] — original creative brief (for comparison)
         context["prompt_architect_output"] — structured prompts used
@@ -24,67 +29,33 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any
 
 from app.blocks.base import BlockMeta
+from app.blocks.prompt_architect import extract_json_object
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
+from app.services.configuration.base import ResolvedLlmConfiguration
 
 logger = logging.getLogger(__name__)
 
 ART_CRITIC_SYSTEM_PROMPT = """\
 You are a world-class Art Critic and Visual Quality Analyst. You have decades of \
 experience evaluating photography, digital art, and AI-generated imagery. You assess \
-work with a discerning eye but remain constructive and actionable.
+work with a discerning eye but remain constructive and actionable. You appreciate \
+the aesthetics of modern AI-generated imagery — its characteristic nuances and \
+artifacts are part of the medium, not automatic defects.
 
 You will receive:
 1. A summary of what was generated (image paths, generation parameters)
 2. The original creative brief from the Art Director
 3. The technical prompts that were used to generate the images
 
-Your task is to evaluate the generated work and produce a JSON response with this \
-exact structure (no markdown fences, no preamble):
-
-{
-  "verdict": "good" or "bad",
-
-  "overall_score": <1-10 integer>,
-
-  "critique": {
-    "composition": {
-      "score": <1-10>,
-      "notes": "<assessment of framing, balance, focal points, visual flow>"
-    },
-    "technical_quality": {
-      "score": <1-10>,
-      "notes": "<sharpness, resolution artifacts, color accuracy, lighting fidelity>"
-    },
-    "prompt_adherence": {
-      "score": <1-10>,
-      "notes": "<how well the output matches the creative brief and prompt intent>"
-    },
-    "artistic_merit": {
-      "score": <1-10>,
-      "notes": "<mood, emotional impact, originality, style coherence>"
-    },
-    "realism": {
-      "score": <1-10>,
-      "notes": "<anatomical accuracy, physics, material textures, environmental consistency>"
-    },
-    "stock_compliance": {
-      "score": <1-10>,
-      "notes": "<IP, recognizable people/property, safety, originality, \
-commercial utility, submission risks>"
-    }
-  },
-
-  "strengths": ["<strength 1>", "<strength 2>", ...],
-  "weaknesses": ["<weakness 1>", "<weakness 2>", ...],
-
-  "recommendations": ["<specific actionable improvement 1>", ...],
-
-  "summary": "<2-3 sentence executive summary of the evaluation>"
-}
+Evaluate the work against the creative brief's intent. Weigh composition, technical \
+quality, prompt adherence, artistic merit, and overall impact. Judge the images on \
+their own merits — avoid fixating on named artists, brands, real people, or \
+copyrighted works; describe qualities generically when they matter.
 
 Scoring guidelines:
 - 8-10: Exceptional work, publish-ready. Verdict: "good"
@@ -92,39 +63,33 @@ Scoring guidelines:
 - 4-5:  Mediocre, notable problems. Verdict: "bad"
 - 1-3:  Poor quality, significant rework needed. Verdict: "bad"
 
-Adobe Stock compliance is mandatory regardless of the numeric average. Return a \
-"bad" verdict if the brief, prompts, or reported output includes or appears to \
-include:
-
-- Artist or photographer names; real or notable people; fictional characters;
-  copyrighted works; brands, logos, trademarks, copyrighted designs, company or
-  government-agency names; protected landmarks/property; or imitation of another
-  contributor.
-
-- "In the style of," "inspired by," "influenced by," "in the tradition of," or
-  "drawing on" a creator or creative work.
-
-- A fictional scene presented as an actual newsworthy event, or recognizable
-  people/property without an appropriate release.
-
-- Hateful or discriminatory material, slurs, nudity, sexual or pornographic
-  content, sexualized or exploitative minors, self-harm, violence, gore, illegal
-  themes, profanity, or obscene gestures.
-
-- Anatomical errors, incoherent physics, malformed faces or limbs, extra or
-  missing digits, text, watermarks, signatures, compression artifacts, or other
-  conspicuous generation defects.
-
-- Near-duplicate variants or minor iterations that lack distinct licensing value.
-
-Do not infer that a release exists unless the dossier explicitly says so. Treat
-wholly fictional, non-recognizable people/property as acceptable but note that
-they must be labeled fictional at submission. All generated content must be
-labeled as created using generative AI at submission.
-
-Be honest but constructive. Even "good" work should receive specific feedback. \
-Respond with ONLY the JSON object.\
+Be honest but constructive. Even "good" work should receive specific feedback.\
 """
+
+ART_CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
+    "verdict": '"good" or "bad"',
+    "overall_score": "<1-10 integer>",
+    "strengths": ["<strength 1>", "<strength 2>", "..."],
+    "weaknesses": ["<weakness 1>", "<weakness 2>", "..."],
+    "recommendations": ["<specific actionable improvement 1>", "..."],
+    "summary": "<2-3 sentence executive summary of the evaluation>",
+}
+
+
+def build_output_contract(system_prompt: str) -> str:
+    """Return the canonical JSON response contract to append to a system prompt.
+
+    Any JSON object embedded in the prompt is merged over
+    ART_CRITIC_RESPONSE_SCHEMA: official key names always remain (they can't
+    be removed or renamed), while user values may redefine them and extra
+    user keys pass through.
+    """
+    user_schema = extract_json_object(system_prompt) or {}
+    schema = {**ART_CRITIC_RESPONSE_SCHEMA, **user_schema}
+    return (
+        "\n\nRespond with ONLY a JSON object (no markdown fences, no preamble) "
+        "using this exact structure:\n\n" + json.dumps(schema, indent=2)
+    )
 
 
 @register
@@ -134,7 +99,7 @@ class ArtCritic(RoleBlock):
     meta = BlockMeta(
         name="art_critic",
         description="Evaluates generated media quality and produces a verdict for pipeline routing",
-        version="0.1.0",
+        version="0.2.0",
         category="creative",
         inputs=["brief", "art_director_output", "prompt_architect_output"],
         outputs=["brief", "art_critic_output", "_verdict"],
@@ -144,11 +109,23 @@ class ArtCritic(RoleBlock):
     role_title = "Art Critic & Visual Quality Analyst"
     role_description = (
         "Evaluates generated imagery against the creative brief, "
-        "producing a structured critique and binary verdict for pipeline routing"
+        "producing a structured evaluation and binary verdict for pipeline routing"
     )
     system_prompt = ART_CRITIC_SYSTEM_PROMPT
     suggested_next = None  # Routing handled by pipeline engine, not suggested_next
     default_temperature = 0.4  # Lower temp for more consistent evaluations
+
+    async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:
+        """Resolve the profile, then append the canonical JSON response contract.
+
+        The contract applies whether the prompt is the code default or a user
+        customization, so the critic's output stays parseable either way.
+        """
+        resolved = await super().resolve_configuration(context)
+        return replace(
+            resolved,
+            system_prompt=resolved.system_prompt + build_output_contract(resolved.system_prompt),
+        )
 
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """Run the base RoleBlock, then extract the verdict from the JSON response."""
@@ -232,59 +209,6 @@ class ArtCritic(RoleBlock):
                 return "good" if isinstance(score, (int, float)) and score >= 6 else "bad"
             except (json.JSONDecodeError, AttributeError):
                 pass
-
-        # Check for Adobe Stock compliance issues
-        lower = raw.lower()
-        if (
-            "artist" in lower
-            or "photographer" in lower
-            or "real people" in lower
-            or "notable people" in lower
-            or "fictional characters" in lower
-            or "copyrighted works" in lower
-            or "brands" in lower
-            or "logos" in lower
-            or "trademarks" in lower
-            or "copyrighted designs" in lower
-            or "company" in lower
-            or "government-agency" in lower
-            or "protected landmarks" in lower
-            or "property" in lower
-            or "imitation" in lower
-            or "in the style of" in lower
-            or "inspired by" in lower
-            or "influenced by" in lower
-            or "in the tradition of" in lower
-            or "drawing on" in lower
-            or "hateful" in lower
-            or "discriminatory" in lower
-            or "slurs" in lower
-            or "nudity" in lower
-            or "sexual" in lower
-            or "pornographic" in lower
-            or "sexualized" in lower
-            or "exploitative" in lower
-            or "minors" in lower
-            or "self-harm" in lower
-            or "violence" in lower
-            or "gore" in lower
-            or "illegal" in lower
-            or "profanity" in lower
-            or "obscene" in lower
-            or "anatomical errors" in lower
-            or "incoherent physics" in lower
-            or "malformed faces" in lower
-            or "limbs" in lower
-            or "extra digits" in lower
-            or "missing digits" in lower
-            or "text" in lower
-            or "watermarks" in lower
-            or "signatures" in lower
-            or "compression artifacts" in lower
-            or "near-duplicate" in lower
-            or "minor iterations" in lower
-        ):
-            return "bad"
 
         logger.warning("ArtCritic: could not parse verdict, defaulting to 'bad'")
         return "bad"

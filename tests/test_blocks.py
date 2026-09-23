@@ -207,6 +207,64 @@ def test_art_critic_verdict_fallback_to_bad():
     assert critic._extract_verdict("totally garbled output") == "bad"
 
 
+def test_art_critic_prompt_is_generic():
+    from app.blocks.art_critic import ART_CRITIC_SYSTEM_PROMPT
+
+    assert "adobe" not in ART_CRITIC_SYSTEM_PROMPT.lower()
+    assert "overall_score" not in ART_CRITIC_SYSTEM_PROMPT
+    assert "Scoring guidelines" in ART_CRITIC_SYSTEM_PROMPT
+
+
+def test_art_critic_output_contract_contains_schema():
+    from app.blocks.art_critic import ART_CRITIC_SYSTEM_PROMPT, build_output_contract
+
+    contract = build_output_contract(ART_CRITIC_SYSTEM_PROMPT)
+    assert "Respond with ONLY a JSON object" in contract
+    keys = ("verdict", "overall_score", "strengths", "weaknesses", "recommendations", "summary")
+    for key in keys:
+        assert f'"{key}"' in contract
+    assert "critique" not in contract
+
+
+def test_art_critic_output_contract_merges_user_json():
+    """User JSON redefines official keys and adds keys; official keys remain."""
+    from app.blocks.art_critic import build_output_contract
+
+    prompt = 'Custom critic. Return {"summary": "<1 sentence>", "extra_key": "<x>"}'
+    contract = build_output_contract(prompt)
+    assert "<1 sentence>" in contract
+    assert '"verdict"' in contract
+    assert '"overall_score"' in contract
+    assert '"extra_key"' in contract
+
+
+@pytest.mark.asyncio
+async def test_art_critic_appends_contract_to_resolved_prompt():
+    """The JSON contract is appended post-resolution for custom prompts too."""
+    from app.blocks.art_critic import ArtCritic
+    from app.services.configuration.base import ResolvedLlmConfiguration
+
+    class _StubProvider:
+        async def resolve_llm(self, defaults):
+            return ResolvedLlmConfiguration(
+                configuration_id=1,
+                role_id=1,
+                source="custom",
+                warning=None,
+                system_prompt="You are a custom critic.",
+                model_name="m",
+                temperature=0.4,
+                max_tokens=1000,
+                enable_thinking=False,
+            )
+
+    critic = ArtCritic(provider=_StubProvider())
+    resolved = await critic.resolve_configuration({})
+    assert resolved.system_prompt.startswith("You are a custom critic.")
+    assert '"verdict"' in resolved.system_prompt
+    assert "Respond with ONLY a JSON object" in resolved.system_prompt
+
+
 def test_media_producer_suggests_art_critic():
     cls = get_block("media_producer")
     block = cls()
@@ -639,13 +697,11 @@ def test_art_director_prompt_is_generic():
 
 
 def test_role_prompts_enforce_adobe_stock_compliance():
-    from app.blocks.art_critic import ART_CRITIC_SYSTEM_PROMPT
     from app.blocks.prompt_architect import PROMPT_ARCHITECT_SYSTEM_PROMPT
     from app.blocks.social_media_specialist import SOCIAL_MEDIA_SYSTEM_PROMPT
 
     prompts = (
         PROMPT_ARCHITECT_SYSTEM_PROMPT,
-        ART_CRITIC_SYSTEM_PROMPT,
         SOCIAL_MEDIA_SYSTEM_PROMPT,
     )
     required_rules = (
@@ -667,7 +723,6 @@ def test_role_prompts_enforce_adobe_stock_compliance():
             assert rule in normalized
 
     assert "materially distinct" in PROMPT_ARCHITECT_SYSTEM_PROMPT.lower()
-    assert "near-duplicate variants" in ART_CRITIC_SYSTEM_PROMPT.lower()
     assert "accurate, relevant metadata" in SOCIAL_MEDIA_SYSTEM_PROMPT.lower()
 
 
