@@ -3,8 +3,14 @@ app.web.routes — HTML routes served via Jinja2 + HTMX
 
 Full pages:
 - /              — Dashboard (blocks, jobs, pipeline visual, quick run)
-- /jobs/<id>     — Job detail with step-by-step input/output + runtime stats
-- /settings/ai   — AI configuration: LLM role profiles + media model profiles
+- /jobs/<id>     — Job detail: step-by-step input/output + the effective
+                   LLM execution audit (prompt snapshot, model, parameters)
+- /settings/ai   — AI configuration: LLM role profiles (with audited change
+                   history) + media model profiles
+
+Form POSTs (redirect to /settings/ai with a status query):
+- /settings/ai/llm/save, /settings/ai/llm/reset     — audited LLM mutations
+- /settings/ai/media/save, /settings/ai/media/reset — media profile mutations
 
 HTMX partials (return HTML fragments, not full pages):
 - /partials/blocks              — styled block list
@@ -21,6 +27,7 @@ used by the dashboard visual and available for API submissions.
 import json
 from dataclasses import replace
 from datetime import datetime
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -34,9 +41,13 @@ from app.blocks.media_producer import code_media_defaults, selected_media_model
 from app.blocks.registry import get_block, list_blocks
 from app.config import settings
 from app.database import get_session
+from app.models.creative import RoleExecution
 from app.models.job import Job
 from app.pipeline.engine import run_pipeline
-from app.services.configuration.base import MediaProfileSettings
+from app.services.configuration.base import (
+    LLM_CHANGE_ORIGIN_WEB_SETTINGS,
+    MediaProfileSettings,
+)
 from app.services.configuration.catalog import is_media_block, registered_role_blocks
 from app.services.configuration.database import DatabaseConfigurationProvider
 from app.services.configuration.schemas import (
@@ -139,6 +150,20 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     sorted_steps = sorted(job_raw.steps, key=lambda s: s.order)
+
+    # Effective LLM audit rows per step — the copied fields are the
+    # immutable record of what was actually sent to the model
+    executions_by_step: dict[int, list[RoleExecution]] = {}
+    step_ids = [s.id for s in sorted_steps]
+    if step_ids:
+        exec_result = await session.execute(
+            select(RoleExecution)
+            .where(RoleExecution.job_step_id.in_(step_ids))
+            .order_by(RoleExecution.id)
+        )
+        for execution in exec_result.scalars().all():
+            executions_by_step.setdefault(execution.job_step_id, []).append(execution)
+
     job = {
         "id": job_raw.id,
         "workflow_name": job_raw.workflow_name,
@@ -162,6 +187,28 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
                 "input_brief": _extract_brief(s.input_context),
                 "output_brief": _extract_brief(s.output),
                 "error": s.error,
+                "llm_executions": [
+                    {
+                        "id": ex.id,
+                        "configuration_id": ex.configuration_id,
+                        "configuration_source": ex.configuration_source,
+                        "system_prompt": ex.system_prompt,
+                        "model_used": ex.model_used,
+                        "temperature": ex.temperature,
+                        "max_tokens": ex.max_tokens,
+                        "reasoning_effort": ex.reasoning_effort,
+                        "status": ex.status,
+                        "started_at": (
+                            ex.started_at.strftime("%b %d, %Y %H:%M:%S") if ex.started_at else None
+                        ),
+                        "finished_at": (
+                            ex.finished_at.strftime("%b %d, %Y %H:%M:%S")
+                            if ex.finished_at
+                            else None
+                        ),
+                    }
+                    for ex in executions_by_step.get(s.id, [])
+                ],
             }
             for s in sorted_steps
         ],
@@ -179,6 +226,8 @@ async def ai_settings_page(request: Request):
     Lazily seeds profiles for the currently selected LLM model and media
     backend/model so every form is immediately editable; seeded rows keep
     uses_code_defaults=True and still warn at execution until customized.
+    Seeding only creates MISSING rows — this GET never overwrites existing
+    profile values and never writes change-history events.
     """
     provider = DatabaseConfigurationProvider()
 
@@ -192,6 +241,10 @@ async def ai_settings_page(request: Request):
 
     llm_rows = await provider.list_llm_configurations()
     media_rows = await provider.list_media_configurations()
+    changes = await provider.list_llm_configuration_changes([config.id for _, config in llm_rows])
+    changes_by_config: dict[int, list] = {}
+    for change in changes:  # already newest-first
+        changes_by_config.setdefault(change.configuration_id, []).append(change)
 
     media_profiles = [
         {
@@ -206,7 +259,39 @@ async def ai_settings_page(request: Request):
 
     profiles_by_role: dict[str, list] = {}
     for role, config in llm_rows:
-        profiles_by_role.setdefault(role.name, []).append(config)
+        profiles_by_role.setdefault(role.name, []).append(
+            {
+                "model_name": config.model_name,
+                "system_prompt": config.system_prompt,
+                "temperature": config.temperature,
+                "max_tokens": config.max_tokens,
+                "enable_thinking": config.enable_thinking,
+                "uses_code_defaults": config.uses_code_defaults,
+                "changes": [
+                    {
+                        "id": change.id,
+                        "action": change.action,
+                        "origin": change.origin,
+                        "created_at": (
+                            change.created_at.strftime("%b %d, %Y %H:%M:%S")
+                            if change.created_at
+                            else "—"
+                        ),
+                        "before": json.dumps(
+                            json.loads(change.before_snapshot),
+                            indent=2,
+                            ensure_ascii=False,
+                        ),
+                        "after": json.dumps(
+                            json.loads(change.after_snapshot),
+                            indent=2,
+                            ensure_ascii=False,
+                        ),
+                    }
+                    for change in changes_by_config.get(config.id, [])[:5]
+                ],
+            }
+        )
 
     roles = [
         {
@@ -231,8 +316,17 @@ async def ai_settings_page(request: Request):
                 "media_producer", backend_name, media_model
             ).settings,
             "status": request.query_params.get("status"),
+            "status_kind": request.query_params.get("kind"),
+            "status_name": request.query_params.get("name"),
+            "status_model": request.query_params.get("model"),
         },
     )
+
+
+def _settings_redirect(status: str, kind: str, name: str, model: str) -> RedirectResponse:
+    """Redirect to /settings/ai with a precise, URL-encoded status query."""
+    query = urlencode({"status": status, "kind": kind, "name": name, "model": model})
+    return RedirectResponse(f"/settings/ai?{query}", status_code=303)
 
 
 def _unprocessable(exc: ValidationError) -> HTTPException:
@@ -270,8 +364,9 @@ async def ai_settings_save_llm(
         temperature=body.temperature,
         max_tokens=body.max_tokens,
         enable_thinking=body.enable_thinking,
+        origin=LLM_CHANGE_ORIGIN_WEB_SETTINGS,
     )
-    return RedirectResponse("/settings/ai?status=saved", status_code=303)
+    return _settings_redirect("saved", "llm", role_name, body.model_name)
 
 
 @router.post("/settings/ai/llm/reset")
@@ -279,7 +374,7 @@ async def ai_settings_reset_llm(
     role_name: str = Form(...),
     model_name: str = Form(...),
 ):
-    """Reset an LLM role profile back to code defaults."""
+    """Reset an LLM role profile back to code defaults (audited)."""
     block = registered_role_blocks().get(role_name)
     if block is None:
         raise HTTPException(404, f"Unknown role '{role_name}'")
@@ -288,8 +383,10 @@ async def ai_settings_reset_llm(
     except ValidationError as exc:
         raise _unprocessable(exc) from exc
     defaults = replace(block.code_defaults(), model_name=body.model_name.strip())
-    await DatabaseConfigurationProvider().reset_llm_configuration(defaults)
-    return RedirectResponse("/settings/ai?status=reset", status_code=303)
+    await DatabaseConfigurationProvider().reset_llm_configuration(
+        defaults, origin=LLM_CHANGE_ORIGIN_WEB_SETTINGS
+    )
+    return _settings_redirect("reset", "llm", role_name, body.model_name)
 
 
 @router.post("/settings/ai/media/save")
@@ -345,7 +442,7 @@ async def ai_settings_save_media(
         body.model_name.strip(),
         body.to_settings(),
     )
-    return RedirectResponse("/settings/ai?status=saved", status_code=303)
+    return _settings_redirect("saved", "media", "media_producer", body.model_name)
 
 
 @router.post("/settings/ai/media/reset")
@@ -361,7 +458,7 @@ async def ai_settings_reset_media(
     await DatabaseConfigurationProvider().reset_media_configuration(
         code_media_defaults("media_producer", body.backend_name.strip(), body.model_name.strip())
     )
-    return RedirectResponse("/settings/ai?status=reset", status_code=303)
+    return _settings_redirect("reset", "media", "media_producer", body.model_name)
 
 
 # ── HTMX partials ────────────────────────────────────────────────────────

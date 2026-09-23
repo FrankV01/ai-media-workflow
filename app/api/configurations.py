@@ -6,9 +6,14 @@ Mounted at /api/configurations.
 - GET  /llm                          — list all LLM role profiles
 - PUT  /llm/{role_name}              — save a custom LLM profile (model in body)
 - POST /llm/{role_name}/reset        — restore code defaults (model in body)
+- GET  /llm/{role_name}/history      — audited save/reset events (model in query)
 - GET  /media                        — list all media model profiles
 - PUT  /media/{block_name}           — save a custom media profile (backend/model in body)
 - POST /media/{block_name}/reset     — restore code defaults (backend/model in body)
+
+LLM saves/resets are audited: each call records an LlmConfigurationChange
+row (action, origin='rest_api', JSON before/after snapshots) in the same
+transaction as the profile update.
 
 Model names may contain '/', so model and backend are always request-body or
 query fields, never path components. Responses include source/default flags,
@@ -21,6 +26,7 @@ app/services/configuration/schemas.py (canonical checks in
 app/services/configuration/base.py).
 """
 
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -28,7 +34,10 @@ from fastapi import APIRouter, HTTPException
 
 from app.blocks.media_producer import code_media_defaults, selected_media_model
 from app.config import settings
-from app.services.configuration.base import MediaProfileSettings
+from app.services.configuration.base import (
+    LLM_CHANGE_ORIGIN_REST_API,
+    MediaProfileSettings,
+)
 from app.services.configuration.catalog import is_media_block, registered_role_blocks
 from app.services.configuration.database import DatabaseConfigurationProvider
 from app.services.configuration.schemas import (
@@ -115,6 +124,7 @@ async def put_llm_configuration(role_name: str, body: LlmProfileInput):
         temperature=body.temperature,
         max_tokens=body.max_tokens,
         enable_thinking=body.enable_thinking,
+        origin=LLM_CHANGE_ORIGIN_REST_API,
     )
     _, role = await _role_for_config(role_name)
     return _llm_json(role, config)
@@ -127,9 +137,47 @@ async def reset_llm_configuration(role_name: str, body: LlmResetInput):
     if block is None:
         raise HTTPException(404, f"Unknown role '{role_name}'")
     defaults = replace(block.code_defaults(), model_name=body.model_name)
-    config = await _provider().reset_llm_configuration(defaults)
+    config = await _provider().reset_llm_configuration(defaults, origin=LLM_CHANGE_ORIGIN_REST_API)
     _, role = await _role_for_config(role_name)
     return _llm_json(role, config)
+
+
+@router.get("/llm/{role_name}/history")
+async def llm_configuration_history(role_name: str, model_name: str):
+    """Audited save/reset events for (role_name, model_name), newest first.
+
+    `model_name` stays in the query because it can contain '/'. 404 for an
+    unknown role or when no profile exists under the exact model key.
+    """
+    block = registered_role_blocks().get(role_name)
+    if block is None:
+        raise HTTPException(404, f"Unknown role '{role_name}'")
+    provider = _provider()
+    rows = await provider.list_llm_configurations()
+    config = next(
+        (c for r, c in rows if r.name == role_name and c.model_name == model_name),
+        None,
+    )
+    if config is None:
+        raise HTTPException(
+            404, f"No saved profile for role '{role_name}' and model '{model_name}'"
+        )
+    changes = await provider.list_llm_configuration_changes([config.id])
+    return {
+        "role_name": role_name,
+        "model_name": model_name,
+        "changes": [
+            {
+                "id": change.id,
+                "action": change.action,
+                "origin": change.origin,
+                "before": json.loads(change.before_snapshot),
+                "after": json.loads(change.after_snapshot),
+                "created_at": (change.created_at.isoformat() if change.created_at else None),
+            }
+            for change in changes
+        ],
+    }
 
 
 # ── Media endpoints ──────────────────────────────────────────────────────

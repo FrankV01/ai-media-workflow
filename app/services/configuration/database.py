@@ -11,7 +11,13 @@ Missing rows are seeded from the code defaults passed in by the caller
 (env settings select which profile is active; the DB owns existing rows).
 Seeded rows keep uses_code_defaults=True and produce a warning on every
 resolve until a custom upsert (uses_code_defaults=False) or a reset
-(re-writes code defaults, uses_code_defaults=True).
+(re-writes code defaults, uses_code_defaults=True). Resolution and page
+loads never overwrite existing rows and never write audit events.
+
+Every LLM save/reset also appends an LlmConfigurationChange audit row in
+the SAME transaction — action (save_custom / reset_to_defaults), origin
+(service / web_settings / rest_api), and JSON before/after snapshots of the
+mutable profile fields. An event is recorded even when values are unchanged.
 
 Inserts happen inside ``session.begin_nested()`` savepoints so a concurrent
 creator's unique-constraint violation only rolls back the savepoint, then
@@ -26,16 +32,20 @@ monkeypatching that attribute still works.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+import json
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from app.models.creative import CreativeRole, LlmRoleConfiguration
+from app.models.creative import CreativeRole, LlmConfigurationChange, LlmRoleConfiguration
 from app.models.media import MediaModelConfiguration
 from app.services.configuration.base import (
+    LLM_CHANGE_ACTION_RESET_TO_DEFAULTS,
+    LLM_CHANGE_ACTION_SAVE_CUSTOM,
+    LLM_CHANGE_ORIGIN_SERVICE,
     LLM_DEFAULT_WARNING,
     MEDIA_DEFAULT_WARNING,
     SOURCE_CODE_DEFAULT,
@@ -48,6 +58,25 @@ from app.services.configuration.base import (
     validate_llm_profile_fields,
     validate_media_profile_fields,
 )
+
+# Mutable profile fields captured in every change snapshot
+_LLM_SNAPSHOT_FIELDS = (
+    "system_prompt",
+    "temperature",
+    "max_tokens",
+    "enable_thinking",
+    "uses_code_defaults",
+)
+
+
+def _llm_config_snapshot(config: LlmRoleConfiguration) -> str:
+    """Deterministic JSON snapshot of the mutable LLM profile fields."""
+    return json.dumps(
+        {name: getattr(config, name) for name in _LLM_SNAPSHOT_FIELDS},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
 
 # Bounded retries for transient SQLite write locks during concurrent resolves
 _LOCK_RETRY_ATTEMPTS = 5
@@ -274,43 +303,66 @@ class DatabaseConfigurationProvider:
         temperature: float,
         max_tokens: int,
         enable_thinking: bool,
+        origin: str = LLM_CHANGE_ORIGIN_SERVICE,
     ) -> LlmRoleConfiguration:
         """Write a custom LLM profile (uses_code_defaults=False).
 
-        `defaults` supplies the stable role identity (upserted) plus the
-        model_name the profile is keyed on.
+        `defaults` supplies the stable role identity (upserted), the code
+        defaults that seed a missing row, and the model_name the profile is
+        keyed on. Records a save_custom audit event tagged with `origin` in
+        the same transaction; for a first-ever save the before snapshot is
+        the shipped code defaults, not the incoming custom values.
         """
-        profile_defaults = self._normalize_llm_defaults(
-            replace(
-                defaults,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                enable_thinking=enable_thinking,
-            )
+        normalized_defaults = self._normalize_llm_defaults(defaults)
+        profile_values = replace(
+            normalized_defaults,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
         )
         validate_llm_profile_fields(
-            profile_defaults.model_name,
-            profile_defaults.system_prompt,
-            profile_defaults.temperature,
-            profile_defaults.max_tokens,
+            profile_values.model_name,
+            profile_values.system_prompt,
+            profile_values.temperature,
+            profile_values.max_tokens,
         )
 
         async def work(session):
-            role = await self._get_or_create_role(session, profile_defaults)
-            config = await self._get_or_create_llm_config(session, role.id, profile_defaults)
-            config.system_prompt = system_prompt
-            config.temperature = temperature
-            config.max_tokens = max_tokens
-            config.enable_thinking = enable_thinking
+            role = await self._get_or_create_role(session, normalized_defaults)
+            config = await self._get_or_create_llm_config(session, role.id, normalized_defaults)
+            before = _llm_config_snapshot(config)
+            config.system_prompt = profile_values.system_prompt
+            config.temperature = profile_values.temperature
+            config.max_tokens = profile_values.max_tokens
+            config.enable_thinking = profile_values.enable_thinking
             config.uses_code_defaults = False
+            await session.flush()
+            session.add(
+                LlmConfigurationChange(
+                    configuration_id=config.id,
+                    action=LLM_CHANGE_ACTION_SAVE_CUSTOM,
+                    origin=origin,
+                    before_snapshot=before,
+                    after_snapshot=_llm_config_snapshot(config),
+                )
+            )
             await session.flush()
             return config
 
         return await self._transact(work)
 
-    async def reset_llm_configuration(self, defaults: LlmRoleDefaults) -> LlmRoleConfiguration:
-        """Restore code defaults for (role, model); uses_code_defaults=True."""
+    async def reset_llm_configuration(
+        self,
+        defaults: LlmRoleDefaults,
+        *,
+        origin: str = LLM_CHANGE_ORIGIN_SERVICE,
+    ) -> LlmRoleConfiguration:
+        """Restore code defaults for (role, model); uses_code_defaults=True.
+
+        Records a reset_to_defaults audit event tagged with `origin` in the
+        same transaction.
+        """
         defaults = self._normalize_llm_defaults(defaults)
         validate_llm_profile_fields(
             defaults.model_name,
@@ -322,15 +374,49 @@ class DatabaseConfigurationProvider:
         async def work(session):
             role = await self._get_or_create_role(session, defaults)
             config = await self._get_or_create_llm_config(session, role.id, defaults)
+            before = _llm_config_snapshot(config)
             config.system_prompt = defaults.system_prompt
             config.temperature = defaults.temperature
             config.max_tokens = defaults.max_tokens
             config.enable_thinking = defaults.enable_thinking
             config.uses_code_defaults = True
             await session.flush()
+            session.add(
+                LlmConfigurationChange(
+                    configuration_id=config.id,
+                    action=LLM_CHANGE_ACTION_RESET_TO_DEFAULTS,
+                    origin=origin,
+                    before_snapshot=before,
+                    after_snapshot=_llm_config_snapshot(config),
+                )
+            )
+            await session.flush()
             return config
 
         return await self._transact(work)
+
+    async def list_llm_configuration_changes(
+        self,
+        configuration_ids: Sequence[int] | None = None,
+        *,
+        limit: int | None = None,
+    ) -> list[LlmConfigurationChange]:
+        """Return change events newest-first (created_at, then id).
+
+        `configuration_ids` optionally restricts to those profile rows;
+        `limit` caps the result count.
+        """
+        async with self._session_factory() as session:
+            stmt = select(LlmConfigurationChange).order_by(
+                LlmConfigurationChange.created_at.desc(),
+                LlmConfigurationChange.id.desc(),
+            )
+            if configuration_ids is not None:
+                stmt = stmt.where(LlmConfigurationChange.configuration_id.in_(configuration_ids))
+            if limit is not None:
+                stmt = stmt.limit(limit)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
 
     async def list_media_configurations(self) -> list[MediaModelConfiguration]:
         """Return all media profiles."""

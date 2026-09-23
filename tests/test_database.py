@@ -37,7 +37,7 @@ from app.models.media import MediaModelConfiguration
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "e2f5a1c9d7b4"
-HEAD_REVISION = "a1c4e7b9d2f6"
+HEAD_REVISION = "c6e1f0a4b8d3"
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -189,6 +189,7 @@ def test_upgrade_recovers_create_all_schema(
 
     assert _current_revisions(path) == {HEAD_REVISION}
     assert "warnings" in _column_names(path, "jobs")
+    assert "llm_configuration_changes" in _table_names(path)
 
     async def _read() -> tuple[Job, JobStep, CreativeRole, RoleExecution, Message]:
         async with factory() as session:
@@ -237,6 +238,7 @@ def test_startup_accepts_fresh_migrated_database(
     _upgrade(path, "head", monkeypatch)
     bind_db(path)
     asyncio.run(app.database.init_db())
+    assert "llm_configuration_changes" in _table_names(path)
 
 
 def test_startup_rejects_stamped_but_incomplete_schema(
@@ -319,3 +321,32 @@ def test_migrated_web_job_listing_and_test_submission(
             assert "Untitled shoot" in listing.text
 
     asyncio.run(_exercise())
+
+
+def test_upgrade_database_brings_old_schema_to_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bind_db: Callable[[Path], SessionFactory]
+) -> None:
+    """upgrade_database() applies pending migrations and init_db() then passes."""
+    path = tmp_path / "app.db"
+    _upgrade(path, PREVIOUS_REVISION, monkeypatch)
+    bind_db(path)
+
+    app.database.upgrade_database(f"sqlite+aiosqlite:///{path}")
+    asyncio.run(app.database.init_db())
+
+    assert _current_revisions(path) == {HEAD_REVISION}
+    assert "llm_configuration_changes" in _table_names(path)
+
+
+def test_upgrade_database_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bind_db: Callable[[Path], SessionFactory]
+) -> None:
+    """upgrade_database() is safe to call on an already-head database."""
+    path = tmp_path / "app.db"
+    _upgrade(path, "head", monkeypatch)
+    bind_db(path)
+
+    app.database.upgrade_database(f"sqlite+aiosqlite:///{path}")
+    asyncio.run(app.database.init_db())
+
+    assert _current_revisions(path) == {HEAD_REVISION}

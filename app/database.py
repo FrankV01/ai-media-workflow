@@ -5,6 +5,7 @@ Responsibilities:
 - Create the async engine from settings.DATABASE_URL
 - Provide an async session maker for use in route dependencies
 - init_db() validates that Alembic migrations have been applied
+- upgrade_database() applies pending Alembic migrations to head
 
 Usage in routes:
     from app.database import get_session
@@ -15,6 +16,7 @@ Usage in routes:
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from alembic import command
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
@@ -44,8 +46,9 @@ def _check_schema(connection: Connection) -> None:
         expected = ", ".join(sorted(expected_heads))
         raise RuntimeError(
             f"Database migrations are required (current: {current}; expected: {expected}). "
-            "Stop the server and run `alembic upgrade head` from the project root, "
-            "then restart the server."
+            "Run `alembic upgrade head` from the project root. "
+            "`./start.sh` and `python main.py` apply pending migrations automatically "
+            "unless AI_MEDIA_AUTO_MIGRATE=0 is set."
         )
     inspector = inspect(connection)
     existing_tables = set(inspector.get_table_names())
@@ -65,6 +68,17 @@ def _check_schema(connection: Connection) -> None:
             + ". Check that DATABASE_URL points to the intended database and that migrations "
             "were applied correctly; do not stamp an outdated schema as current."
         )
+
+
+def _alembic_config(database_url: str) -> Config:
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    return config
+
+
+def upgrade_database(database_url: str | None = None) -> None:
+    """Apply all pending Alembic migrations up to the current head."""
+    command.upgrade(_alembic_config(database_url or settings.database_url), "head")
 
 
 async def init_db() -> None:

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
+from app.models.creative import RoleExecution
 from app.models.job import Job
 from app.pipeline.engine import run_pipeline
 from app.pipeline.naming import PhotoShootNameError, resolve_photo_shoot_name
@@ -90,6 +91,21 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(404, "Job not found")
+
+    # Effective LLM audit rows per step — the copied fields record exactly
+    # what was sent to the model (immutable; not the mutable profile row)
+    steps_sorted = sorted(job.steps, key=lambda s: s.order)
+    executions_by_step: dict[int, list[RoleExecution]] = {}
+    step_ids = [s.id for s in steps_sorted]
+    if step_ids:
+        exec_result = await session.execute(
+            select(RoleExecution)
+            .where(RoleExecution.job_step_id.in_(step_ids))
+            .order_by(RoleExecution.id)
+        )
+        for execution in exec_result.scalars().all():
+            executions_by_step.setdefault(execution.job_step_id, []).append(execution)
+
     return {
         "id": job.id,
         "photo_shoot_name": job.workflow_name,
@@ -111,7 +127,23 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
                 "input_context": s.input_context,
                 "output": s.output,
                 "error": s.error,
+                "llm_executions": [
+                    {
+                        "id": ex.id,
+                        "configuration_id": ex.configuration_id,
+                        "configuration_source": ex.configuration_source,
+                        "system_prompt": ex.system_prompt,
+                        "model_used": ex.model_used,
+                        "temperature": ex.temperature,
+                        "max_tokens": ex.max_tokens,
+                        "reasoning_effort": ex.reasoning_effort,
+                        "status": ex.status,
+                        "started_at": ex.started_at.isoformat() if ex.started_at else None,
+                        "finished_at": ex.finished_at.isoformat() if ex.finished_at else None,
+                    }
+                    for ex in executions_by_step.get(s.id, [])
+                ],
             }
-            for s in sorted(job.steps, key=lambda s: s.order)
+            for s in steps_sorted
         ],
     }

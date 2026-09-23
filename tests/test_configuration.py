@@ -4,8 +4,11 @@ tests.test_configuration — Database-backed AI configuration tests
 Covers: profile seeding on first use, idempotent re-resolution, custom
 profiles silencing warnings, reset re-enabling warnings, (role, model)
 isolation, 0.0 temperature, immutable execution snapshots across edits,
-failed-LLM snapshots, media precedence/injection/audit, the REST API, and
-environment output configuration (IMAGE_OUTPUT_DIR).
+failed-LLM snapshots, media precedence/injection/audit, the REST API, the
+audited LLM change history (actions, origins, before/after snapshots, the
+history endpoint, and the web/API/non-overwrite invariants), effective
+LLM execution metadata on job detail, and environment output
+configuration (IMAGE_OUTPUT_DIR).
 """
 
 import json
@@ -25,7 +28,12 @@ from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
 from app.config import Settings, settings
 from app.database import Base
-from app.models.creative import CreativeRole, LlmRoleConfiguration, RoleExecution
+from app.models.creative import (
+    CreativeRole,
+    LlmConfigurationChange,
+    LlmRoleConfiguration,
+    RoleExecution,
+)
 from app.models.job import Job, JobStatus
 from app.models.media import MediaGenerationExecution, MediaModelConfiguration
 from app.services.configuration.base import (
@@ -774,6 +782,12 @@ def test_web_llm_save_valid_redirects(client):
         follow_redirects=False,
     )
     assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert location.startswith("/settings/ai?")
+    assert "status=saved" in location
+    assert "kind=llm" in location
+    assert "name=art_director" in location
+    assert "model=vendor%2Fweb-model" in location  # model key is URL-encoded
 
 
 def test_web_media_save_invalid_denoise_422(client):
@@ -995,3 +1009,319 @@ def test_schema_trims_and_normalizes():
     assert body.model_name == "m"
     assert body.sampler == "euler"
     assert body.refiner_checkpoint == ""
+
+
+# ── LLM change audit trail ───────────────────────────────────────────────
+
+
+async def test_llm_save_and_reset_write_audit_events(temp_config_db):
+    """Each explicit save/reset records one ordered, snapshotted change row."""
+    provider = DatabaseConfigurationProvider(temp_config_db)
+    await provider.resolve_llm(_defaults())
+    await provider.upsert_llm_configuration(
+        _defaults(),
+        system_prompt="Custom prompt.",
+        temperature=0.9,
+        max_tokens=512,
+        enable_thinking=True,
+    )
+    await provider.reset_llm_configuration(_defaults())
+
+    changes = await provider.list_llm_configuration_changes()
+
+    # Newest first: reset, then save
+    assert [c.action for c in changes] == ["reset_to_defaults", "save_custom"]
+    assert {c.origin for c in changes} == {"service"}
+
+    save = changes[1]
+    before = json.loads(save.before_snapshot)
+    after = json.loads(save.after_snapshot)
+    assert before["system_prompt"] == "Config test system prompt."
+    assert before["uses_code_defaults"] is True
+    assert after["system_prompt"] == "Custom prompt."
+    assert after["temperature"] == 0.9
+    assert after["uses_code_defaults"] is False
+
+    reset = changes[0]
+    reset_before = json.loads(reset.before_snapshot)
+    reset_after = json.loads(reset.after_snapshot)
+    assert reset_before["system_prompt"] == "Custom prompt."
+    assert reset_after["system_prompt"] == "Config test system prompt."
+    assert reset_after["uses_code_defaults"] is True
+
+    async with temp_config_db() as session:
+        rows = (await session.execute(select(LlmConfigurationChange))).scalars().all()
+    assert len(rows) == 2
+
+
+async def test_resolve_never_records_change_events(temp_config_db):
+    """Resolution (the runtime/page-load path) must not write audit rows."""
+    provider = DatabaseConfigurationProvider(temp_config_db)
+    await provider.resolve_llm(_defaults())
+    await provider.resolve_llm(_defaults())
+
+    assert await provider.list_llm_configuration_changes() == []
+
+
+async def test_change_events_recorded_even_when_values_identical(temp_config_db):
+    """A reset on an already-default profile still records the explicit act."""
+    provider = DatabaseConfigurationProvider(temp_config_db)
+    await provider.resolve_llm(_defaults())
+    await provider.reset_llm_configuration(_defaults())
+
+    changes = await provider.list_llm_configuration_changes()
+    assert len(changes) == 1
+    assert changes[0].action == "reset_to_defaults"
+    assert changes[0].before_snapshot == changes[0].after_snapshot
+
+
+async def test_first_save_before_snapshot_is_code_defaults(temp_config_db):
+    """A first-ever save on a never-seeded model audits before=code
+    defaults, after=custom — never a misleading seeded-custom mix."""
+    provider = DatabaseConfigurationProvider(temp_config_db)
+    await provider.upsert_llm_configuration(
+        _defaults(model="never-seeded"),
+        system_prompt="First custom.",
+        temperature=0.9,
+        max_tokens=64,
+        enable_thinking=True,
+    )
+
+    changes = await provider.list_llm_configuration_changes()
+    assert len(changes) == 1
+    change = changes[0]
+    assert change.action == "save_custom"
+    before = json.loads(change.before_snapshot)
+    after = json.loads(change.after_snapshot)
+    assert before["system_prompt"] == "Config test system prompt."
+    assert before["temperature"] == 0.5
+    assert before["max_tokens"] == 1024
+    assert before["uses_code_defaults"] is True
+    assert after["system_prompt"] == "First custom."
+    assert after["uses_code_defaults"] is False
+
+
+async def test_list_llm_configuration_changes_filters(temp_config_db):
+    provider = DatabaseConfigurationProvider(temp_config_db)
+    await provider.resolve_llm(_defaults())
+    await provider.upsert_llm_configuration(
+        _defaults(),
+        system_prompt="A.",
+        temperature=0.5,
+        max_tokens=64,
+        enable_thinking=False,
+    )
+    await provider.upsert_llm_configuration(
+        _defaults(),
+        system_prompt="B.",
+        temperature=0.6,
+        max_tokens=128,
+        enable_thinking=False,
+    )
+
+    async with temp_config_db() as session:
+        config = (await session.execute(select(LlmRoleConfiguration))).scalar_one()
+
+    assert await provider.list_llm_configuration_changes([config.id + 999]) == []
+    limited = await provider.list_llm_configuration_changes([config.id], limit=1)
+    assert len(limited) == 1
+    assert json.loads(limited[0].after_snapshot)["system_prompt"] == "B."
+
+
+# ── History endpoint + mutation origins ──────────────────────────────────
+
+
+def test_api_llm_history_endpoint(client):
+    model = "vendor/model-with-slash"
+    put = client.put(
+        "/api/configurations/llm/art_director",
+        json={
+            "model_name": model,
+            "system_prompt": "Custom.",
+            "temperature": 0.4,
+            "max_tokens": 256,
+            "enable_thinking": False,
+        },
+    )
+    assert put.status_code == 200, put.text
+    reset = client.post("/api/configurations/llm/art_director/reset", json={"model_name": model})
+    assert reset.status_code == 200
+
+    resp = client.get(f"/api/configurations/llm/art_director/history?model_name={model}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["role_name"] == "art_director"
+    assert body["model_name"] == model
+    changes = body["changes"]
+    assert [c["action"] for c in changes] == ["reset_to_defaults", "save_custom"]
+    assert {c["origin"] for c in changes} == {"rest_api"}
+    assert changes[1]["after"]["system_prompt"] == "Custom."
+    assert changes[0]["after"]["uses_code_defaults"] is True
+    assert all(c["created_at"] for c in changes)
+
+
+def test_api_llm_history_404s(client):
+    resp = client.get("/api/configurations/llm/no_such_role/history?model_name=m")
+    assert resp.status_code == 404
+
+    # Known role but no profile under this exact model key
+    resp = client.get("/api/configurations/llm/art_director/history?model_name=never-saved")
+    assert resp.status_code == 404
+
+
+async def test_web_save_records_web_settings_origin(client, temp_config_db):
+    resp = client.post(
+        "/settings/ai/llm/save",
+        data={
+            "role_name": "art_director",
+            "model_name": "vendor/web-model",
+            "system_prompt": "Web prompt.",
+            "temperature": "0.4",
+            "max_tokens": "256",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    changes = await DatabaseConfigurationProvider().list_llm_configuration_changes()
+    assert len(changes) == 1
+    assert changes[0].action == "save_custom"
+    assert changes[0].origin == "web_settings"
+    assert json.loads(changes[0].after_snapshot)["system_prompt"] == "Web prompt."
+
+
+def test_settings_page_has_separate_reset_forms(client):
+    """Reset is its own confirmed form — never a formaction inside Save."""
+    resp = client.get("/settings/ai")
+    html = resp.text
+    assert resp.status_code == 200
+    assert 'action="/settings/ai/llm/reset"' in html
+    assert 'action="/settings/ai/media/reset"' in html
+    assert "window.confirm" in html
+    assert "replaced by code defaults" in html
+    assert "formaction" not in html
+
+
+def test_reset_confirm_escapes_apostrophe_model(client):
+    """Model keys containing apostrophes must not break the confirm handler —
+    the message is JSON-encoded via tojson inside a single-quoted attribute."""
+    save = client.post(
+        "/settings/ai/llm/save",
+        data={
+            "role_name": "art_director",
+            "model_name": "vendor/it's-model",
+            "system_prompt": "p",
+            "temperature": "0.5",
+            "max_tokens": "100",
+        },
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
+
+    resp = client.get("/settings/ai")
+    assert resp.status_code == 200
+    # tojson escapes apostrophes as \u0027 so the single-quoted attribute stays intact
+    assert "it\\u0027s-model" in resp.text
+    assert "window.confirm(" in resp.text
+    # The unescaped apostrophe form must not appear inside the handler
+    assert "confirm('Reset art_director / vendor/it's-model" not in resp.text
+
+
+def test_settings_status_banner_names_profile(client):
+    resp = client.get("/settings/ai?status=reset&kind=llm&name=art_director&model=m1")
+    assert resp.status_code == 200
+    assert "art_director" in resp.text
+    assert "m1" in resp.text
+    assert "to code defaults" in resp.text
+
+
+async def test_web_save_then_page_and_run_never_reset_custom(client, temp_config_db, monkeypatch):
+    """Strongest regression: a custom profile for the ACTIVE model survives
+    the settings GET (which seeds missing rows) and a real RoleBlock run —
+    and the executed system prompt is the custom one."""
+    save = client.post(
+        "/settings/ai/llm/save",
+        data={
+            "role_name": "test_config_role",
+            "model_name": settings.llm_model,  # the active model key
+            "system_prompt": "Custom web prompt.",
+            "temperature": "0.4",
+            "max_tokens": "256",
+        },
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
+
+    page = client.get("/settings/ai")
+    assert page.status_code == 200
+    assert "web_settings" in page.text  # change history rendered
+
+    captured = {}
+    _patch_llm(monkeypatch, captured=captured)
+    result = await ConfigTestRole().run({"brief": "hi"})
+
+    record = result["_executions"][-1]
+    assert record["system_prompt"] == "Custom web prompt."
+    assert record["configuration_source"] == "custom"
+    assert captured["model"] == settings.llm_model
+
+    async with temp_config_db() as session:
+        role = (
+            await session.execute(
+                select(CreativeRole).where(CreativeRole.name == "test_config_role")
+            )
+        ).scalar_one()
+        row = (
+            await session.execute(
+                select(LlmRoleConfiguration).where(
+                    LlmRoleConfiguration.role_id == role.id,
+                    LlmRoleConfiguration.model_name == settings.llm_model,
+                )
+            )
+        ).scalar_one()
+    assert row.uses_code_defaults is False
+    assert row.system_prompt == "Custom web prompt."
+
+    # Page load + run added no further change events
+    changes = await DatabaseConfigurationProvider().list_llm_configuration_changes()
+    assert len(changes) == 1
+    assert changes[0].origin == "web_settings"
+
+
+# ── Effective LLM execution metadata on job detail ───────────────────────
+
+
+async def test_job_detail_exposes_effective_llm_executions(client, engine_db):
+    from unittest.mock import patch
+
+    import app.blocks.role_block as role_block_module
+
+    with patch.object(role_block_module, "AsyncOpenAI", lambda **_: _fake_llm_client("done")):
+        job_id = await engine_module.run_pipeline(
+            workflow_name=None,
+            block_names=["test_config_role"],
+            context={"brief": "audit me"},
+        )
+
+    api = client.get(f"/api/workflows/jobs/{job_id}")
+    assert api.status_code == 200, api.text
+    step = api.json()["steps"][0]
+    assert len(step["llm_executions"]) == 1
+    ex = step["llm_executions"][0]
+    assert ex["system_prompt"] == "Config test system prompt."
+    assert ex["configuration_source"] == "code_default"
+    assert ex["configuration_id"]
+    assert ex["model_used"] == settings.llm_model
+    assert ex["status"] == "completed"
+    assert ex["reasoning_effort"] == "none"
+    assert ex["started_at"] and ex["finished_at"]
+
+    # The job LIST endpoint carries no execution data
+    listed = client.get("/api/workflows/jobs").json()
+    assert all("llm_executions" not in j for j in listed)
+
+    page = client.get(f"/jobs/{job_id}")
+    assert page.status_code == 200
+    assert "Config test system prompt." in page.text
+    assert "code_default" in page.text
+    assert settings.llm_model in page.text

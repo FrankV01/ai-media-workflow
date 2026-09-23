@@ -164,6 +164,36 @@
                 <p class="text-xs text-gray-600 italic">No output recorded</p>
                 {% endif %}
             </div>
+
+            <!-- Effective LLM configuration actually used (immutable audit) -->
+            {% if step.llm_executions %}
+            <div class="p-4 border-t border-gray-800/50">
+                <p class="text-xs uppercase tracking-wide text-gray-500 mb-2">LLM executions</p>
+                {% for ex in step.llm_executions %}
+                <div class="bg-gray-800/60 rounded p-3 mb-2 text-xs">
+                    <div class="flex flex-wrap gap-x-4 gap-y-1 text-gray-400">
+                        <span>model <span class="font-mono text-gray-200">{{ ex.model_used or "—" }}</span></span>
+                        <span>profile
+                            {% if ex.configuration_id %}<span class="font-mono">#{{ ex.configuration_id }}</span>{% else %}—{% endif %}
+                            <span class="px-1.5 py-0.5 rounded
+                                {% if ex.configuration_source == 'custom' %}bg-emerald-900/40 text-emerald-300
+                                {% elif ex.configuration_source == 'code_default' %}bg-amber-900/40 text-amber-300
+                                {% else %}bg-gray-700 text-gray-400{% endif %}">{{ ex.configuration_source }}</span>
+                        </span>
+                        <span>temp {{ ex.temperature if ex.temperature is not none else "—" }}</span>
+                        <span>max_tokens {{ ex.max_tokens or "—" }}</span>
+                        <span>reasoning {{ ex.reasoning_effort or "—" }}</span>
+                        <span>status {{ ex.status }}</span>
+                        <span>{{ ex.started_at or "—" }} → {{ ex.finished_at or "—" }}</span>
+                    </div>
+                    <details class="mt-2">
+                        <summary class="text-indigo-300 cursor-pointer">System prompt snapshot</summary>
+                        <pre class="mt-1 whitespace-pre-wrap text-gray-300 font-mono bg-gray-900 rounded p-2 max-h-64 overflow-y-auto">{{ ex.system_prompt }}</pre>
+                    </details>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
         </div>
     </div>
     {% endfor %}

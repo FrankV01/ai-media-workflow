@@ -25,8 +25,9 @@ class Settings(BaseSettings):
     media_dir: Path = Path("./data/media")
 
     # LLM settings (defaults target LM Studio local server).
-    # These env values select the ACTIVE profile and seed missing rows; the
-    # database (LlmRoleConfiguration) owns existing per-(role, model) behavior.
+    # llm_model selects the ACTIVE (role, model) profile; temperature /
+    # max_tokens / enable_thinking only seed MISSING profile rows — the
+    # database (LlmRoleConfiguration) owns existing values.
     llm_base_url: str = "http://127.0.0.1:1234/v1"
     openai_api_key: str = "lm-studio"  # LM Studio ignores this but the client requires a value
     llm_model: str = "qwen/qwen3.5-9b"  # selects the active LLM profile key
@@ -36,9 +37,11 @@ class Settings(BaseSettings):
     llm_enable_thinking: bool = False
     llm_timeout: float = 1800.0  # max wait per LLM request (30 min)
 
-    # Image generation settings. Env selects the active (block, backend, model)
-    # media profile and seeds missing rows; MediaModelConfiguration owns
-    # existing request/workflow defaults. URLs/polls/timeouts stay env-only.
+    # Image generation settings. generation_backend + comfyui_checkpoint
+    # select the ACTIVE (block, backend, model) media profile; the remaining
+    # model/refiner fields only seed MISSING profile rows —
+    # MediaModelConfiguration owns existing request/workflow defaults.
+    # URLs/polls/timeouts stay env-only.
     generation_backend: str = "comfyui"  # 'comfyui' or 'placeholder'
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_poll_interval: float = 2.0  # seconds between status polls

@@ -45,6 +45,13 @@ The startup script requires `/Volumes/SanDisk Mac AI` to be mounted and prints t
 API documentation, and major REST endpoint URLs before launching. Override the mount path with
 `SAN_DISK_VOLUME` if needed. To bypass the script and its disk prerequisite, run `python main.py`.
 
+`python main.py` enables uvicorn's auto-reload and applies pending Alembic migrations
+automatically before starting. Set `AI_MEDIA_AUTO_MIGRATE=0` to skip the automatic
+`alembic upgrade head`. You can override the bind host/port with `HOST`/`PORT` environment
+variables (`PORT=0` picks an available port). If a startup dependency check still fails
+after migration, the whole process exits with a non-zero status instead of leaving the reloader
+running.
+
 ## The Pipeline
 
 A concept flows through a chain of "employees", each doing one job:
@@ -127,13 +134,36 @@ each prompt variant produces three files.
   intervals, filesystem paths, and *selects which profile is active*
   (`LLM_MODEL`, `GENERATION_BACKEND`, `COMFYUI_CHECKPOINT`). Behavior
   profiles — role system prompts/temperature/max_tokens/thinking per
-  (role, model), and media request/workflow defaults per
-  (block, backend, model) — live in the database and are edited via the web
-  UI (`/settings/ai`) or the `/api/configurations` REST endpoints. Missing
-  profiles are seeded from code defaults on first use and log a persisted
-  warning on every run until customized. Every LLM call and image request
-  stores an immutable snapshot of the exact values used, so editing a
-  profile never rewrites execution history.
+  `(role, model_name)`, and media request/workflow defaults per
+  `(block, backend, model)` — live in the database and are edited via the
+  web UI (`/settings/ai`) or the `/api/configurations` REST endpoints.
+  **Only missing profile rows are seeded** from code defaults — page loads
+  and pipeline runs never overwrite saved values. Seeded rows warn on every
+  run until customized (shown as `default`/`custom`/`active` badges at
+  `/settings/ai`). Save and Reset are explicit, audited mutations: every
+  one writes an `llm_configuration_changes` row with its action, origin
+  (`web_settings`/`rest_api`/`service`), and before/after snapshots —
+  visible per profile on the settings page and via the history endpoint.
+  Every LLM call and image request stores an immutable snapshot of the
+  exact values used, so editing a profile never rewrites execution history;
+  the effective system prompt, model, and parameters of each step are
+  shown under "LLM executions" on the job detail page (`/jobs/{id}`) and
+  in `GET /api/workflows/jobs/{id}`.
+
+### Troubleshooting configuration
+
+- **A run used the wrong prompt/parameters**: check `LLM_MODEL` — the exact
+  model key selects which `(role, model)` profile is active. Saving a
+  profile under a *different* model name than the active `LLM_MODEL` has no
+  effect on runs; create the profile for the active model (or change
+  `LLM_MODEL`). Inspect what a run actually used via the per-step "LLM
+  executions" on the job detail page.
+- **A custom profile reverted to defaults**: someone ran Reset (the
+  settings page asks for confirmation) or the reset API. Check the
+  profile's change history on `/settings/ai` or
+  `GET /api/configurations/llm/{role}/history?model_name=…` — each event
+  names its action and origin. Audit history begins with migration
+  `c6e1f0a4b8d3`; resets made before it cannot be attributed retroactively.
 
 ## REST API
 
@@ -145,8 +175,9 @@ each prompt variant produces three files.
 | `GET` | `/api/workflows/jobs` | Recent jobs |
 | `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings |
 | `GET` | `/api/configurations/llm` | List LLM role profiles |
-| `PUT` | `/api/configurations/llm/{role}` | Save a custom LLM profile (`model_name` in body) |
-| `POST` | `/api/configurations/llm/{role}/reset` | Restore code defaults (`model_name` in body) |
+| `PUT` | `/api/configurations/llm/{role}` | Save a custom LLM profile (`model_name` in body; audited) |
+| `POST` | `/api/configurations/llm/{role}/reset` | Restore code defaults (`model_name` in body; audited) |
+| `GET` | `/api/configurations/llm/{role}/history` | Audited save/reset events (`model_name` in query — it may contain `/`) |
 | `GET` | `/api/configurations/media` | List media model profiles |
 | `PUT` | `/api/configurations/media/{block}` | Save a custom media profile (`backend_name`, `model_name` in body) |
 | `POST` | `/api/configurations/media/{block}/reset` | Restore code defaults (`backend_name`, `model_name` in body) |
@@ -168,7 +199,8 @@ app/
   models/            → ORM models
     job.py           → Job (incl. persisted warnings), JobStep, JobStatus
     creative.py      → CreativeRole (identity), LlmRoleConfiguration (per-role/model
-                       LLM profile), RoleExecution + Message (immutable audit snapshots)
+                       LLM profile), LlmConfigurationChange (audited save/reset
+                       history), RoleExecution + Message (immutable audit snapshots)
     media.py         → MediaModelConfiguration (per-block/backend/model profile),
                        MediaGenerationExecution (per-request audit snapshot)
     setting.py       → Setting (key/value; not yet used)
@@ -181,6 +213,7 @@ app/
     media_producer.py   → image generation dispatch, output grouping
     art_critic.py    → quality evaluation + verdict
     social_media_specialist.py → platform post suggestions
+    report_writer.py → markdown report blocks (art_critic_report, social_media_report)
     example_block.py → `echo` test block
   pipeline/
     engine.py        → sequential execution + conditional routing + job titling

@@ -10,10 +10,17 @@ Responsibilities:
 Dependency checks at startup verify LLM endpoint, ComfyUI
 (when configured), and image output directory writability.
 Server refuses to start if any check fails.
+
+When launched via `python main.py` (auto-reload enabled), a startup failure
+also terminates the reloader parent so the command exits with a non-zero
+status instead of leaving a hung supervisor process.
 """
 
 import logging
-from contextlib import asynccontextmanager
+import multiprocessing
+import os
+import signal
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -28,6 +35,14 @@ from app.database import init_db
 from app.web.routes import router as web_router
 
 logger = logging.getLogger(__name__)
+
+
+def _is_reloader_child() -> bool:
+    """True when this process is a spawned uvicorn reload worker from main.py."""
+    return (
+        os.environ.get("AI_MEDIA_WORKFLOW_RELOAD") == "1"
+        and multiprocessing.parent_process() is not None
+    )
 
 
 async def _check_dependencies() -> None:
@@ -93,10 +108,25 @@ async def _check_dependencies() -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Startup: init DB, discover blocks, check deps. Shutdown: cleanup."""
-    await init_db()
-    discover_blocks()
-    await _check_dependencies()
+    """Startup: init DB, discover blocks, check deps. Shutdown: cleanup.
+
+    When running under main.py's auto-reload supervisor, a startup failure is
+    fatal for the whole command: the child signals the reloader parent so it
+    shuts down instead of waiting forever for file changes.
+    """
+    try:
+        await init_db()
+        discover_blocks()
+        await _check_dependencies()
+    except Exception:
+        if _is_reloader_child():
+            # A startup dependency failure here would normally leave the
+            # reloader process waiting forever for file changes. Notify the
+            # supervisor so it shuts down the whole command instead.
+            if hasattr(signal, "SIGUSR1"):
+                with suppress(ProcessLookupError, OSError):
+                    os.kill(os.getppid(), signal.SIGUSR1)
+        raise
     yield
 
 

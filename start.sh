@@ -40,6 +40,13 @@ if ! (cd "$PROJECT_DIR" && "$PYTHON" -c 'import app.main, uvicorn' 2>/dev/null);
     exit 1
 fi
 
+printf 'Applying database migrations...\n'
+if ! (cd "$PROJECT_DIR" && "$PYTHON" -m alembic upgrade head); then
+    printf 'ERROR: Database migration failed.\n' >&2
+    printf 'Run `alembic upgrade head` manually from %s.\n' "$PROJECT_DIR" >&2
+    exit 1
+fi
+
 printf 'SanDisk prerequisite passed: %s\n\n' "$SAN_DISK_VOLUME"
 printf 'AI Media Workflow\n'
 printf '  Main UI:             %s/\n' "$BASE_URL"

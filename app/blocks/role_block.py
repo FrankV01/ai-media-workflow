@@ -10,7 +10,8 @@ system_prompt, and optionally suggested_next and default_temperature.
 See agents.md § "RoleBlock interface" for the full pattern.
 
 The base class handles: configuration resolution (per-(role, model) database
-profile, falling back to code defaults with a persisted warning), LLM API
+profile — missing rows are seeded from code defaults and warn until
+customized; existing rows are never overwritten by resolution), LLM API
 calls (OpenAI-compatible), reasoning control (reasoning_effort="none" unless
 the profile enables thinking), token tracking, and context threading (reads
 "brief", writes "brief", "output_deliverable", "suggested_next_role", and

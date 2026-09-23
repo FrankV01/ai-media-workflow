@@ -11,6 +11,10 @@ blocks never deal with ORM rows or raw JSON:
 `configuration_source` is 'code_default' when the row still ships the values
 the code seeded it with, 'custom' once a user has edited it, and 'legacy' on
 executions recorded before configuration tracking existed.
+
+The LLM_CHANGE_* constants name the audited mutation actions
+(save_custom / reset_to_defaults) and origins (service / web_settings /
+rest_api) written to llm_configuration_changes on every explicit save/reset.
 """
 
 from __future__ import annotations
@@ -31,6 +35,15 @@ MEDIA_DEFAULT_WARNING = (
 SOURCE_CODE_DEFAULT = "code_default"
 SOURCE_CUSTOM = "custom"
 SOURCE_LEGACY = "legacy"
+
+# LlmConfigurationChange.action values — which explicit mutation was made
+LLM_CHANGE_ACTION_SAVE_CUSTOM = "save_custom"
+LLM_CHANGE_ACTION_RESET_TO_DEFAULTS = "reset_to_defaults"
+
+# LlmConfigurationChange.origin values — where the mutation was triggered
+LLM_CHANGE_ORIGIN_SERVICE = "service"
+LLM_CHANGE_ORIGIN_WEB_SETTINGS = "web_settings"
+LLM_CHANGE_ORIGIN_REST_API = "rest_api"
 
 # Backends that media profiles may target
 SUPPORTED_MEDIA_BACKENDS = ("comfyui", "placeholder")

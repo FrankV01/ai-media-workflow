@@ -11,7 +11,15 @@ Normalized schema for the role-based creative workflow:
                         system prompt, temperature, max_tokens, thinking.
                         Rows seeded from code defaults carry
                         uses_code_defaults=True and trigger a warning on
-                        every use until customized via UI/API.
+                        every use until customized via UI/API. Existing rows
+                        are never overwritten by resolution — only explicit
+                        save/reset mutations change them.
+
+- LlmConfigurationChange:
+                        Audit trail for explicit profile mutations. Each
+                        save/reset records action, origin (service /
+                        web_settings / rest_api), and JSON before/after
+                        snapshots of the mutable profile fields.
 
 - RoleExecution:        One attempted role invocation within a specific job
                         step. Copies the exact prompt/model/parameters used —
@@ -25,6 +33,7 @@ Relationships:
     CreativeRole 1──M LlmRoleConfiguration
     CreativeRole 1──M RoleExecution  M──1 JobStep
     LlmRoleConfiguration 1──M RoleExecution
+    LlmRoleConfiguration 1──M LlmConfigurationChange
     RoleExecution 1──M Message
 """
 
@@ -118,6 +127,40 @@ class LlmRoleConfiguration(Base):
 
     role: Mapped["CreativeRole"] = relationship(back_populates="configurations")
     executions: Mapped[list["RoleExecution"]] = relationship(back_populates="configuration")
+    changes: Mapped[list["LlmConfigurationChange"]] = relationship(
+        back_populates="configuration", cascade="all, delete-orphan"
+    )
+
+
+# ── LlmConfigurationChange ───────────────────────────────────────────────
+
+
+class LlmConfigurationChange(Base):
+    """
+    Audit record for one explicit LLM profile mutation.
+
+    Written only by save/reset calls (never by resolve or page loads), in the
+    same transaction as the profile update. before_snapshot/after_snapshot
+    hold JSON (serialized as Text for SQLite portability) of the mutable
+    profile fields; an event is recorded even when values are unchanged
+    because the explicit user action itself matters.
+    """
+
+    __tablename__ = "llm_configuration_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    configuration_id: Mapped[int] = mapped_column(
+        ForeignKey("llm_role_configurations.id"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(50), index=True)
+    origin: Mapped[str] = mapped_column(String(50), index=True)
+    before_snapshot: Mapped[str] = mapped_column(Text)
+    after_snapshot: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+    configuration: Mapped["LlmRoleConfiguration"] = relationship(back_populates="changes")
 
 
 # ── RoleExecution ────────────────────────────────────────────────────────
