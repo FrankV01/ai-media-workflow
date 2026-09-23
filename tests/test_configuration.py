@@ -97,6 +97,18 @@ def _defaults(model="model-a", temperature=0.5) -> LlmRoleDefaults:
     )
 
 
+def test_log_level_environment_override(monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", "WARNING")
+
+    configured = Settings(_env_file=None)
+
+    assert configured.log_level == "WARNING"
+
+
+def test_media_dir_is_not_a_setting() -> None:
+    assert "media_dir" not in Settings.model_fields
+
+
 def test_image_output_dir_defaults_to_comfyui_output(monkeypatch):
     monkeypatch.delenv("IMAGE_OUTPUT_DIR", raising=False)
 

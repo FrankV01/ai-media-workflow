@@ -5,7 +5,8 @@ Dispatches image generation to a running ComfyUI server by:
 1. Building an SDXL txt2img workflow JSON with prompt data injected
 2. POSTing to /prompt
 3. Polling /history/{prompt_id} until complete
-4. Downloading output image(s) to IMAGE_OUTPUT_DIR
+4. Downloading output image(s) to
+   IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/
 
 AI model/workflow settings (checkpoints, refiner sampling, upscale models)
 are injected via SdxlWorkflowConfig — typically resolved from the media

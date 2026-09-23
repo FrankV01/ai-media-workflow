@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from datetime import UTC, date, datetime
 
 MAX_PHOTO_SHOOT_NAME_LENGTH = 255
 
@@ -37,9 +38,20 @@ def slugify_photo_shoot_name(name: str | None, max_length: int = 60) -> str:
     return slug or "untitled-shoot"
 
 
-def output_subdir(photo_shoot_name: str | None, job_id: int | None) -> str:
-    """Relative output directory for a job: '<shoot-slug>/job<id>' (or just the slug)."""
-    slug = slugify_photo_shoot_name(photo_shoot_name)
+def output_subdir(
+    photo_shoot_name: str | None,
+    job_id: int | None,
+    job_created_date: str | date | None = None,
+) -> str:
+    """Return '<yyyy-mm-dd>/<shoot-slug>/job<id>' using the job's UTC creation date."""
+    if job_created_date is None:
+        created_date = datetime.now(UTC).date()
+    elif isinstance(job_created_date, date):
+        created_date = job_created_date
+    else:
+        created_date = date.fromisoformat(job_created_date)
+
+    path = f"{created_date.isoformat()}/{slugify_photo_shoot_name(photo_shoot_name)}"
     if job_id is not None:
-        return f"{slug}/job{job_id}"
-    return slug
+        return f"{path}/job{job_id}"
+    return path

@@ -21,6 +21,7 @@ from uvicorn.config import Config
 from uvicorn.server import Server
 from uvicorn.supervisors import ChangeReload
 
+from app.config import settings
 from app.database import upgrade_database
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ def main():
         host=os.environ.get("HOST", "127.0.0.1"),
         port=int(os.environ.get("PORT", "8000")),
         reload=True,
-        log_level=os.environ.get("LOG_LEVEL", "info").lower(),
+        log_level=settings.log_level.lower(),
     )
     server = Server(config=config)
 

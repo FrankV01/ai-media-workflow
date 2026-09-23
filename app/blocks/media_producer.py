@@ -13,7 +13,7 @@ Responsibilities:
    the database (seeded from code defaults on first use, warning until
    customized) and inject it into the backend and request defaults
 3. Dispatch generation request(s) to the selected backend
-4. Group outputs under IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/ (via
+4. Group outputs under IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/ (via
    GenerationRequest.extras["output_subdir"])
 5. Record one audit entry per attempted request in
    context["_media_executions"], including failures
@@ -285,8 +285,12 @@ class MediaProducer(Block):
         # Resolve the media model configuration profile (audits + warns)
         resolved = await self.resolve_configuration(context)
 
-        # Group outputs under <shoot-slug>/job<id>/ when the shoot is named
-        subdir = output_subdir(context.get("photo_shoot_name"), context.get("_job_id"))
+        # Group outputs under <yyyy-mm-dd>/<shoot-slug>/job<id>/
+        subdir = output_subdir(
+            context.get("photo_shoot_name"),
+            context.get("_job_id"),
+            context.get("_job_created_date"),
+        )
 
         # Build generation requests — Prompt Architect params override the
         # profile's request defaults

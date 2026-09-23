@@ -68,6 +68,7 @@ Special context keys:
 - `_verdict` — set by Art Critic (`"good"` or `"bad"`), read by routing dicts
 - `_original_brief` — captured by the engine at pipeline start; restored to `brief` whenever a routing dict is resolved
 - `_job_id` — current job id, set by the engine
+- `_job_created_date` — job creation date in UTC (`YYYY-MM-DD`), set by the engine and used to group output files
 - `_generation_backend` — per-run backend override (`"placeholder"`), used by the UI's test-run button and accepted via the API's `context` field
 - `_executions` — in-memory LLM call records accumulated by RoleBlocks, including failures; after each step the engine persists only the newly added records and their ordered messages into the normalized audit tables
 - `_media_executions` — in-memory per-request image generation records accumulated by MediaProducer, including failures; persisted after each step into `MediaGenerationExecution` rows
@@ -97,8 +98,8 @@ and rewrites `prompt_architect_output`/`brief` as clean JSON. The Media Producer
 
 ### Output layout
 
-Generated images land in `IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/` (e.g.
-`/Volumes/SanDisk Mac AI/ComfyUI/output/cyber-chic/job25/aimw_main_refined_1x_00001_.png`).
+Generated images land in `IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/`, using
+`Job.created_at`'s UTC date (e.g. `/Volumes/SanDisk Mac AI/ComfyUI/output/2026-09-23/cyber-chic/job25/aimw_main_refined_1x_00001_.png`).
 `IMAGE_OUTPUT_DIR` must be an absolute path and defaults to
 `/Volumes/SanDisk Mac AI/ComfyUI/output`; `scripts/convert_pngs_to_jpegs.py` shares that
 default unless `--output-dir` is given. The slug is derived from

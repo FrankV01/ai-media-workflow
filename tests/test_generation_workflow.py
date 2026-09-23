@@ -69,7 +69,7 @@ def test_save_image_prefix_includes_output_subdir(
 ) -> None:
     request = GenerationRequest(
         positive_prompt="person riding a motorcycle",
-        extras={"output_subdir": "cyber-chic/job1"},
+        extras={"output_subdir": "2026-09-23/cyber-chic/job1"},
     )
 
     workflow, _ = build_sdxl_workflow(request, "client-id", workflow_config)
@@ -80,7 +80,7 @@ def test_save_image_prefix_includes_output_subdir(
     ]
 
     assert len(prefixes) == 3
-    assert all(p.startswith("cyber-chic/job1/aimw_main") for p in prefixes)
+    assert all(p.startswith("2026-09-23/cyber-chic/job1/aimw_main") for p in prefixes)
 
 
 def test_refiner_denoise_must_be_valid_for_comfyui() -> None:

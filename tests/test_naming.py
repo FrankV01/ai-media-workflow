@@ -57,5 +57,10 @@ def test_slugify_photo_shoot_name() -> None:
 
 
 def test_output_subdir() -> None:
-    assert output_subdir("Cyber Chic", 25) == "cyber-chic/job25"
-    assert output_subdir("Cyber Chic", None) == "cyber-chic"
+    assert output_subdir("Cyber Chic", 25, "2026-09-23") == "2026-09-23/cyber-chic/job25"
+    assert output_subdir("Cyber Chic", None, "2026-09-23") == "2026-09-23/cyber-chic"
+
+
+def test_output_subdir_rejects_invalid_date() -> None:
+    with pytest.raises(ValueError):
+        output_subdir("Cyber Chic", 25, "September 23, 2026")

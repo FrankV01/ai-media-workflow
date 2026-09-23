@@ -594,7 +594,7 @@ async def test_art_director_respects_preset_name(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_media_producer_groups_output_by_shoot(monkeypatch, tmp_path):
-    """With photo_shoot_name + _job_id in context, images go to <slug>/job<id>/."""
+    """With job naming context, images go to <date>/<slug>/job<id>/."""
     import os
 
     from app.config import settings
@@ -618,6 +618,7 @@ async def test_media_producer_groups_output_by_shoot(monkeypatch, tmp_path):
             "prompt_architect_output": prompt_json,
             "photo_shoot_name": "Cyber Chic",
             "_job_id": 7,
+            "_job_created_date": "2026-09-23",
             "_generation_backend": "placeholder",
         }
     )
@@ -627,7 +628,7 @@ async def test_media_producer_groups_output_by_shoot(monkeypatch, tmp_path):
         assert "cyber-chic" in p and "job7" in p
         assert os.path.exists(p)
     for meta in result["generation_metadata"]:
-        assert meta["output_subdir"] == "cyber-chic/job7"
+        assert meta["output_subdir"] == "2026-09-23/cyber-chic/job7"
 
 
 def test_role_prompts_enforce_adobe_stock_compliance():
@@ -681,6 +682,7 @@ async def test_art_critic_report_writes_markdown(monkeypatch, tmp_path):
     context = {
         "photo_shoot_name": "Cyber Chic",
         "_job_id": 7,
+        "_job_created_date": "2026-09-23",
         "art_critic_output": json.dumps({"verdict": "good", "overall_score": 8, "summary": "Nice"}),
         "art_critic_verdict": "good",
         "generated_images": images,
@@ -697,7 +699,7 @@ async def test_art_critic_report_writes_markdown(monkeypatch, tmp_path):
     block = get_block("art_critic_report")()
     result = await block.run(context)
 
-    path = tmp_path / "cyber-chic" / "job7" / "art_critic_report.md"
+    path = tmp_path / "2026-09-23" / "cyber-chic" / "job7" / "art_critic_report.md"
     assert path.exists()
     text = path.read_text(encoding="utf-8")
     assert "## Critique" in text
@@ -718,13 +720,14 @@ async def test_art_critic_report_non_json_fallback(monkeypatch, tmp_path):
     context = {
         "photo_shoot_name": "Cyber Chic",
         "_job_id": 7,
+        "_job_created_date": "2026-09-23",
         "art_critic_output": "not json at all",
     }
 
     block = get_block("art_critic_report")()
     result = await block.run(context)
 
-    path = tmp_path / "cyber-chic" / "job7" / "art_critic_report.md"
+    path = tmp_path / "2026-09-23" / "cyber-chic" / "job7" / "art_critic_report.md"
     assert path.exists()
     text = path.read_text(encoding="utf-8")
     assert "not json at all" in text
@@ -749,6 +752,7 @@ async def test_social_media_report_writes_markdown(monkeypatch, tmp_path):
     context = {
         "photo_shoot_name": "Cyber Chic",
         "_job_id": 7,
+        "_job_created_date": "2026-09-23",
         "social_media_specialist_output": json.dumps(
             {"posts": [{"platform": "instagram"}], "summary": "x"}
         ),
@@ -763,7 +767,7 @@ async def test_social_media_report_writes_markdown(monkeypatch, tmp_path):
     block = get_block("social_media_report")()
     result = await block.run(context)
 
-    path = tmp_path / "cyber-chic" / "job7" / "social_media_specialist.md"
+    path = tmp_path / "2026-09-23" / "cyber-chic" / "job7" / "social_media_specialist.md"
     assert path.exists()
     text = path.read_text(encoding="utf-8")
     assert "## Assets" in text
@@ -811,6 +815,7 @@ async def test_social_media_specialist_chains_into_report(monkeypatch, tmp_path)
         "brief": "concept",
         "photo_shoot_name": "Cyber Chic",
         "_job_id": 9,
+        "_job_created_date": "2026-09-23",
         "generated_images": [str(tmp_path / "a_1x.png")],
     }
     result = await get_block("social_media_specialist")().run(context)
@@ -820,7 +825,7 @@ async def test_social_media_specialist_chains_into_report(monkeypatch, tmp_path)
     await report.validate(context)
     report_result = await report.run(context)
 
-    path = tmp_path / "cyber-chic" / "job9" / "social_media_specialist.md"
+    path = tmp_path / "2026-09-23" / "cyber-chic" / "job9" / "social_media_specialist.md"
     assert path.exists()
     assert "### instagram" in path.read_text(encoding="utf-8")
     assert report_result["social_media_report_path"] == str(path)

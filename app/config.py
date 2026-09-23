@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     debug: bool = True
     log_level: str = "INFO"
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
-    media_dir: Path = Path("./data/media")
 
     # LLM settings (defaults target LM Studio local server).
     # llm_model selects the ACTIVE (role, model) profile; temperature /

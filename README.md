@@ -87,18 +87,19 @@ Every job is a "photo shoot" and `Job.workflow_name` is its title:
   mid-run as soon as the Art Director emits its `PHOTO SHOOT: <title>` header.
 - From the **API**, `photo_shoot_name` is required and is kept as-is.
 
-Generated images are grouped by shoot and job:
+Generated images are grouped by the job's UTC creation date, shoot, and job ID:
 
 ```
 IMAGE_OUTPUT_DIR/
-  <shoot-slug>/
-    job<id>/
-      aimw_main_refined_1x_00001_.png
-      aimw_main_upscaled_2x_00001_.png
-      aimw_main_upscaled_4x_00001_.png
-      aimw_<variant name>_refined_1x_00001_.png
-      art_critic_report.md
-      social_media_specialist.md
+  <yyyy-mm-dd>/
+    <shoot-slug>/
+      job<id>/
+        aimw_main_refined_1x_00001_.png
+        aimw_main_upscaled_2x_00001_.png
+        aimw_main_upscaled_4x_00001_.png
+        aimw_<variant name>_refined_1x_00001_.png
+        art_critic_report.md
+        social_media_specialist.md
       …
 ```
 
@@ -123,7 +124,8 @@ each prompt variant produces three files.
   lock backed by an OS file lock, serializes LLM and ComfyUI work.
 - **Generation backends** — pluggable image generation in
   `app/services/generation/`. ComfyUI for production, placeholder for testing.
-  Images are grouped under `IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/`.
+  Images are grouped under `IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/`,
+  where the date is the job's UTC creation date.
 - **Persistence** — SQLite via SQLAlchemy async. Jobs, steps, input/output
   snapshots, and generated asset paths are all stored.
 - **Web UI** — Jinja2 + HTMX, Tailwind CDN. No JS build step. Dashboard at

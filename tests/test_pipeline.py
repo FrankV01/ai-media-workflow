@@ -4,7 +4,7 @@ tests.test_pipeline — Pipeline execution engine tests
 Uses a per-test throwaway SQLite file (tmp_path) so run_pipeline never
 touches the real database. Covers: mid-run job retitling from
 context["photo_shoot_name"], preservation of an explicit workflow name,
-and the _job_id context key exposed to blocks.
+and the _job_id / _job_created_date context keys exposed to blocks.
 """
 
 import json
@@ -40,7 +40,11 @@ class NamerBlock(Block):
     )
 
     async def run(self, context):
-        result = {"brief": "x", "seen_job_id": context.get("_job_id")}
+        result = {
+            "brief": "x",
+            "seen_job_id": context.get("_job_id"),
+            "seen_job_created_date": context.get("_job_created_date"),
+        }
         if "photo_shoot_name" not in context:
             result["photo_shoot_name"] = "Golden Hour Editorial"
         return result
@@ -133,7 +137,10 @@ async def test_pipeline_exposes_job_id_in_context(session_factory):
     async with session_factory() as session:
         result = await session.execute(select(JobStep).where(JobStep.job_id == job_id))
         step = result.scalar_one()
-    assert json.loads(step.output)["seen_job_id"] == job_id
+    output = json.loads(step.output)
+    job = await _get_job(session_factory, job_id)
+    assert output["seen_job_id"] == job_id
+    assert output["seen_job_created_date"] == job.created_at.date().isoformat()
 
 
 async def test_pipeline_persists_role_execution_and_messages(session_factory, monkeypatch):

@@ -13,8 +13,9 @@ backed by an OS file lock) ensures only one pipeline runs at a time.
 Additional submissions queue (PENDING) until the running pipeline finishes.
 This prevents concurrent LLM / ComfyUI calls that would overwhelm the host.
 
-The engine exposes context["_job_id"] (the current job's id) to blocks, and
-copies context["photo_shoot_name"] onto Job.workflow_name mid-run so a block
+The engine exposes context["_job_id"] (the current job's id) and
+context["_job_created_date"] (its UTC creation date) to blocks, and copies
+context["photo_shoot_name"] onto Job.workflow_name mid-run so a block
 (e.g. the Art Director) can title the job while it executes.
 
 Step format (simple):
@@ -269,6 +270,7 @@ async def _execute_pipeline(
         # Transition from PENDING to RUNNING now that we hold the lock
         job.status = JobStatus.RUNNING
         context["_job_id"] = job_id
+        context["_job_created_date"] = job.created_at.date().isoformat()
 
         # Pre-create PENDING steps for all known blocks so they appear in status
         # queries immediately.  Routing dicts are skipped — those blocks are

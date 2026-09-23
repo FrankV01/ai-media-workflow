@@ -2,7 +2,7 @@
 app.blocks.report_writer — markdown report writer blocks
 
 Non-LLM blocks that render prior role output as markdown files written
-next to the generated images (IMAGE_OUTPUT_DIR/<shoot-slug>/job<id>/).
+next to the generated images (IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/).
 
 Input:  context[source_key] (role output), generated_images / generation_metadata
 Output: {path_key} — absolute path of the written report — and report_files,
@@ -38,7 +38,9 @@ class MarkdownReportBlock(Block):
 
     def _report_dir(self, context: dict[str, Any]) -> Path:
         return Path(settings.image_output_dir) / output_subdir(
-            context.get("photo_shoot_name"), context.get("_job_id")
+            context.get("photo_shoot_name"),
+            context.get("_job_id"),
+            context.get("_job_created_date"),
         )
 
     def _header(self, context: dict[str, Any], title: str) -> list[str]:
