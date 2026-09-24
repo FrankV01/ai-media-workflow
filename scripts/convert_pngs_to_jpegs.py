@@ -29,43 +29,15 @@ import math
 from collections.abc import Sequence
 from pathlib import Path
 
-from PIL import Image, ImageCms, ImageOps
+from PIL import Image, ImageOps
 
 from app.config import settings
+from app.services.image_convert import convert_to_srgb, srgb_profile_bytes
 
 MIN_MEGAPIXELS = 4.0
 MAX_MEGAPIXELS = 100.0
 JPEG_QUALITY = 95
 JPEG_DPI = (300, 300)
-
-
-def _srgb_profile_bytes() -> bytes:
-    profile = ImageCms.createProfile("sRGB")
-    return ImageCms.ImageCmsProfile(profile).tobytes()
-
-
-def _convert_to_srgb(image: Image.Image) -> Image.Image:
-    embedded_profile = image.info.get("icc_profile")
-    if embedded_profile:
-        try:
-            source_profile = ImageCms.ImageCmsProfile(embedded_profile)
-            target_profile = ImageCms.createProfile("sRGB")
-            output_mode = "RGBA" if image.mode in {"RGBA", "LA"} else "RGB"
-            image = ImageCms.profileToProfile(
-                image,
-                source_profile,
-                target_profile,
-                outputMode=output_mode,
-            )
-        except (OSError, TypeError, ValueError):
-            pass
-
-    if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
-        rgba = image.convert("RGBA")
-        background = Image.new("RGBA", rgba.size, "white")
-        return Image.alpha_composite(background, rgba).convert("RGB")
-
-    return image.convert("RGB")
 
 
 def _resize_for_stock(
@@ -107,7 +79,7 @@ def convert_pngs_to_jpegs(
     destination.mkdir(parents=True, exist_ok=True)
 
     outputs: list[Path] = []
-    srgb_profile = _srgb_profile_bytes()
+    srgb_profile = srgb_profile_bytes()
 
     for raw_path in file_paths:
         source = Path(raw_path).expanduser()
@@ -123,7 +95,7 @@ def convert_pngs_to_jpegs(
         with Image.open(source) as opened:
             image = ImageOps.exif_transpose(opened)
             image.load()
-            image = _convert_to_srgb(image)
+            image = convert_to_srgb(image)
             resize_minimum = min_megapixels if upscale_small_images else 0.000001
             image = _resize_for_stock(image, resize_minimum, max_megapixels)
             image.save(

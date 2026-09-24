@@ -5,6 +5,7 @@ Full pages:
 - /              — Dashboard (blocks, jobs, pipeline visual, quick run)
 - /jobs/<id>     — Job detail: step-by-step input/output + the effective
                    LLM execution audit (prompt snapshot, model, parameters)
+- /convert       — PNG→JPEG drop-zone converter (posts to /api/convert)
 - /settings/ai   — AI configuration: LLM role profiles (with audited change
                    history) + media model profiles
 
@@ -137,6 +138,12 @@ def _preview(text: str, max_len: int = 120) -> str:
 async def dashboard(request: Request):
     """Render the main dashboard page."""
     return templates.TemplateResponse(request, "dashboard.html")
+
+
+@router.get("/convert")
+async def convert_page(request: Request):
+    """Render the PNG→JPEG drop-zone converter page."""
+    return templates.TemplateResponse(request, "convert.html")
 
 
 @router.get("/jobs/{job_id}")

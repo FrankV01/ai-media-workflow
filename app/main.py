@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import blocks as block_router
 from app.api import configurations as config_router
+from app.api import convert as convert_router
 from app.api import workflows as wf_router
 from app.blocks.registry import discover_blocks
 from app.config import settings
@@ -132,7 +133,7 @@ async def lifespan(application: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -140,6 +141,7 @@ app = FastAPI(
 app.include_router(wf_router.router, prefix="/api/workflows", tags=["workflows"])
 app.include_router(block_router.router, prefix="/api/blocks", tags=["blocks"])
 app.include_router(config_router.router, prefix="/api/configurations", tags=["configurations"])
+app.include_router(convert_router.router, prefix="/api/convert", tags=["convert"])
 app.include_router(web_router)  # serves HTML at /
 
 # --- Static files ---

@@ -113,6 +113,20 @@ Each variant yields three files: `_refined_1x`, `_upscaled_2x`, `_upscaled_4x`.
 Report blocks also write `art_critic_report.md` and `social_media_specialist.md`
 into the same per-job directory.
 
+### PNG→JPEG converter tool
+
+`/convert` is a standalone drop-zone page (not part of `DEFAULT_WORKFLOW`) that posts
+uploads to `POST /api/convert/png-to-jpeg` (multipart field `files`, 1–20 PNGs,
+≤25 MB each, ≤100 MP decoded). Conversion is fully in memory via
+`app/services/image_convert.py` — EXIF transpose, embedded ICC → sRGB, alpha
+flattened onto white, JPEG quality 85, progressive+optimized, embedded sRGB ICC;
+dimensions and source DPI are preserved (unlike the stock-oriented
+`scripts/convert_pngs_to_jpegs.py`, which imports the same sRGB/alpha helpers but
+keeps its own 4 MP upscale / quality 95 / 300 DPI policy). The endpoint returns the
+JPEG body for a single conversion or an in-memory ZIP for a batch, with a per-file
+manifest (`converted`/`skipped`) in the `X-Convert-Results` response header.
+`app/web/static/convert.js` drives the five UI states and the blob-URL download.
+
 ## Code Style & Conventions
 
 - **Formatting**: Ruff with line-length 100. Run `ruff check --fix . && ruff format .` (note: `migrations/` has pre-existing lint findings; prefer `ruff check --fix app tests`).

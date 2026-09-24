@@ -108,6 +108,11 @@ an absolute path, and can be overridden via the environment.
 `scripts/convert_pngs_to_jpegs.py` writes to `IMAGE_OUTPUT_DIR` when
 `--output-dir` is omitted; an explicit `--output-dir` overrides it.
 
+The `/convert` page is a standalone drag-and-drop PNG→JPEG tool (no pipeline
+involved): files are converted in memory to sRGB JPEG at quality 85 with
+transparency flattened onto white — one file downloads as a `.jpg`, multiple
+files as a `.zip`.
+
 The ComfyUI backend runs an SDXL base → refiner → 2x/4x upscale workflow, so
 each prompt variant produces three files.
 
@@ -183,6 +188,7 @@ each prompt variant produces three files.
 | `GET` | `/api/configurations/media` | List media model profiles |
 | `PUT` | `/api/configurations/media/{block}` | Save a custom media profile (`backend_name`, `model_name` in body) |
 | `POST` | `/api/configurations/media/{block}/reset` | Restore code defaults (`backend_name`, `model_name` in body) |
+| `POST` | `/api/convert/png-to-jpeg` | Convert uploaded PNGs to sRGB JPEG (q85, white alpha fill); returns the JPEG, or a ZIP for multiple files — manifest in `X-Convert-Results` |
 
 Interactive docs at `/docs`. `run-tool.http` contains ready-to-send examples.
 
@@ -229,8 +235,9 @@ app/
       comfyui.py     → ComfyUI REST client
       sdxl_workflow.py → SDXL base + refiner + upscale workflow JSON
       placeholder.py → instant PNGs for testing
-  api/               → REST endpoints (/api/blocks, /api/workflows, /api/configurations)
-  web/               → routes.py (pages + HTMX partials, DEFAULT_WORKFLOW), templates/
+    image_convert.py → shared in-memory PNG→JPEG service (sRGB, white alpha fill)
+  api/               → REST endpoints (/api/blocks, /api/workflows, /api/configurations, /api/convert)
+  web/               → routes.py (pages + HTMX partials, DEFAULT_WORKFLOW), templates/, static/
 tests/               → pytest suite
 data/                → SQLite DB, media, default image output (gitignored)
 ```
