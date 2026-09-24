@@ -101,4 +101,24 @@ Content-Type: application/json
   }
 }
 
+### Convert a PNG to JPEG — single file returns the .jpg body;
+### per-file metadata rides in the X-Convert-Results response header.
+POST http://127.0.0.1:8000/api/convert/png-to-jpeg
+Content-Type: multipart/form-data; boundary=----aimwboundary
+
+------aimwboundary
+Content-Disposition: form-data; name="files"; filename="photo.png"
+Content-Type: image/png
+
+< ./photo.png
+------aimwboundary--
+
+###
+# Same thing with curl:
+#   single file → photo.jpg
+# curl -s -X POST http://127.0.0.1:8000/api/convert/png-to-jpeg \
+#   -F 'files=@photo.png' -OJ -D -
+#   batch → converted-images.zip (invalid files land in `skipped` in the manifest)
+# curl -s -X POST http://127.0.0.1:8000/api/convert/png-to-jpeg \
+#   -F 'files=@a.png' -F 'files=@b.png' -OJ -D -
 ###

@@ -126,6 +126,10 @@ keeps its own 4 MP upscale / quality 95 / 300 DPI policy). The endpoint returns 
 JPEG body for a single conversion or an in-memory ZIP for a batch, with a per-file
 manifest (`converted`/`skipped`) in the `X-Convert-Results` response header.
 `app/web/static/convert.js` drives the five UI states and the blob-URL download.
+Status mapping: 415 non-PNG (bad extension or signature), 413 oversized
+(>25 MB, >20 files, or >100 MP), 422 corrupt or nothing convertible; batch
+mode instead records bad files in `skipped[]` and still returns the valid
+conversions — the response body is a ZIP only when ≥2 files converted.
 
 ## Code Style & Conventions
 
@@ -218,7 +222,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 
 - Framework: pytest + pytest-asyncio (`asyncio_mode = "auto"`, so async tests need no marker)
 - Run: `pytest` from project root
-- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, and structured errors), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`
+- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, and structured errors), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping)
 - LLM calls are mocked by monkeypatching `app.blocks.role_block.AsyncOpenAI`; see `_fake_llm_client` in `test_blocks.py`
 - Tests that generate files monkeypatch `settings.image_output_dir` to `tmp_path` — never write into the real output dir
 

@@ -109,9 +109,14 @@ an absolute path, and can be overridden via the environment.
 `--output-dir` is omitted; an explicit `--output-dir` overrides it.
 
 The `/convert` page is a standalone drag-and-drop PNG→JPEG tool (no pipeline
-involved): files are converted in memory to sRGB JPEG at quality 85 with
+involved): drop one or more PNGs and conversion starts immediately — no
+submit button. Files are converted in memory to sRGB JPEG at quality 85 with
 transparency flattened onto white — one file downloads as a `.jpg`, multiple
-files as a `.zip`.
+files as a `.zip`. Limits: 25 MB per file, up to 20 files per drop, 100 MP
+decoded. The result card shows each output's dimensions, PNG vs. JPEG size,
+percentage saved, and 24-bit sRGB color profile; non-PNG, oversized, or
+corrupt files in a batch are skipped and listed rather than failing the
+whole drop.
 
 The ComfyUI backend runs an SDXL base → refiner → 2x/4x upscale workflow, so
 each prompt variant produces three files.
