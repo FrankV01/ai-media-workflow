@@ -96,8 +96,10 @@ class RoleBlock(Block):
         )
 
     async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:
-        """Resolve the effective (role, model) profile and record any warning."""
-        resolved = await self._provider().resolve_llm(self.code_defaults())
+        """Resolve the effective (workflow, role, model) profile and record any warning."""
+        resolved = await self._provider().resolve_llm(
+            self.code_defaults(), workflow_id=context.get("_workflow_id")
+        )
         if resolved.warning:
             warnings = context.setdefault("_warnings", [])
             if resolved.warning not in warnings:

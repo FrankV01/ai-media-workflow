@@ -122,3 +122,37 @@ Content-Type: image/png
 # curl -s -X POST http://127.0.0.1:8000/api/convert/png-to-jpeg \
 #   -F 'files=@a.png' -F 'files=@b.png' -OJ -D -
 ###
+
+### List stored workflow definitions (Main is the seeded default)
+GET http://127.0.0.1:8000/api/workflow-definitions/
+
+### Clone Main as a new workflow — copies its steps AND every
+### workflow-scoped LLM/media profile, ready to customize independently
+POST http://127.0.0.1:8000/api/workflow-definitions/main/clone
+Content-Type: application/json
+
+{
+  "name": "Adobe Stock Illustration"
+}
+
+### Run a workflow by slug — its stored steps and configuration scope apply
+### (no block_names needed; add "block_names" to override steps ad hoc)
+POST http://127.0.0.1:8000/api/workflows/run
+Content-Type: application/json
+
+{
+  "photo_shoot_name": "Kraft Paper Pattern Set",
+  "workflow": "adobe-stock-illustration",
+  "context": {
+    "brief": "A seamless repeating pattern of hand-drawn botanical line art on kraft cardstock.",
+    "_generation_backend": "placeholder"
+  }
+}
+
+### Scoped configuration — list the illustration workflow's LLM profiles
+### (?workflow=<slug> works on every /api/configurations endpoint)
+GET http://127.0.0.1:8000/api/configurations/llm?workflow=adobe-stock-illustration
+
+### List jobs for one workflow only
+GET http://127.0.0.1:8000/api/workflows/jobs?workflow=adobe-stock-illustration
+

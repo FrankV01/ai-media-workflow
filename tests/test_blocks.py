@@ -206,10 +206,11 @@ async def test_social_media_appends_contract_to_resolved_prompt():
     from app.services.configuration.base import ResolvedLlmConfiguration
 
     class _StubProvider:
-        async def resolve_llm(self, defaults):
+        async def resolve_llm(self, defaults, *, workflow_id=None):
             return ResolvedLlmConfiguration(
                 configuration_id=1,
                 role_id=1,
+                workflow_id=workflow_id,
                 source="custom",
                 warning=None,
                 system_prompt="You are a custom strategist.",
@@ -319,10 +320,11 @@ async def test_art_critic_appends_contract_to_resolved_prompt():
     from app.services.configuration.base import ResolvedLlmConfiguration
 
     class _StubProvider:
-        async def resolve_llm(self, defaults):
+        async def resolve_llm(self, defaults, *, workflow_id=None):
             return ResolvedLlmConfiguration(
                 configuration_id=1,
                 role_id=1,
+                workflow_id=workflow_id,
                 source="custom",
                 warning=None,
                 system_prompt="You are a custom critic.",
@@ -824,10 +826,11 @@ async def test_prompt_architect_appends_contract_to_resolved_prompt():
     from app.services.configuration.base import ResolvedLlmConfiguration
 
     class _StubProvider:
-        async def resolve_llm(self, defaults):
+        async def resolve_llm(self, defaults, *, workflow_id=None):
             return ResolvedLlmConfiguration(
                 configuration_id=1,
                 role_id=1,
+                workflow_id=workflow_id,
                 source="custom",
                 warning=None,
                 system_prompt="You are a custom architect.",
@@ -957,10 +960,13 @@ async def test_social_media_report_writes_markdown(monkeypatch, tmp_path):
 
 
 def test_default_workflow_contains_report_blocks():
-    from app.web.routes import DEFAULT_WORKFLOW
+    from app.services.workflows import DEFAULT_WORKFLOW_STEPS
 
-    assert DEFAULT_WORKFLOW.index("art_critic_report") == DEFAULT_WORKFLOW.index("art_critic") + 1
-    routing = next(item for item in DEFAULT_WORKFLOW if isinstance(item, dict))
+    assert (
+        DEFAULT_WORKFLOW_STEPS.index("art_critic_report")
+        == DEFAULT_WORKFLOW_STEPS.index("art_critic") + 1
+    )
+    routing = next(item for item in DEFAULT_WORKFLOW_STEPS if isinstance(item, dict))
     assert routing["always"] == ["social_media_specialist", "social_media_report"]
 
 

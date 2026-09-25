@@ -16,6 +16,7 @@ import app.models.creative  # noqa: F401 — register models on Base.metadata
 import app.models.job  # noqa: F401
 import app.models.media  # noqa: F401
 import app.models.setting  # noqa: F401
+import app.models.workflow  # noqa: F401
 from app.database import Base
 
 

@@ -7,8 +7,9 @@ Normalized schema for the role-based creative workflow:
                         (Art Director, Prompt Architect, etc.). Behavior
                         configuration lives in LlmRoleConfiguration.
 
-- LlmRoleConfiguration: Mutable per-(role, model) behavior profile —
-                        system prompt, temperature, max_tokens, thinking.
+- LlmRoleConfiguration: Mutable per-(workflow, role, model) behavior
+                        profile — system prompt, temperature, max_tokens,
+                        thinking.
                         Rows seeded from code defaults carry
                         uses_code_defaults=True and trigger a warning on
                         every use until customized via UI/API. Existing rows
@@ -96,20 +97,27 @@ class CreativeRole(Base):
 
 class LlmRoleConfiguration(Base):
     """
-    Mutable behavior profile for one (role, model) pair.
+    Mutable behavior profile for one (workflow, role, model) triple.
 
-    Profiles are keyed by role + model name; changing LLM_MODEL selects a
-    different profile. Rows still on code defaults (uses_code_defaults=True)
-    produce a persisted warning on every execution until customized.
+    Profiles are keyed by workflow + role + model name; the run's workflow
+    selects the scope and LLM_MODEL selects the model within it. Rows still
+    on code defaults (uses_code_defaults=True) produce a persisted warning
+    on every execution until customized.
     """
 
     __tablename__ = "llm_role_configurations"
     __table_args__ = (
-        UniqueConstraint("role_id", "model_name", name="uq_llm_role_configuration_role_model"),
+        UniqueConstraint(
+            "role_id",
+            "model_name",
+            "workflow_id",
+            name="uq_llm_role_configuration_role_model_workflow",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     role_id: Mapped[int] = mapped_column(ForeignKey("creative_roles.id"), index=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
     model_name: Mapped[str] = mapped_column(String(255), index=True)
     system_prompt: Mapped[str] = mapped_column(Text)
     temperature: Mapped[float] = mapped_column(Float)
@@ -126,6 +134,7 @@ class LlmRoleConfiguration(Base):
     )
 
     role: Mapped["CreativeRole"] = relationship(back_populates="configurations")
+    workflow: Mapped["Workflow"] = relationship(back_populates="llm_configurations")
     executions: Mapped[list["RoleExecution"]] = relationship(back_populates="configuration")
     changes: Mapped[list["LlmConfigurationChange"]] = relationship(
         back_populates="configuration", cascade="all, delete-orphan"
@@ -250,3 +259,4 @@ class Message(Base):
 
 # Avoid circular import — import at module level for relationship resolution
 from app.models.job import JobStep  # noqa: E402, F401
+from app.models.workflow import Workflow  # noqa: E402, F401

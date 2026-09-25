@@ -4,8 +4,13 @@ app.services.configuration.database — Database-backed configuration provider
 Owns atomic, idempotent get-or-create of AI behavior profiles under their
 unique constraints:
 
-- LlmRoleConfiguration keyed by (role_id, model_name)
-- MediaModelConfiguration keyed by (block_name, backend_name, model_name)
+- LlmRoleConfiguration keyed by (workflow_id, role_id, model_name)
+- MediaModelConfiguration keyed by (workflow_id, block_name, backend_name,
+  model_name)
+
+Every method takes an optional workflow_id selecting the workflow scope;
+None resolves to the default workflow (lazily seeded "Main"), so ad-hoc
+runs and callers that don't name a workflow keep working.
 
 Missing rows are seeded from the code defaults passed in by the caller
 (env settings select which profile is active; the DB owns existing rows).
@@ -42,6 +47,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.models.creative import CreativeRole, LlmConfigurationChange, LlmRoleConfiguration
 from app.models.media import MediaModelConfiguration
+from app.models.workflow import Workflow
 from app.services.configuration.base import (
     LLM_CHANGE_ACTION_RESET_TO_DEFAULTS,
     LLM_CHANGE_ACTION_SAVE_CUSTOM,
@@ -57,6 +63,10 @@ from app.services.configuration.base import (
     ResolvedMediaConfiguration,
     validate_llm_profile_fields,
     validate_media_profile_fields,
+)
+from app.services.workflows import (
+    WorkflowNotFoundError,
+    get_or_create_default_workflow,
 )
 
 # Mutable profile fields captured in every change snapshot
@@ -138,12 +148,22 @@ class DatabaseConfigurationProvider:
         await session.flush()
         return role
 
+    async def _resolve_workflow(self, session, workflow_id: int | None) -> Workflow:
+        """Return the workflow a profile is scoped to (default when None)."""
+        if workflow_id is None:
+            return await get_or_create_default_workflow(session)
+        workflow = await session.get(Workflow, workflow_id)
+        if workflow is None:
+            raise WorkflowNotFoundError(f"Unknown workflow id {workflow_id}")
+        return workflow
+
     async def _get_or_create_llm_config(
-        self, session, role_id: int, defaults: LlmRoleDefaults
+        self, session, role_id: int, workflow_id: int, defaults: LlmRoleDefaults
     ) -> LlmRoleConfiguration:
         stmt = select(LlmRoleConfiguration).where(
             LlmRoleConfiguration.role_id == role_id,
             LlmRoleConfiguration.model_name == defaults.model_name,
+            LlmRoleConfiguration.workflow_id == workflow_id,
         )
         config = (await session.execute(stmt)).scalar_one_or_none()
         if config is not None:
@@ -152,6 +172,7 @@ class DatabaseConfigurationProvider:
             async with session.begin_nested():
                 config = LlmRoleConfiguration(
                     role_id=role_id,
+                    workflow_id=workflow_id,
                     model_name=defaults.model_name,
                     system_prompt=defaults.system_prompt,
                     temperature=defaults.temperature,
@@ -166,9 +187,10 @@ class DatabaseConfigurationProvider:
         return config
 
     async def _get_or_create_media_config(
-        self, session, defaults: MediaDefaults
+        self, session, workflow_id: int, defaults: MediaDefaults
     ) -> MediaModelConfiguration:
         stmt = select(MediaModelConfiguration).where(
+            MediaModelConfiguration.workflow_id == workflow_id,
             MediaModelConfiguration.block_name == defaults.block_name,
             MediaModelConfiguration.backend_name == defaults.backend_name,
             MediaModelConfiguration.model_name == defaults.model_name,
@@ -179,6 +201,7 @@ class DatabaseConfigurationProvider:
         try:
             async with session.begin_nested():
                 config = MediaModelConfiguration(
+                    workflow_id=workflow_id,
                     block_name=defaults.block_name,
                     backend_name=defaults.backend_name,
                     model_name=defaults.model_name,
@@ -214,8 +237,10 @@ class DatabaseConfigurationProvider:
 
     # ── Resolution (runtime path) ────────────────────────────────────────
 
-    async def resolve_llm(self, defaults: LlmRoleDefaults) -> ResolvedLlmConfiguration:
-        """Upsert role metadata, get-or-insert the (role, model) profile."""
+    async def resolve_llm(
+        self, defaults: LlmRoleDefaults, *, workflow_id: int | None = None
+    ) -> ResolvedLlmConfiguration:
+        """Upsert role metadata, get-or-insert the (workflow, role, model) profile."""
         defaults = self._normalize_llm_defaults(defaults)
         validate_llm_profile_fields(
             defaults.model_name,
@@ -225,18 +250,24 @@ class DatabaseConfigurationProvider:
         )
 
         async def work(session):
+            workflow = await self._resolve_workflow(session, workflow_id)
             role = await self._get_or_create_role(session, defaults)
-            config = await self._get_or_create_llm_config(session, role.id, defaults)
+            config = await self._get_or_create_llm_config(session, role.id, workflow.id, defaults)
 
             source = SOURCE_CODE_DEFAULT if config.uses_code_defaults else SOURCE_CUSTOM
             warning = (
-                LLM_DEFAULT_WARNING.format(role=defaults.role_name, model=config.model_name)
+                LLM_DEFAULT_WARNING.format(
+                    role=defaults.role_name,
+                    model=config.model_name,
+                    workflow=workflow.slug,
+                )
                 if config.uses_code_defaults
                 else None
             )
             return ResolvedLlmConfiguration(
                 configuration_id=config.id,
                 role_id=role.id,
+                workflow_id=workflow.id,
                 source=source,
                 warning=warning,
                 system_prompt=config.system_prompt,
@@ -248,8 +279,10 @@ class DatabaseConfigurationProvider:
 
         return await self._transact(work)
 
-    async def resolve_media(self, defaults: MediaDefaults) -> ResolvedMediaConfiguration:
-        """Get-or-insert the (block, backend, model) profile."""
+    async def resolve_media(
+        self, defaults: MediaDefaults, *, workflow_id: int | None = None
+    ) -> ResolvedMediaConfiguration:
+        """Get-or-insert the (workflow, block, backend, model) profile."""
         defaults = self._normalize_media_defaults(defaults)
         validate_media_profile_fields(
             defaults.block_name,
@@ -259,19 +292,22 @@ class DatabaseConfigurationProvider:
         )
 
         async def work(session):
-            config = await self._get_or_create_media_config(session, defaults)
+            workflow = await self._resolve_workflow(session, workflow_id)
+            config = await self._get_or_create_media_config(session, workflow.id, defaults)
             source = SOURCE_CODE_DEFAULT if config.uses_code_defaults else SOURCE_CUSTOM
             warning = (
                 MEDIA_DEFAULT_WARNING.format(
                     block=defaults.block_name,
                     backend=defaults.backend_name,
                     model=defaults.model_name,
+                    workflow=workflow.slug,
                 )
                 if config.uses_code_defaults
                 else None
             )
             return ResolvedMediaConfiguration(
                 configuration_id=config.id,
+                workflow_id=workflow.id,
                 source=source,
                 warning=warning,
                 block_name=config.block_name,
@@ -284,15 +320,21 @@ class DatabaseConfigurationProvider:
 
     # ── Listing / editing (API + UI path) ────────────────────────────────
 
-    async def list_llm_configurations(self) -> list[tuple[CreativeRole, LlmRoleConfiguration]]:
-        """Return all LLM profiles with their role metadata rows."""
+    async def list_llm_configurations(
+        self, workflow_id: int | None = None
+    ) -> list[tuple[CreativeRole, LlmRoleConfiguration]]:
+        """Return LLM profiles with their role metadata rows.
+
+        `workflow_id` restricts to one workflow's scope; None returns all.
+        """
         async with self._session_factory() as session:
-            result = await session.execute(
-                select(CreativeRole, LlmRoleConfiguration).join(
-                    LlmRoleConfiguration,
-                    LlmRoleConfiguration.role_id == CreativeRole.id,
-                )
+            stmt = select(CreativeRole, LlmRoleConfiguration).join(
+                LlmRoleConfiguration,
+                LlmRoleConfiguration.role_id == CreativeRole.id,
             )
+            if workflow_id is not None:
+                stmt = stmt.where(LlmRoleConfiguration.workflow_id == workflow_id)
+            result = await session.execute(stmt)
             return list(result.all())
 
     async def upsert_llm_configuration(
@@ -304,12 +346,14 @@ class DatabaseConfigurationProvider:
         max_tokens: int,
         enable_thinking: bool,
         origin: str = LLM_CHANGE_ORIGIN_SERVICE,
+        workflow_id: int | None = None,
     ) -> LlmRoleConfiguration:
         """Write a custom LLM profile (uses_code_defaults=False).
 
         `defaults` supplies the stable role identity (upserted), the code
         defaults that seed a missing row, and the model_name the profile is
-        keyed on. Records a save_custom audit event tagged with `origin` in
+        keyed on; `workflow_id` selects the workflow scope (default workflow
+        when None). Records a save_custom audit event tagged with `origin` in
         the same transaction; for a first-ever save the before snapshot is
         the shipped code defaults, not the incoming custom values.
         """
@@ -329,8 +373,11 @@ class DatabaseConfigurationProvider:
         )
 
         async def work(session):
+            workflow = await self._resolve_workflow(session, workflow_id)
             role = await self._get_or_create_role(session, normalized_defaults)
-            config = await self._get_or_create_llm_config(session, role.id, normalized_defaults)
+            config = await self._get_or_create_llm_config(
+                session, role.id, workflow.id, normalized_defaults
+            )
             before = _llm_config_snapshot(config)
             config.system_prompt = profile_values.system_prompt
             config.temperature = profile_values.temperature
@@ -357,8 +404,9 @@ class DatabaseConfigurationProvider:
         defaults: LlmRoleDefaults,
         *,
         origin: str = LLM_CHANGE_ORIGIN_SERVICE,
+        workflow_id: int | None = None,
     ) -> LlmRoleConfiguration:
-        """Restore code defaults for (role, model); uses_code_defaults=True.
+        """Restore code defaults for (workflow, role, model); uses_code_defaults=True.
 
         Records a reset_to_defaults audit event tagged with `origin` in the
         same transaction.
@@ -372,8 +420,9 @@ class DatabaseConfigurationProvider:
         )
 
         async def work(session):
+            workflow = await self._resolve_workflow(session, workflow_id)
             role = await self._get_or_create_role(session, defaults)
-            config = await self._get_or_create_llm_config(session, role.id, defaults)
+            config = await self._get_or_create_llm_config(session, role.id, workflow.id, defaults)
             before = _llm_config_snapshot(config)
             config.system_prompt = defaults.system_prompt
             config.temperature = defaults.temperature
@@ -418,10 +467,15 @@ class DatabaseConfigurationProvider:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def list_media_configurations(self) -> list[MediaModelConfiguration]:
-        """Return all media profiles."""
+    async def list_media_configurations(
+        self, workflow_id: int | None = None
+    ) -> list[MediaModelConfiguration]:
+        """Return media profiles; `workflow_id` restricts to one workflow's scope."""
         async with self._session_factory() as session:
-            result = await session.execute(select(MediaModelConfiguration))
+            stmt = select(MediaModelConfiguration)
+            if workflow_id is not None:
+                stmt = stmt.where(MediaModelConfiguration.workflow_id == workflow_id)
+            result = await session.execute(stmt)
             return list(result.scalars().all())
 
     async def upsert_media_configuration(
@@ -430,6 +484,8 @@ class DatabaseConfigurationProvider:
         backend_name: str,
         model_name: str,
         settings: MediaProfileSettings,
+        *,
+        workflow_id: int | None = None,
     ) -> MediaModelConfiguration:
         """Write a custom media profile (uses_code_defaults=False)."""
         validate_media_profile_fields(block_name, backend_name, model_name, settings)
@@ -443,7 +499,8 @@ class DatabaseConfigurationProvider:
         )
 
         async def work(session):
-            config = await self._get_or_create_media_config(session, profile_defaults)
+            workflow = await self._resolve_workflow(session, workflow_id)
+            config = await self._get_or_create_media_config(session, workflow.id, profile_defaults)
             config.settings_json = settings.to_json()
             config.uses_code_defaults = False
             await session.flush()
@@ -451,8 +508,10 @@ class DatabaseConfigurationProvider:
 
         return await self._transact(work)
 
-    async def reset_media_configuration(self, defaults: MediaDefaults) -> MediaModelConfiguration:
-        """Restore code defaults for (block, backend, model)."""
+    async def reset_media_configuration(
+        self, defaults: MediaDefaults, *, workflow_id: int | None = None
+    ) -> MediaModelConfiguration:
+        """Restore code defaults for (workflow, block, backend, model)."""
         defaults = self._normalize_media_defaults(defaults)
         validate_media_profile_fields(
             defaults.block_name,
@@ -462,7 +521,8 @@ class DatabaseConfigurationProvider:
         )
 
         async def work(session):
-            config = await self._get_or_create_media_config(session, defaults)
+            workflow = await self._resolve_workflow(session, workflow_id)
+            config = await self._get_or_create_media_config(session, workflow.id, defaults)
             config.settings_json = defaults.settings.to_json()
             config.uses_code_defaults = True
             await session.flush()

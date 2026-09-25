@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}Workflows — AI Media Workflow{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold">Workflows</h1>
+    <p class="text-sm text-gray-400 mt-1">
+        Workflows are named, ordered pipelines of blocks. Each workflow owns its AI
+        configuration profiles (role prompts and media model settings) — edit them under
+        <a href="/settings/ai" class="text-indigo-400 hover:text-indigo-300">AI Settings</a>
+        after selecting the workflow. The <span class="text-amber-300">default</span>
+        workflow runs when nothing is selected and cannot be disabled.
+    </p>
+    {% if status %}
+    <div class="mt-3 p-3 rounded text-sm
+        {% if status == 'error' %}bg-red-900/30 border border-red-800/50 text-red-300
+        {% else %}bg-emerald-900/30 border border-emerald-800/50 text-emerald-300{% endif %}">
+        {% if status == 'error' %}
+        {{ status_message }}
+        {% elif status == 'created' %}
+        Created workflow <span class="font-mono">{{ status_message }}</span>.
+        {% elif status == 'cloned' %}
+        Cloned as <span class="font-mono">{{ status_message }}</span> — all configuration profiles were copied.
+        {% elif status == 'saved' %}
+        Saved workflow <span class="font-mono">{{ status_message }}</span>.
+        {% elif status == 'enabled' %}
+        Enabled workflow <span class="font-mono">{{ status_message }}</span>.
+        {% elif status == 'disabled' %}
+        Disabled workflow <span class="font-mono">{{ status_message }}</span>.
+        {% elif status == 'default' %}
+        <span class="font-mono">{{ status_message }}</span> is now the default workflow.
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- Workflow list -->
+<div class="space-y-4 mb-10">
+    {% for w in workflows %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+        <div class="flex items-start justify-between">
+            <div>
+                <h3 class="font-medium text-white flex items-center gap-2">
+                    {{ w.name }}
+                    <span class="font-mono text-xs text-gray-500">{{ w.slug }}</span>
+                    {% if w.is_default %}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300">default</span>
+                    {% endif %}
+                    {% if w.is_enabled %}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">enabled</span>
+                    {% else %}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-400">disabled</span>
+                    {% endif %}
+                </h3>
+                {% if w.description %}
+                <p class="text-xs text-gray-500 mt-1">{{ w.description }}</p>
+                {% endif %}
+                <p class="text-[11px] text-gray-600 mt-1">
+                    {% if w.media_model_name %}Media model: <span class="font-mono">{{ w.media_model_name }}</span>{% else %}Media model: env default{% endif %}
+                    {% if w.created_at %} · Created {{ w.created_at.strftime("%b %d, %Y") }}{% endif %}
+                </p>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+                <a href="/?workflow={{ w.slug }}"
+                   class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Dashboard</a>
+                <a href="/settings/ai?workflow={{ w.slug }}"
+                   class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">AI Settings</a>
+                <a href="/workflows/{{ w.id }}"
+                   class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Edit</a>
+            </div>
+        </div>
+        <div class="flex items-center gap-2 mt-3">
+            <!-- Clone -->
+            <details class="relative">
+                <summary class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs cursor-pointer list-none">Clone…</summary>
+                <form method="post" action="/workflows/{{ w.id }}/clone"
+                      class="absolute left-0 mt-1 z-10 bg-gray-800 border border-gray-700 rounded p-3 flex gap-2 shadow-lg">
+                    <input name="name" required placeholder="New workflow name"
+                           class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm w-56">
+                    <button type="submit" class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs">Clone</button>
+                </form>
+            </details>
+            <!-- Enable / disable -->
+            {% if w.is_enabled %}
+            <form method="post" action="/workflows/{{ w.id }}/disable">
+                <button type="submit" {% if w.is_default %}disabled title="The default workflow cannot be disabled"{% endif %}
+                        class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs
+                               disabled:opacity-40 disabled:cursor-not-allowed">
+                    Disable
+                </button>
+            </form>
+            {% else %}
+            <form method="post" action="/workflows/{{ w.id }}/enable">
+                <button type="submit" class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs">Enable</button>
+            </form>
+            {% endif %}
+            <!-- Set default -->
+            {% if not w.is_default %}
+            <form method="post" action="/workflows/{{ w.id }}/set-default">
+                <button type="submit" class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs"
+                        title="Run this workflow when none is selected (also enables it)">
+                    Set default
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Create a new workflow -->
+<div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
+    <h2 class="text-lg font-semibold mb-3">Create Workflow</h2>
+    <p class="text-xs text-gray-500 mb-4">
+        Steps are a JSON array of block names, optionally followed by routing objects like
+        <code class="font-mono text-gray-400">{"on_good": [], "on_bad": [], "always": ["social_media_specialist"]}</code>.
+        Leave steps blank to start from the main pipeline.
+    </p>
+    <form method="post" action="/workflows/create" class="space-y-3">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">Name</label>
+                <input name="name" required placeholder="Adobe Stock Illustration"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">Media model override (optional)</label>
+                <input name="media_model_name" placeholder="checkpoint.safetensors"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+            </div>
+        </div>
+        <div>
+            <label class="text-xs text-gray-500 block mb-1">Description (optional)</label>
+            <input name="description" placeholder="What this workflow produces"
+                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500 block mb-1">Steps (JSON array)</label>
+            <textarea name="steps" rows="10" spellcheck="false"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">{{ default_steps_json }}</textarea>
+        </div>
+        <button type="submit" class="px-4 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">
+            Create workflow
+        </button>
+    </form>
+</div>
+{% endblock %}

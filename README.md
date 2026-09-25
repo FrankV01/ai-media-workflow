@@ -73,11 +73,36 @@ User prompt
 Each block writes its report into the pipeline context as
 `{role_name}_output`, so downstream blocks can reference any prior report.
 The Art Critic's verdict drives conditional branching via the engine's
-routing dicts (see `app/pipeline/engine.py`). The default chain is
-`DEFAULT_WORKFLOW` in `app/web/routes.py`.
+routing dicts (see `app/pipeline/engine.py`). The chain above is the seeded
+"Main" workflow — workflows are database rows (`steps_json` in the same
+`block name | routing dict` format), managed on `/workflows` or via
+`/api/workflow-definitions`.
 
 Only one pipeline runs at a time; additional submissions queue as `PENDING`
-until the running job finishes.
+until the running job finishes. The queue is global across workflows — a
+submission for one workflow waits behind a running job from any other — so
+the LLM and ComfyUI are never hit concurrently. A queued job's step list is
+captured at submit time, but its AI profiles resolve when it actually runs
+(editing a queued workflow's prompts takes effect; editing its steps does
+not), and disabling a workflow does not cancel jobs already queued.
+
+### Workflows
+
+Workflows are named, persisted pipeline definitions — which blocks run, in
+what order, with what routing — plus a configuration scope. Every run
+belongs to one workflow (`Job.workflow_id`), and every AI profile (role
+prompts, media model settings) is scoped to one, so e.g. an "Adobe Stock
+Illustration" workflow can use different system prompts and a different
+ComfyUI checkpoint than "Main".
+
+- Create/clone/edit/enable/disable on the `/workflows` page (JSON steps
+  editor with a rendered preview); the default workflow can't be disabled.
+- The dashboard workflow selector scopes the pipeline visual, run buttons,
+  and job list; `/settings/ai?workflow=<slug>` edits that workflow's
+  profiles. `media_model_name` on a workflow overrides the env-selected
+  checkpoint for its runs.
+- The migration seeds "Main" with the pipeline above and backfills existing
+  profiles and jobs to it.
 
 ### Photo shoots
 
@@ -139,16 +164,19 @@ each prompt variant produces three files.
 - **Persistence** — SQLite via SQLAlchemy async. Jobs, steps, input/output
   snapshots, and generated asset paths are all stored.
 - **Web UI** — Jinja2 + HTMX, Tailwind CDN. No JS build step. Dashboard at
-  `/`, job detail at `/jobs/{id}`, AI configuration at `/settings/ai`, run
-  buttons for the real and placeholder backends.
+  `/`, job detail at `/jobs/{id}`, workflow management at `/workflows`, AI
+  configuration at `/settings/ai` (per-workflow), run buttons for the real
+  and placeholder backends.
 - **Config** — split between env and DB. Environment (`.env` via
   pydantic-settings, see `.env.example`) owns secrets, URLs, timeouts, poll
   intervals, filesystem paths, and *selects which profile is active*
-  (`LLM_MODEL`, `GENERATION_BACKEND`, `COMFYUI_CHECKPOINT`). Behavior
+  (`LLM_MODEL`, `GENERATION_BACKEND`, `COMFYUI_CHECKPOINT` — a workflow may
+  override the checkpoint via `media_model_name`). Behavior
   profiles — role system prompts/temperature/max_tokens/thinking per
-  `(role, model_name)`, and media request/workflow defaults per
-  `(block, backend, model)` — live in the database and are edited via the
-  web UI (`/settings/ai`) or the `/api/configurations` REST endpoints.
+  `(workflow, role, model_name)`, and media request/workflow defaults per
+  `(workflow, block, backend, model)` — live in the database and are edited
+  via the web UI (`/settings/ai?workflow=<slug>`) or the
+  `/api/configurations` REST endpoints (`?workflow=` query param).
   **Only missing profile rows are seeded** from code defaults — page loads
   and pipeline runs never overwrite saved values. Seeded rows warn on every
   run until customized (shown as `default`/`custom`/`active` badges at
@@ -164,11 +192,10 @@ each prompt variant produces three files.
 
 ### Troubleshooting configuration
 
-- **A run used the wrong prompt/parameters**: check `LLM_MODEL` — the exact
-  model key selects which `(role, model)` profile is active. Saving a
-  profile under a *different* model name than the active `LLM_MODEL` has no
-  effect on runs; create the profile for the active model (or change
-  `LLM_MODEL`). Inspect what a run actually used via the per-step "LLM
+- **A run used the wrong prompt/parameters**: check the run's workflow and
+  `LLM_MODEL` — profiles are keyed `(workflow, role, model)`, so editing a
+  different workflow's profile (or a different model key) has no effect on
+  the run. Inspect what a run actually used via the per-step "LLM
   executions" on the job detail page.
 - **A custom profile reverted to defaults**: someone ran Reset (the
   settings page asks for confirmation) or the reset API. Check the
@@ -183,9 +210,17 @@ each prompt variant produces three files.
 |---|---|---|
 | `GET` | `/api/blocks/` | List registered blocks with metadata |
 | `GET` | `/api/blocks/{name}` | Single block detail |
-| `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, `block_names`, `context` (set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI) |
-| `GET` | `/api/workflows/jobs` | Recent jobs |
+| `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, optional `workflow` (slug), `block_names`, `context`. Step precedence: explicit `block_names` > the workflow's stored steps > the default workflow's. Set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI |
+| `GET` | `/api/workflows/jobs` | Recent jobs (`?workflow=<slug>` filters) |
 | `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings |
+| `GET` | `/api/workflow-definitions/` | List workflow definitions |
+| `POST` | `/api/workflow-definitions/` | Create a workflow (`name`, `description`, `steps`, `media_model_name`) |
+| `GET` | `/api/workflow-definitions/{slug}` | Workflow detail (steps decoded) |
+| `PUT` | `/api/workflow-definitions/{slug}` | Update name/description/steps/media_model_name |
+| `POST` | `/api/workflow-definitions/{slug}/clone` | Clone (`name` in body) — copies steps + all scoped AI profiles |
+| `POST` | `/api/workflow-definitions/{slug}/enable` | Re-enable a disabled workflow |
+| `POST` | `/api/workflow-definitions/{slug}/disable` | Disable (409 for the default workflow) |
+| `POST` | `/api/workflow-definitions/{slug}/set-default` | Make it the default (force-enables it) |
 | `GET` | `/api/configurations/llm` | List LLM role profiles |
 | `PUT` | `/api/configurations/llm/{role}` | Save a custom LLM profile (`model_name` in body; audited) |
 | `POST` | `/api/configurations/llm/{role}/reset` | Restore code defaults (`model_name` in body; audited) |
@@ -194,6 +229,10 @@ each prompt variant produces three files.
 | `PUT` | `/api/configurations/media/{block}` | Save a custom media profile (`backend_name`, `model_name` in body) |
 | `POST` | `/api/configurations/media/{block}/reset` | Restore code defaults (`backend_name`, `model_name` in body) |
 | `POST` | `/api/convert/png-to-jpeg` | Convert uploaded PNGs to sRGB JPEG (q85, white alpha fill); returns the JPEG, or a ZIP for multiple files — manifest in `X-Convert-Results` |
+
+All `/api/configurations` endpoints accept an optional `?workflow=<slug>`
+query parameter selecting which workflow's profiles to read or modify —
+the default workflow is used when omitted (unknown slug → 404).
 
 Interactive docs at `/docs`. `run-tool.http` contains ready-to-send examples.
 
@@ -210,12 +249,15 @@ app/
   config.py          → pydantic-settings (reads .env)
   database.py        → async engine, session factory, Base, init_db
   models/            → ORM models
+    workflow.py      → Workflow (named pipeline definition: steps_json,
+                       enable/disable, default flag, media model override)
     job.py           → Job (incl. persisted warnings), JobStep, JobStatus
-    creative.py      → CreativeRole (identity), LlmRoleConfiguration (per-role/model
-                       LLM profile), LlmConfigurationChange (audited save/reset
-                       history), RoleExecution + Message (immutable audit snapshots)
-    media.py         → MediaModelConfiguration (per-block/backend/model profile),
-                       MediaGenerationExecution (per-request audit snapshot)
+    creative.py      → CreativeRole (identity), LlmRoleConfiguration (per-workflow/
+                       role/model LLM profile), LlmConfigurationChange (audited
+                       save/reset history), RoleExecution + Message (immutable
+                       audit snapshots)
+    media.py         → MediaModelConfiguration (per-workflow/block/backend/model
+                       profile), MediaGenerationExecution (per-request audit snapshot)
     setting.py       → Setting (key/value; not yet used)
   blocks/            → workflow blocks
     base.py          → Abstract Block + BlockMeta
@@ -233,6 +275,7 @@ app/
     naming.py        → photo shoot name normalization, slugs, output subdirs
   services/
     workload_guard.py → exclusive lock for LLM / ComfyUI work
+    workflows.py     → workflow CRUD/validation/clone + DEFAULT_WORKFLOW_STEPS
     configuration/   → typed config dataclasses + DatabaseConfigurationProvider
     generation/      → backend abstraction
       base.py        → GenerationRequest / GenerationResult / GenerationBackend
@@ -241,8 +284,8 @@ app/
       sdxl_workflow.py → SDXL base + refiner + upscale workflow JSON
       placeholder.py → instant PNGs for testing
     image_convert.py → shared in-memory PNG→JPEG service (sRGB, white alpha fill)
-  api/               → REST endpoints (/api/blocks, /api/workflows, /api/configurations, /api/convert)
-  web/               → routes.py (pages + HTMX partials, DEFAULT_WORKFLOW), templates/, static/
+  api/               → REST endpoints (/api/blocks, /api/workflows, /api/workflow-definitions, /api/configurations, /api/convert)
+  web/               → routes.py (pages + HTMX partials), templates/, static/
 tests/               → pytest suite
 data/                → SQLite DB, media, default image output (gitignored)
 ```
