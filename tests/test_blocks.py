@@ -96,6 +96,7 @@ async def test_role_blocks_validate_base_url():
 def test_all_creative_blocks_in_list():
     blocks = list_blocks()
     names = {b["name"] for b in blocks}
+    assert "job_namer" in names
     assert "art_director" in names
     assert "prompt_architect" in names
     assert "media_producer" in names
@@ -649,81 +650,100 @@ async def test_role_block_thinking_enabled_omits_reasoning_effort(monkeypatch):
     assert "reasoning_effort" not in captured
 
 
-# ── Art Director photo-shoot naming tests ────────────────────────────────
+# ── Job namer (engine-owned shoot titling) tests ─────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_art_director_extracts_photo_shoot_name(monkeypatch):
-    """A 'PHOTO SHOOT:' header in the brief becomes context['photo_shoot_name']."""
+async def test_job_namer_names_shoot_from_llm(monkeypatch):
+    """The LLM reply becomes context['photo_shoot_name']; the brief is not echoed."""
     import app.blocks.role_block as role_block_module
-    from app.blocks.art_director import ArtDirector
+    from app.blocks.job_namer import PhotoShootNamer
 
     monkeypatch.setattr(
         role_block_module,
         "AsyncOpenAI",
-        lambda **_: _fake_llm_client("# PHOTO SHOOT: **Cyber Chic**\n\n### 1. Scene…"),
+        lambda **_: _fake_llm_client("Neon Reverie"),
     )
 
-    result = await ArtDirector().run({"brief": "a concept"})
+    result = await PhotoShootNamer().run({"brief": "a neon-lit editorial concept"})
+
+    assert result["photo_shoot_name"] == "Neon Reverie"
+    assert "brief" not in result
+    assert result["job_namer_output"] == "Neon Reverie"
+
+
+@pytest.mark.asyncio
+async def test_job_namer_cleans_llm_reply(monkeypatch):
+    """Labels, markdown, quotes, and trailing punctuation are stripped."""
+    import app.blocks.role_block as role_block_module
+    from app.blocks.job_namer import PhotoShootNamer
+
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client('TITLE: "**Cyber Chic!**"\n'),
+    )
+
+    result = await PhotoShootNamer().run({"brief": "a concept"})
 
     assert result["photo_shoot_name"] == "Cyber Chic"
-    assert "Scene" in result["brief"]
 
 
 @pytest.mark.asyncio
-async def test_art_director_accepts_project_header(monkeypatch):
-    """'PROJECT:' / markdown-emphasized headers are accepted too."""
+async def test_job_namer_skips_preamble_lines(monkeypatch):
+    """A line ending in ':' is treated as preamble, not the title."""
     import app.blocks.role_block as role_block_module
-    from app.blocks.art_director import ArtDirector
+    from app.blocks.job_namer import PhotoShootNamer
 
     monkeypatch.setattr(
         role_block_module,
         "AsyncOpenAI",
-        lambda **_: _fake_llm_client("**PROJECT: CYBER-CHIC**\nbody"),
+        lambda **_: _fake_llm_client("Here is a title:\nGolden Hour"),
     )
 
-    result = await ArtDirector().run({"brief": "a concept"})
+    result = await PhotoShootNamer().run({"brief": "a concept"})
 
-    assert result["photo_shoot_name"] == "CYBER-CHIC"
+    assert result["photo_shoot_name"] == "Golden Hour"
 
 
 @pytest.mark.asyncio
-async def test_art_director_falls_back_to_concept(monkeypatch):
-    """No title line → derive the name from the input brief."""
+async def test_job_namer_falls_back_on_llm_error(monkeypatch):
+    """A failed LLM call still names the shoot from the concept's first words."""
+    import types
+
     import app.blocks.role_block as role_block_module
-    from app.blocks.art_director import ArtDirector
+    from app.blocks.job_namer import PhotoShootNamer
 
-    monkeypatch.setattr(
-        role_block_module,
-        "AsyncOpenAI",
-        lambda **_: _fake_llm_client("A moody editorial shoot with neon lighting."),
+    async def _boom(**_):
+        raise ConnectionError("LLM unreachable")
+
+    client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=_boom))
     )
+    monkeypatch.setattr(role_block_module, "AsyncOpenAI", lambda **_: client)
 
-    result = await ArtDirector().run(
+    result = await PhotoShootNamer().run(
         {"brief": "women riding a motorcycle in a sci-fi setting at night"}
     )
 
-    name = result["photo_shoot_name"]
-    assert name == "Women Riding A Motorcycle In A"
-    assert len(name) <= 60
-    assert name.startswith("Women Riding")
+    assert result["photo_shoot_name"] == "Women Riding A Motorcycle In A"
+    assert "brief" not in result
 
 
 @pytest.mark.asyncio
-async def test_art_director_respects_preset_name(monkeypatch):
-    """A caller-supplied photo_shoot_name is never overridden."""
+async def test_job_namer_respects_preset_name(monkeypatch):
+    """A caller-supplied photo_shoot_name short-circuits the LLM call."""
     import app.blocks.role_block as role_block_module
-    from app.blocks.art_director import ArtDirector
+    from app.blocks.job_namer import PhotoShootNamer
 
-    monkeypatch.setattr(
-        role_block_module,
-        "AsyncOpenAI",
-        lambda **_: _fake_llm_client("# PHOTO SHOOT: Something Else\n\nbody"),
-    )
+    def _explode(**_):
+        raise AssertionError("LLM should not be called")
 
-    result = await ArtDirector().run({"brief": "x", "photo_shoot_name": "Client Shoot"})
+    monkeypatch.setattr(role_block_module, "AsyncOpenAI", _explode)
 
-    assert result.get("photo_shoot_name", "Client Shoot") == "Client Shoot"
+    result = await PhotoShootNamer().run({"brief": "x", "photo_shoot_name": "Client Shoot"})
+
+    assert result == {"photo_shoot_name": "Client Shoot"}
 
 
 @pytest.mark.asyncio
@@ -769,7 +789,6 @@ def test_art_director_prompt_is_generic():
     from app.blocks.art_director import ART_DIRECTOR_SYSTEM_PROMPT
 
     assert "adobe" not in ART_DIRECTOR_SYSTEM_PROMPT.lower()
-    assert "PHOTO SHOOT:" in ART_DIRECTOR_SYSTEM_PROMPT
 
 
 def test_prompt_architect_prompt_is_generic():

@@ -6,28 +6,20 @@ It takes a high-level concept from the user and transforms it into a
 detailed photo shoot plan: scene composition, lighting, mood, wardrobe,
 props, camera angles, color palette, and creative direction.
 
-The brief opens with a "PHOTO SHOOT: <title>" line; the title becomes
-context["photo_shoot_name"] (falling back to the first words of the concept)
-unless a caller already supplied one. The engine copies it to the job title.
+Job titling is owned by the engine, not this block — the auto-prepended
+job_namer step sets context["photo_shoot_name"] before the pipeline runs
+(see app.blocks.job_namer).
 
 Input:  High-level concept / idea (context["brief"])
 Output: Detailed photo shoot description (context["brief"] for next role,
-        context["art_director_output"]) and context["photo_shoot_name"]
+        context["art_director_output"])
 
 Suggested next role: prompt_architect
 """
 
-from __future__ import annotations
-
-import logging
-import re
-from typing import Any
-
 from app.blocks.base import BlockMeta
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
-
-logger = logging.getLogger(__name__)
 
 ART_DIRECTOR_SYSTEM_PROMPT = """\
 You are a world-class Art Director at a premium creative agency. You specialize \
@@ -51,41 +43,10 @@ When given a high-level concept, you produce a comprehensive creative brief that
 Keep the concept original and broadly usable: avoid naming real artists, brands, \
 people, or copyrighted works; prefer generic, fictional alternatives.
 
-Begin your response with a single line in exactly this form, then a blank line:
-PHOTO SHOOT: <a short, evocative 2-5 word title for this shoot>
-
 Write in clear, evocative language. Be specific enough that a Prompt Architect can \
 convert your vision into a precise AI image generation prompt. Do not include any \
-preamble — the PHOTO SHOOT title line is the only exception; after it, go straight \
-into the creative brief.\
+preamble — go straight into the creative brief.\
 """
-
-
-# Matches a title header like "PHOTO SHOOT: Cyber Chic", "# PROJECT: Neo Tokyo",
-# or "**TITLE: Golden Hour**" near the top of the brief
-_TITLE_RE = re.compile(
-    r"^\s*[#*\s]*(?:PHOTO\s*SHOOT|PROJECT|TITLE)\s*[:\-—]\s*(.+?)\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-def extract_photo_shoot_name(text: str) -> str | None:
-    """Extract a 'PHOTO SHOOT:' style title from the first lines of a brief, or None."""
-    for line in [line for line in text.splitlines() if line.strip()][:5]:
-        match = _TITLE_RE.match(line)
-        if not match:
-            continue
-        title = match.group(1).strip(" *_#\"'").rstrip(".!:").strip()
-        title = " ".join(title.split())
-        if title:
-            return title
-    return None
-
-
-def fallback_photo_shoot_name(concept: str) -> str:
-    """Derive a shoot name from the concept when the LLM emitted no title line."""
-    title = " ".join(concept.split()[:6]).title()[:60].strip()
-    return title or "Untitled Shoot"
 
 
 @register
@@ -95,10 +56,10 @@ class ArtDirector(RoleBlock):
     meta = BlockMeta(
         name="art_director",
         description="Transforms a high-level concept into a detailed photo shoot creative brief",
-        version="0.3.0",
+        version="0.4.0",
         category="creative",
         inputs=["brief"],
-        outputs=["brief", "art_director_output", "photo_shoot_name"],
+        outputs=["brief", "art_director_output"],
     )
 
     role_name = "art_director"
@@ -107,18 +68,3 @@ class ArtDirector(RoleBlock):
     system_prompt = ART_DIRECTOR_SYSTEM_PROMPT
     suggested_next = "prompt_architect"
     default_temperature = 0.8
-
-    async def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        """Run the role, then name the shoot from the brief's title line."""
-        result = await super().run(context)
-
-        # An explicit name from the caller (e.g. the API) always wins
-        if context.get("photo_shoot_name"):
-            return result
-
-        name = extract_photo_shoot_name(result["output_deliverable"]) or (
-            fallback_photo_shoot_name(context.get("_original_brief") or context.get("brief", ""))
-        )
-        result["photo_shoot_name"] = name
-        logger.info("ArtDirector: photo shoot name = %r", name)
-        return result

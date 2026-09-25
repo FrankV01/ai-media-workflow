@@ -84,6 +84,7 @@ from app.services.workflows import (
 
 # Human-friendly titles for blocks (used in the visual)
 _BLOCK_TITLES = {
+    "job_namer": "Shoot Namer",
     "art_director": "Art Director",
     "prompt_architect": "Prompt Architect",
     "media_producer": "Media Producer",

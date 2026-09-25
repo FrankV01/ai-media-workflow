@@ -1,10 +1,43 @@
-"""Resolve user-facing photo shoot names for persisted workflow jobs."""
+"""Resolve user-facing photo shoot names for persisted workflow jobs.
+
+Pure helpers plus the text utilities used by the job_namer block to turn an
+LLM reply (or the raw concept) into a clean shoot title.
+"""
 
 import re
 import unicodedata
 from datetime import UTC, date, datetime
 
 MAX_PHOTO_SHOOT_NAME_LENGTH = 255
+
+# Titles longer than this are truncated — the job title stays UI-friendly
+MAX_SHOOT_TITLE_LENGTH = 100
+
+# Label prefixes a model may emit ("TITLE:", "PHOTO SHOOT —", …)
+_TITLE_LABEL_RE = re.compile(
+    r"^(?:PHOTO\s*SHOOT|SHOOT|PROJECT|TITLE|NAME)\s*[:\-—]\s*",
+    re.IGNORECASE,
+)
+
+
+def clean_shoot_title(text: str) -> str | None:
+    """Normalize an LLM reply into a shoot title, or None when nothing usable.
+
+    Scans lines for the first real candidate — skipping blanks, preamble
+    lines like "Here is a title:", and bare labels — then strips label
+    prefixes, markdown/quotes, trailing punctuation, and excess length.
+    """
+    for line in text.splitlines():
+        candidate = line.strip().strip(" *_#\"'`")
+        if not candidate:
+            continue
+        candidate = _TITLE_LABEL_RE.sub("", candidate).strip(" *_#\"'`")
+        if not candidate or candidate.endswith(":"):
+            continue
+        candidate = " ".join(candidate.split()).rstrip(".!:")
+        if candidate:
+            return candidate[:MAX_SHOOT_TITLE_LENGTH]
+    return None
 
 
 class PhotoShootNameError(ValueError):
@@ -26,6 +59,12 @@ def resolve_photo_shoot_name(
             f"photo_shoot_name must be {MAX_PHOTO_SHOOT_NAME_LENGTH} characters or fewer"
         )
     return normalized
+
+
+def fallback_photo_shoot_name(concept: str) -> str:
+    """Derive a shoot name from the concept when no title was generated."""
+    title = " ".join(concept.split()[:6]).title()[:60].strip()
+    return title or "Untitled Shoot"
 
 
 def slugify_photo_shoot_name(name: str | None, max_length: int = 60) -> str:

@@ -58,7 +58,8 @@ A concept flows through a chain of "employees", each doing one job:
 
 ```
 User prompt
-  → Art Director          (expands concept into a detailed creative brief; names the shoot)
+  → Shoot Namer           (auto-prepended for untitled runs: generates the job title)
+  → Art Director          (expands concept into a detailed creative brief)
   → Prompt Architect      (converts brief into structured generation prompts — JSON with
                            positive / negative / refiner-positive / refiner-negative prompts)
   → Media Producer        (dispatches prompts to the generation backend, collects images)
@@ -108,9 +109,12 @@ ComfyUI checkpoint than "Main".
 
 Every job is a "photo shoot" and `Job.workflow_name` is its title:
 
-- From the **web UI**, the job starts as `Untitled shoot` and is renamed
-  mid-run as soon as the Art Director emits its `PHOTO SHOOT: <title>` header.
-- From the **API**, `photo_shoot_name` is required and is kept as-is.
+- From the **web UI**, the job starts as `Untitled shoot` and the engine
+  auto-prepends a `job_namer` step that generates the title from the brief
+  at run start (falling back to the first words of the brief if the LLM
+  call fails). Workflows without an Art Director are still titled.
+- From the **API**, `photo_shoot_name` is required and is kept as-is —
+  no naming step is added.
 
 Generated images are grouped by the job's UTC creation date, shoot, and job ID:
 
@@ -154,7 +158,8 @@ each prompt variant produces three files.
   reasoning control, token tracking, and context threading.
 - **Pipeline engine** — runs blocks sequentially, supports conditional
   branching via verdict-based routing dicts (`on_good`/`on_bad`/`always`),
-  titles the job from `photo_shoot_name`.
+  titles the job from `photo_shoot_name` (auto-prepending a `job_namer`
+  step when the run is untitled).
 - **Workload guard** — `app/services/workload_guard.py`, a reentrant async
   lock backed by an OS file lock, serializes LLM and ComfyUI work.
 - **Generation backends** — pluggable image generation in
@@ -263,7 +268,8 @@ app/
     base.py          → Abstract Block + BlockMeta
     registry.py      → auto-discovery & @register decorator
     role_block.py    → LLM-powered RoleBlock base class
-    art_director.py  → creative brief from concept + photo shoot name
+    art_director.py  → creative brief from concept
+    job_namer.py     → engine-prepended step that titles untitled jobs
     prompt_architect.py → structured generation prompts (validated JSON)
     media_producer.py   → image generation dispatch, output grouping
     art_critic.py    → quality evaluation + verdict

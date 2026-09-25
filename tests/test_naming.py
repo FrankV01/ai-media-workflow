@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from app.api.workflows import RunRequest
 from app.pipeline.naming import (
     PhotoShootNameError,
+    clean_shoot_title,
+    fallback_photo_shoot_name,
     output_subdir,
     resolve_photo_shoot_name,
     slugify_photo_shoot_name,
@@ -64,3 +66,20 @@ def test_output_subdir() -> None:
 def test_output_subdir_rejects_invalid_date() -> None:
     with pytest.raises(ValueError):
         output_subdir("Cyber Chic", 25, "September 23, 2026")
+
+
+def test_clean_shoot_title() -> None:
+    assert clean_shoot_title("Cyber Chic") == "Cyber Chic"
+    assert clean_shoot_title('PHOTO SHOOT: "**Cyber Chic!**"') == "Cyber Chic"
+    assert clean_shoot_title("Here is a title:\nGolden Hour") == "Golden Hour"
+    assert clean_shoot_title("\n\n  **Neon Reverie.**\nextra line") == "Neon Reverie"
+    assert clean_shoot_title("") is None
+    assert clean_shoot_title("Title:\n\n") is None
+
+
+def test_fallback_photo_shoot_name() -> None:
+    assert (
+        fallback_photo_shoot_name("women riding a motorcycle in a sci-fi setting at night")
+        == "Women Riding A Motorcycle In A"
+    )
+    assert fallback_photo_shoot_name("   ") == "Untitled Shoot"

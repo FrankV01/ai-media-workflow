@@ -317,7 +317,8 @@ async def test_executions_around_edit_keep_distinct_snapshots(engine_db):
         return await engine_module.run_pipeline(
             workflow_name=None,
             block_names=["test_config_role"],
-            context={"brief": "audit"},
+            # Pre-named — keeps the engine's job_namer step out of this audit test
+            context={"brief": "audit", "photo_shoot_name": "Audit Shoot"},
         )
 
     from unittest.mock import patch
@@ -367,7 +368,8 @@ async def test_failed_llm_call_persists_snapshot(engine_db):
         job_id = await engine_module.run_pipeline(
             workflow_name=None,
             block_names=["test_config_role"],
-            context={"brief": "fail"},
+            # Pre-named — the failing call belongs to test_config_role's step alone
+            context={"brief": "fail", "photo_shoot_name": "Fail Shoot"},
         )
 
     async with engine_db() as session:
@@ -1312,7 +1314,8 @@ async def test_job_detail_exposes_effective_llm_executions(client, engine_db):
         job_id = await engine_module.run_pipeline(
             workflow_name=None,
             block_names=["test_config_role"],
-            context={"brief": "audit me"},
+            # Pre-named — steps[0] is the role under test, not job_namer
+            context={"brief": "audit me", "photo_shoot_name": "Audit Me"},
         )
 
     api = client.get(f"/api/workflows/jobs/{job_id}")

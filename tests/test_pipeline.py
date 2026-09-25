@@ -89,6 +89,22 @@ async def session_factory(tmp_path, monkeypatch):
     monkeypatch.setattr(engine_module, "async_session", factory)
     # Configuration providers built lazily inside blocks share this DB
     monkeypatch.setattr(app.database, "async_session", factory)
+    # Keep the engine's auto-prepended job_namer step hermetic
+    import app.blocks.role_block as role_block_module
+
+    async def _create(**_):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="Test Shoot"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2, total_tokens=6),
+        )
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
+    monkeypatch.setattr(role_block_module, "AsyncOpenAI", lambda **_: client)
     yield factory
     await engine.dispose()
 
@@ -102,10 +118,12 @@ async def _get_job(factory, job_id: int) -> Job:
 @pytest.mark.asyncio
 async def test_pipeline_retitles_job_from_block_output(session_factory):
     """A block that sets photo_shoot_name retitles an untitled job mid-run."""
+    # No brief → the engine's job_namer step is skipped, so the test block
+    # still owns the naming
     job_id = await engine_module.run_pipeline(
         workflow_name=None,
         block_names=["test_namer_block"],
-        context={"brief": "c"},
+        context={},
     )
 
     job = await _get_job(session_factory, job_id)
@@ -131,7 +149,8 @@ async def test_pipeline_exposes_job_id_in_context(session_factory):
     job_id = await engine_module.run_pipeline(
         workflow_name=None,
         block_names=["test_namer_block"],
-        context={"brief": "c"},
+        # Pre-named — the namer step is skipped, leaving a single step
+        context={"brief": "c", "photo_shoot_name": "Ctx Shoot"},
     )
 
     async with session_factory() as session:
@@ -166,7 +185,8 @@ async def test_pipeline_persists_role_execution_and_messages(session_factory, mo
     job_id = await engine_module.run_pipeline(
         workflow_name=None,
         block_names=["test_audit_role"],
-        context={"brief": "audit me", "_verdict": "good"},
+        # Pre-named — the audit assertions stay on a single step/role/execution
+        context={"brief": "audit me", "_verdict": "good", "photo_shoot_name": "Audit Shoot"},
     )
 
     async with session_factory() as session:
@@ -198,7 +218,8 @@ async def test_pipeline_persists_structured_step_errors(session_factory):
     job_id = await engine_module.run_pipeline(
         workflow_name=None,
         block_names=["test_failing_audit_block"],
-        context={"brief": "fail"},
+        # Pre-named — job_namer is skipped; the failing block is the only step
+        context={"brief": "fail", "photo_shoot_name": "Fail Shoot"},
     )
 
     async with session_factory() as session:
@@ -224,7 +245,8 @@ async def test_pipeline_persists_failed_llm_execution(session_factory, monkeypat
     await engine_module.run_pipeline(
         workflow_name=None,
         block_names=["test_audit_role"],
-        context={"brief": "audit failure"},
+        # Pre-named — the single RoleExecution is the role's failed call
+        context={"brief": "audit failure", "photo_shoot_name": "Fail Shoot"},
     )
 
     async with session_factory() as session:

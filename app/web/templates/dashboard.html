@@ -45,7 +45,7 @@
     <section class="bg-gray-900 rounded-lg p-5 border border-gray-800">
         <div class="flex items-center justify-between mb-3">
             <h2 class="text-lg font-semibold">Recent Jobs</h2>
-            <button hx-get="/partials/jobs"
+            <button hx-get="/partials/jobs{% if selected_workflow %}?workflow={{ selected_workflow.slug }}{% endif %}"
                     hx-target="#job-list"
                     hx-swap="innerHTML"
                     class="text-[10px] text-indigo-400 hover:text-indigo-300 uppercase tracking-wide cursor-pointer">
