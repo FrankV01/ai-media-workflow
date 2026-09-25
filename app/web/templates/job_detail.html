@@ -24,7 +24,13 @@
                     {{ job.status }}
                 </span>
             </h1>
-            <p class="text-sm text-gray-500 mt-1">Job #{{ job.id }}</p>
+            <p class="text-sm text-gray-500 mt-1">
+                Job #{{ job.id }}
+                {% if job.workflow %}
+                · Workflow:
+                <a href="/?workflow={{ job.workflow.slug }}" class="text-indigo-400 hover:text-indigo-300">{{ job.workflow.name }}</a>
+                {% endif %}
+            </p>
         </div>
     </div>
 

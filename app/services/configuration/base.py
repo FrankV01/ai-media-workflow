@@ -4,9 +4,10 @@ app.services.configuration.base — Typed configuration values + provider Protoc
 Frozen dataclasses carry code defaults in and resolved profiles out, so
 blocks never deal with ORM rows or raw JSON:
 
-- LlmRoleDefaults / ResolvedLlmConfiguration — per-(role, model) LLM profiles
+- LlmRoleDefaults / ResolvedLlmConfiguration — per-(workflow, role, model)
+  LLM profiles
 - MediaDefaults / MediaProfileSettings / ResolvedMediaConfiguration —
-  per-(block, backend, model) media profiles
+  per-(workflow, block, backend, model) media profiles
 
 `configuration_source` is 'code_default' when the row still ships the values
 the code seeded it with, 'custom' once a user has edited it, and 'legacy' on
@@ -24,12 +25,13 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 LLM_DEFAULT_WARNING = (
-    "Using code-default AI configuration for role '{role}' and model '{model}'. "
-    "Customize it at /settings/ai."
+    "Using code-default AI configuration for role '{role}' and model '{model}' "
+    "in workflow '{workflow}'. Customize it at /settings/ai?workflow={workflow}."
 )
 MEDIA_DEFAULT_WARNING = (
     "Using code-default AI configuration for block '{block}' "
-    "(backend '{backend}', model '{model}'). Customize it at /settings/ai."
+    "(backend '{backend}', model '{model}') in workflow '{workflow}'. "
+    "Customize it at /settings/ai?workflow={workflow}."
 )
 
 SOURCE_CODE_DEFAULT = "code_default"
@@ -128,6 +130,7 @@ class ResolvedLlmConfiguration:
 
     configuration_id: int | None
     role_id: int | None
+    workflow_id: int | None
     source: str
     warning: str | None
     system_prompt: str
@@ -235,6 +238,7 @@ class ResolvedMediaConfiguration:
     """Immutable effective media configuration for one generation run."""
 
     configuration_id: int | None
+    workflow_id: int | None
     source: str
     warning: str | None
     block_name: str
@@ -249,16 +253,20 @@ class ResolvedMediaConfiguration:
 class LlmConfigurationProvider(Protocol):
     """Resolves effective LLM role configuration for a run."""
 
-    async def resolve_llm(self, defaults: LlmRoleDefaults) -> ResolvedLlmConfiguration:
-        """Get-or-create the (role, model) profile and return resolved values."""
+    async def resolve_llm(
+        self, defaults: LlmRoleDefaults, *, workflow_id: int | None = None
+    ) -> ResolvedLlmConfiguration:
+        """Get-or-create the (workflow, role, model) profile and return resolved values."""
         ...
 
 
 class MediaConfigurationProvider(Protocol):
     """Resolves effective media model configuration for a run."""
 
-    async def resolve_media(self, defaults: MediaDefaults) -> ResolvedMediaConfiguration:
-        """Get-or-create the (block, backend, model) profile and return values."""
+    async def resolve_media(
+        self, defaults: MediaDefaults, *, workflow_id: int | None = None
+    ) -> ResolvedMediaConfiguration:
+        """Get-or-create the (workflow, block, backend, model) profile and return values."""
         ...
 
 

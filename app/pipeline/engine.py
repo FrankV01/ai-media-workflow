@@ -13,10 +13,14 @@ backed by an OS file lock) ensures only one pipeline runs at a time.
 Additional submissions queue (PENDING) until the running pipeline finishes.
 This prevents concurrent LLM / ComfyUI calls that would overwhelm the host.
 
-The engine exposes context["_job_id"] (the current job's id) and
-context["_job_created_date"] (its UTC creation date) to blocks, and copies
-context["photo_shoot_name"] onto Job.workflow_name mid-run so a block
-(e.g. the Art Director) can title the job while it executes.
+The engine exposes context["_job_id"] (the current job's id),
+context["_job_created_date"] (its UTC creation date), and
+context["_workflow_id"] / context["_workflow_slug"] /
+context["_workflow_media_model"] (the workflow the run executes under —
+scoping AI configuration profiles and overriding the media model when set)
+to blocks, and copies context["photo_shoot_name"] onto Job.workflow_name
+mid-run so a block (e.g. the Art Director) can title the job while it
+executes.
 
 Step format (simple):
     ["art_director", "prompt_architect", "media_producer"]
@@ -50,7 +54,14 @@ from app.database import async_session
 from app.models.creative import CreativeRole, Message, MessageRole, RoleExecution
 from app.models.job import Job, JobStatus, JobStep
 from app.models.media import MediaGenerationExecution
+from app.models.workflow import Workflow
 from app.pipeline.naming import MAX_PHOTO_SHOOT_NAME_LENGTH, resolve_photo_shoot_name
+from app.services.workflows import (
+    WorkflowDisabledError,
+    WorkflowNotFoundError,
+    get_or_create_default_workflow,
+    parse_steps_json,
+)
 from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
@@ -204,9 +215,10 @@ def _persist_job_warnings(job: Job, context: dict[str, Any]) -> None:
 
 async def run_pipeline(
     workflow_name: str | None,
-    block_names: list[str | dict],
-    context: dict[str, Any],
+    block_names: list[str | dict] | None = None,
+    context: dict[str, Any] | None = None,
     *,
+    workflow_id: int | None = None,
     start_in_background: bool = False,
 ) -> int:
     """
@@ -219,6 +231,12 @@ async def run_pipeline(
     If False, execution runs inline and the function returns when the
     pipeline finishes.
 
+    workflow_id selects the workflow "container": its stored steps run when
+    block_names is None, and its id scopes every AI configuration profile the
+    blocks resolve. None falls back to the default workflow. A missing or
+    disabled workflow raises WorkflowNotFoundError / WorkflowDisabledError
+    before the job row is created.
+
     Returns the job ID (int).
     """
     if workflow_name is None:
@@ -226,12 +244,35 @@ async def run_pipeline(
         job_name = UNTITLED_SHOOT
     else:
         job_name = workflow_name
-        # Prevents the Art Director from inventing a different name
-        context.setdefault("photo_shoot_name", workflow_name)
 
-    # Create the job row as PENDING — it transitions to RUNNING once the lock is acquired
+    context = dict(context or {})
+
+    # Resolve the workflow container before creating the job so unknown or
+    # disabled workflows fail without leaving a PENDING row behind
     async with async_session() as session:
-        job = Job(workflow_name=job_name, status=JobStatus.PENDING)
+        if workflow_id is not None:
+            workflow = await session.get(Workflow, workflow_id)
+            if workflow is None:
+                raise WorkflowNotFoundError(f"Unknown workflow id {workflow_id}")
+            if not workflow.is_enabled:
+                raise WorkflowDisabledError(f"Workflow '{workflow.slug}' is disabled")
+        else:
+            workflow = await get_or_create_default_workflow(session)
+
+        if block_names is None:
+            block_names = parse_steps_json(workflow.steps_json)
+
+        context["_workflow_id"] = workflow.id
+        context["_workflow_slug"] = workflow.slug
+        if workflow.media_model_name:
+            context["_workflow_media_model"] = workflow.media_model_name
+
+        if workflow_name is not None:
+            # Prevents the Art Director from inventing a different name
+            context.setdefault("photo_shoot_name", workflow_name)
+
+        # Create the job row as PENDING — it transitions to RUNNING once the lock is acquired
+        job = Job(workflow_name=job_name, workflow_id=workflow.id, status=JobStatus.PENDING)
         session.add(job)
         await session.commit()
         job_id = job.id

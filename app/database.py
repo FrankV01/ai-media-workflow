@@ -88,6 +88,7 @@ async def init_db() -> None:
     import app.models.job  # noqa: F401
     import app.models.media  # noqa: F401
     import app.models.setting  # noqa: F401
+    import app.models.workflow  # noqa: F401
 
     async with engine.connect() as conn:
         await conn.run_sync(_check_schema)

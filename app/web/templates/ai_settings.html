@@ -4,18 +4,35 @@
 
 {% block content %}
 <div class="mb-6">
-    <h1 class="text-2xl font-bold">AI Settings</h1>
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold">AI Settings</h1>
+        <div class="flex items-center gap-2">
+            <label for="workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Workflow</label>
+            <select id="workflow-select"
+                    onchange="window.location.href = '/settings/ai?workflow=' + encodeURIComponent(this.value)"
+                    class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white
+                           focus:outline-none focus:border-indigo-500">
+                {% for w in workflows %}
+                <option value="{{ w.slug }}" {% if workflow and w.id == workflow.id %}selected{% endif %}>
+                    {{ w.name }}{% if not w.is_enabled %} (disabled){% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
     <p class="text-sm text-gray-400 mt-1">
-        Behavior profiles for each role/model and media backend are stored in the database.
-        Environment variables still select which profiles are active and own URLs, secrets,
-        timeouts, and paths. Profiles showing a
+        Behavior profiles for each role/model and media backend are stored in the database,
+        scoped to the selected workflow — <span class="text-indigo-300">{{ workflow.name }}</span>
+        in this view. Environment variables still select the default model/backend and own
+        URLs, secrets, timeouts, and paths. Profiles showing a
         <span class="text-amber-300">default</span> badge still use code defaults and log a
         warning on every run until customized.
     </p>
     <p class="text-sm text-gray-400 mt-2">
         Active LLM model: <span class="font-mono text-indigo-300">{{ llm_model }}</span>
         · Active media backend: <span class="font-mono text-indigo-300">{{ media_backend }}</span>
-        · Active media model: <span class="font-mono text-indigo-300">{{ media_model }}</span>
+        · Media model for {{ workflow.name }}: <span class="font-mono text-indigo-300">{{ media_model }}</span>
+        {% if workflow.media_model_name %}<span class="text-[10px] text-gray-500">(workflow override)</span>{% endif %}
     </p>
     {% if status %}
     <div class="mt-3 p-3 rounded bg-emerald-900/30 border border-emerald-800/50 text-sm text-emerald-300">
@@ -49,6 +66,7 @@
         <div class="border border-gray-800 rounded p-4 mb-3 bg-gray-800/30">
             <form method="post" action="/settings/ai/llm/save">
                 <input type="hidden" name="role_name" value="{{ role.name }}">
+                <input type="hidden" name="workflow" value="{{ workflow.slug }}">
                 <div class="flex items-center gap-2 mb-3">
                     <label class="text-xs text-gray-500">Model</label>
                     <input name="model_name" value="{{ profile.model_name }}" readonly
@@ -91,6 +109,7 @@
             <form method="post" action="/settings/ai/llm/reset" class="mt-2"
                   onsubmit='return window.confirm({{ reset_message | tojson }});'>
                 <input type="hidden" name="role_name" value="{{ role.name }}">
+                <input type="hidden" name="workflow" value="{{ workflow.slug }}">
                 <input type="hidden" name="model_name" value="{{ profile.model_name }}">
                 <button type="submit" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Reset to defaults</button>
             </form>
@@ -123,6 +142,7 @@
             <summary class="text-xs text-indigo-300 cursor-pointer">Prepare a profile for another model…</summary>
             <form method="post" action="/settings/ai/llm/save" class="border border-dashed border-gray-700 rounded p-4 mt-2">
                 <input type="hidden" name="role_name" value="{{ role.name }}">
+                <input type="hidden" name="workflow" value="{{ workflow.slug }}">
                 <label class="text-xs text-gray-500 block mb-1">Model name</label>
                 <input name="model_name" value="{{ llm_model }}" required
                        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono mb-3">
@@ -163,6 +183,7 @@
     {% set s = profile.settings_dict %}
     <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
         <form method="post" action="/settings/ai/media/save">
+            <input type="hidden" name="workflow" value="{{ workflow.slug }}">
             <div class="flex items-center gap-2 mb-3">
                 <span class="font-mono text-xs text-gray-400">{{ profile.block_name }}</span>
                 <input name="backend_name" value="{{ profile.backend_name }}" readonly
@@ -226,6 +247,7 @@
         {% set reset_message = "Reset " ~ profile.block_name ~ " / " ~ profile.model_name ~ " to code defaults? Your custom parameters will be replaced by code defaults." %}
         <form method="post" action="/settings/ai/media/reset" class="mt-2"
               onsubmit='return window.confirm({{ reset_message | tojson }});'>
+            <input type="hidden" name="workflow" value="{{ workflow.slug }}">
             <input type="hidden" name="backend_name" value="{{ profile.backend_name }}">
             <input type="hidden" name="model_name" value="{{ profile.model_name }}">
             <button type="submit" class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">Reset to defaults</button>
@@ -239,6 +261,7 @@
         <details>
             <summary class="text-xs text-indigo-300 cursor-pointer">Prepare a media profile for another model…</summary>
             <form method="post" action="/settings/ai/media/save" class="border border-dashed border-gray-700 rounded p-4 mt-2">
+                <input type="hidden" name="workflow" value="{{ workflow.slug }}">
                 <div class="flex items-center gap-2 mb-3">
                     <select name="backend_name" class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono">
                         <option value="comfyui" {% if media_backend == 'comfyui' %}selected{% endif %}>comfyui</option>

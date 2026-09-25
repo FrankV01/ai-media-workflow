@@ -219,11 +219,14 @@ class MediaProducer(Block):
         return (context.get("_generation_backend") or settings.generation_backend).lower()
 
     async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedMediaConfiguration:
-        """Resolve the (media_producer, backend, model) profile + warning."""
+        """Resolve the (workflow, media_producer, backend, model) profile + warning."""
         backend_name = self._backend_name(context)
-        model_name = selected_media_model(backend_name)
+        # A workflow may pin a different media model (e.g. an illustration
+        # checkpoint); otherwise the env-selected model for the backend applies
+        model_name = context.get("_workflow_media_model") or selected_media_model(backend_name)
         resolved = await self._provider().resolve_media(
-            code_media_defaults(self.meta.name, backend_name, model_name)
+            code_media_defaults(self.meta.name, backend_name, model_name),
+            workflow_id=context.get("_workflow_id"),
         )
         if resolved.warning:
             warnings = context.setdefault("_warnings", [])

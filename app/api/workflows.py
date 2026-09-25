@@ -2,8 +2,13 @@
 app.api.workflows — Workflow execution endpoints
 
 POST /api/workflows/run       — queue a pipeline run, returns job_id immediately
-GET  /api/workflows/jobs      — list recent jobs
+GET  /api/workflows/jobs      — list recent jobs (optional ?workflow=<slug> filter)
 GET  /api/workflows/jobs/{id} — job detail with per-step status, I/O, and timing
+
+Every run executes inside a workflow "container": `workflow` (a slug) picks
+the persisted definition and the scope for all AI configuration profiles;
+`block_names` may still override the step list. When neither is supplied,
+the default workflow's steps and configuration scope apply.
 """
 
 import json
@@ -18,10 +23,18 @@ from sqlalchemy.orm import selectinload
 from app.database import get_session
 from app.models.creative import RoleExecution
 from app.models.job import Job
+from app.models.workflow import Workflow
 from app.pipeline.engine import run_pipeline
 from app.pipeline.naming import PhotoShootNameError, resolve_photo_shoot_name
+from app.services.workflows import get_workflow_by_slug, validate_steps
 
 router = APIRouter()
+
+
+def _workflow_json(workflow: Workflow | None) -> dict[str, Any] | None:
+    if workflow is None:
+        return None
+    return {"slug": workflow.slug, "name": workflow.name}
 
 
 class RunRequest(BaseModel):
@@ -29,7 +42,10 @@ class RunRequest(BaseModel):
 
     photo_shoot_name: str | None = None
     workflow_name: str | None = Field(default=None, deprecated=True)
-    block_names: list[str | dict[str, Any]]
+    # Slug of a stored workflow definition; selects its steps and its AI
+    # configuration scope. None → the default workflow.
+    workflow: str | None = None
+    block_names: list[str | dict[str, Any]] | None = None
     context: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -43,6 +59,14 @@ class RunRequest(BaseModel):
             raise ValueError(str(exc)) from exc
         return self
 
+    @model_validator(mode="after")
+    def validate_block_names(self) -> "RunRequest":
+        if self.block_names is not None:
+            errors = validate_steps(self.block_names)
+            if errors:
+                raise ValueError(f"invalid block_names: {'; '.join(errors)}")
+        return self
+
     @property
     def job_name(self) -> str:
         if self.photo_shoot_name is None:
@@ -51,27 +75,45 @@ class RunRequest(BaseModel):
 
 
 @router.post("/run", status_code=202)
-async def run_workflow(req: RunRequest):
+async def run_workflow(req: RunRequest, session: AsyncSession = Depends(get_session)):
     """Queue a pipeline run in the background. Returns the job_id immediately."""
+    workflow = None
+    if req.workflow is not None:
+        workflow = await get_workflow_by_slug(session, req.workflow)
+        if workflow is None:
+            raise HTTPException(404, f"Unknown workflow '{req.workflow}'")
+        if not workflow.is_enabled:
+            raise HTTPException(409, f"Workflow '{req.workflow}' is disabled")
     job_id = await run_pipeline(
         workflow_name=req.job_name,
         block_names=req.block_names,
         context=dict(req.context),
+        workflow_id=workflow.id if workflow else None,
         start_in_background=True,
     )
     return {"job_id": job_id, "status": "pending"}
 
 
 @router.get("/jobs")
-async def list_jobs(limit: int = 20, session: AsyncSession = Depends(get_session)):
-    """Return recent jobs, newest first."""
-    result = await session.execute(select(Job).order_by(Job.created_at.desc()).limit(limit))
+async def list_jobs(
+    limit: int = 20,
+    workflow: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return recent jobs, newest first; `workflow` filters by slug."""
+    stmt = (
+        select(Job).options(selectinload(Job.workflow)).order_by(Job.created_at.desc()).limit(limit)
+    )
+    if workflow is not None:
+        stmt = stmt.join(Workflow, Job.workflow_id == Workflow.id).where(Workflow.slug == workflow)
+    result = await session.execute(stmt)
     jobs = result.scalars().all()
     return [
         {
             "id": j.id,
             "photo_shoot_name": j.workflow_name,
             "workflow_name": j.workflow_name,
+            "workflow": _workflow_json(j.workflow),
             "status": j.status.value,
             "created_at": j.created_at.isoformat() if j.created_at else None,
             "finished_at": j.finished_at.isoformat() if j.finished_at else None,
@@ -86,7 +128,9 @@ async def list_jobs(limit: int = 20, session: AsyncSession = Depends(get_session
 async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
     """Return a job with full per-step status, input, output, and timing."""
     result = await session.execute(
-        select(Job).where(Job.id == job_id).options(selectinload(Job.steps))
+        select(Job)
+        .where(Job.id == job_id)
+        .options(selectinload(Job.steps), selectinload(Job.workflow))
     )
     job = result.scalar_one_or_none()
     if not job:
@@ -110,6 +154,7 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
         "id": job.id,
         "photo_shoot_name": job.workflow_name,
         "workflow_name": job.workflow_name,
+        "workflow": _workflow_json(job.workflow),
         "status": job.status.value,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,

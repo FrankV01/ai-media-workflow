@@ -31,18 +31,21 @@ from app.database import Base
 
 class MediaModelConfiguration(Base):
     """
-    Mutable behavior profile for one (block, backend, model) triple.
+    Mutable behavior profile for one (workflow, block, backend, model) tuple.
 
-    Keyed by (block_name, backend_name, model_name); model_name is the base
-    checkpoint for ComfyUI and the stable string 'placeholder' for the
-    placeholder backend. settings_json holds typed request defaults
-    (width/height/cfg_scale/steps/sampler/scheduler/clip_skip) plus
-    backend-specific workflow fields (refiner/upscale models and sampling).
+    Keyed by (workflow_id, block_name, backend_name, model_name); model_name
+    is the base checkpoint for ComfyUI and the stable string 'placeholder'
+    for the placeholder backend — the workflow's media_model_name (or the
+    env selection) picks which one is active. settings_json holds typed
+    request defaults (width/height/cfg_scale/steps/sampler/scheduler/
+    clip_skip) plus backend-specific workflow fields (refiner/upscale
+    models and sampling).
     """
 
     __tablename__ = "media_model_configurations"
     __table_args__ = (
         UniqueConstraint(
+            "workflow_id",
             "block_name",
             "backend_name",
             "model_name",
@@ -51,6 +54,7 @@ class MediaModelConfiguration(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
     block_name: Mapped[str] = mapped_column(String(255))
     backend_name: Mapped[str] = mapped_column(String(100))
     model_name: Mapped[str] = mapped_column(String(255))
@@ -65,6 +69,7 @@ class MediaModelConfiguration(Base):
         onupdate=lambda: datetime.now(UTC),
     )
 
+    workflow: Mapped["Workflow"] = relationship(back_populates="media_configurations")
     executions: Mapped[list["MediaGenerationExecution"]] = relationship(
         back_populates="configuration"
     )
@@ -117,3 +122,4 @@ class MediaGenerationExecution(Base):
 
 # Avoid circular import — import at module level for relationship resolution
 from app.models.job import JobStep  # noqa: E402, F401
+from app.models.workflow import Workflow  # noqa: E402, F401

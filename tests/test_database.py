@@ -28,16 +28,18 @@ import app.models.creative  # noqa: F401 — register models on Base.metadata
 import app.models.job  # noqa: F401
 import app.models.media  # noqa: F401
 import app.models.setting  # noqa: F401
+import app.models.workflow  # noqa: F401
 import app.pipeline.engine as engine_module
 from app.config import settings
 from app.database import Base
 from app.models.creative import CreativeRole, LlmRoleConfiguration, Message, RoleExecution
 from app.models.job import Job, JobStatus, JobStep
 from app.models.media import MediaModelConfiguration
+from app.models.workflow import Workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "e2f5a1c9d7b4"
-HEAD_REVISION = "c6e1f0a4b8d3"
+HEAD_REVISION = "b7e2f4a1c9d6"
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -117,9 +119,20 @@ async def _simulate_buggy_startup(factory: SessionFactory) -> None:
     """Reproduce the old create_all startup on an e2f5a1c9d7b4 database."""
     await _create_missing_tables()
     async with factory() as session:
+        workflow = Workflow(
+            name="Main",
+            slug="main",
+            description="",
+            steps_json="[]",
+            is_enabled=True,
+            is_default=True,
+        )
+        session.add(workflow)
+        await session.flush()
         session.add(
             LlmRoleConfiguration(
                 role_id=1,
+                workflow_id=workflow.id,
                 model_name="test-model",
                 system_prompt="saved profile",
                 temperature=0.2,
@@ -130,6 +143,7 @@ async def _simulate_buggy_startup(factory: SessionFactory) -> None:
         )
         session.add(
             MediaModelConfiguration(
+                workflow_id=workflow.id,
                 block_name="media_producer",
                 backend_name="placeholder",
                 model_name="placeholder",

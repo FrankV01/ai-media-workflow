@@ -29,6 +29,11 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     workflow_name: Mapped[str] = mapped_column(String(255))
+    # The workflow definition this run executed under (its steps + its
+    # configuration scope). workflow_name remains the photo shoot title.
+    workflow_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workflows.id"), nullable=True, index=True
+    )
     status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.PENDING)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
@@ -41,6 +46,7 @@ class Job(Base):
     # JSON list[str] of markdown report paths written by report blocks
     report_files: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    workflow: Mapped["Workflow | None"] = relationship(back_populates="jobs")
     steps: Mapped[list["JobStep"]] = relationship(back_populates="job", cascade="all, delete")
 
 
@@ -61,3 +67,7 @@ class JobStep(Base):
     error_traceback: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     job: Mapped["Job"] = relationship(back_populates="steps")
+
+
+# Avoid circular import — import at module level for relationship resolution
+from app.models.workflow import Workflow  # noqa: E402, F401

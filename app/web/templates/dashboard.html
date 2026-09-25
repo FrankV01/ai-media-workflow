@@ -3,7 +3,23 @@
 {% block title %}Dashboard — AI Media Workflow{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-bold mb-6">Dashboard</h1>
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">Dashboard</h1>
+    <div class="flex items-center gap-2">
+        <label for="workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Workflow</label>
+        <select id="workflow-select"
+                onchange="window.location.href = '/?workflow=' + encodeURIComponent(this.value)"
+                class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white
+                       focus:outline-none focus:border-indigo-500">
+            {% for w in workflows %}
+            <option value="{{ w.slug }}" {% if selected_workflow and w.id == selected_workflow.id %}selected{% endif %}>
+                {{ w.name }}{% if not w.is_enabled %} (disabled){% endif %}
+            </option>
+            {% endfor %}
+        </select>
+        <a href="/workflows" class="text-xs text-indigo-400 hover:text-indigo-300 ml-1">Manage</a>
+    </div>
+</div>
 
 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
 
@@ -37,7 +53,7 @@
             </button>
         </div>
         <div id="job-list"
-             hx-get="/partials/jobs"
+             hx-get="/partials/jobs{% if selected_workflow %}?workflow={{ selected_workflow.slug }}{% endif %}"
              hx-trigger="load"
              hx-swap="innerHTML"
              class="text-sm text-gray-400">
@@ -53,11 +69,14 @@
 <!-- Pipeline Workflow -->
 <section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
     <div class="flex items-center justify-between mb-3">
-        <h2 class="text-lg font-semibold">Pipeline Workflow</h2>
-        <span class="text-[10px] text-gray-600 uppercase tracking-wide">default</span>
+        <h2 class="text-lg font-semibold">Pipeline Workflow{% if selected_workflow %} — {{ selected_workflow.name }}{% endif %}</h2>
+        <a href="/workflows{% if selected_workflow %}/{{ selected_workflow.id }}{% endif %}"
+           class="text-[10px] text-indigo-400 hover:text-indigo-300 uppercase tracking-wide">
+            Edit workflow
+        </a>
     </div>
     <div id="workflow-visual"
-         hx-get="/partials/workflow"
+         hx-get="/partials/workflow{% if selected_workflow %}?workflow={{ selected_workflow.slug }}{% endif %}"
          hx-trigger="load"
          hx-swap="innerHTML"
          class="text-sm text-gray-400">
@@ -68,6 +87,12 @@
 <!-- Run Pipeline -->
 <section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
     <h2 class="text-lg font-semibold mb-3">Run Pipeline</h2>
+    {% if selected_workflow and not selected_workflow.is_enabled %}
+    <p class="text-xs text-amber-500 mb-3">
+        "{{ selected_workflow.name }}" is disabled — re-enable it on the
+        <a href="/workflows" class="underline">Workflows</a> page to run it.
+    </p>
+    {% endif %}
     <p class="text-xs text-gray-500 mb-4">
         Describe a concept below to run the full creative agency pipeline.
         The job is queued in the background — check status in <span class="font-mono text-gray-400">Recent Jobs</span>.
@@ -76,6 +101,7 @@
           hx-target="#pipeline-result"
           hx-swap="innerHTML"
           class="space-y-3">
+        {% if selected_workflow %}<input type="hidden" name="workflow" value="{{ selected_workflow.slug }}">{% endif %}
         <div>
             <label for="brief" class="block text-xs text-gray-500 mb-1">Creative Brief</label>
             <textarea id="brief" name="brief" rows="3"
@@ -99,6 +125,12 @@
 <!-- Test Pipeline (placeholder backend, skips real AI generation) -->
 <section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
     <h2 class="text-lg font-semibold mb-3">Test Pipeline</h2>
+    {% if selected_workflow and not selected_workflow.is_enabled %}
+    <p class="text-xs text-amber-500 mb-3">
+        "{{ selected_workflow.name }}" is disabled — re-enable it on the
+        <a href="/workflows" class="underline">Workflows</a> page to run it.
+    </p>
+    {% endif %}
     <p class="text-xs text-gray-500 mb-4">
         Run the full workflow with a <span class="font-mono text-gray-400">placeholder</span> image generator
         (gradient + text overlay instead of real AI). Useful for testing the end-to-end flow.
@@ -107,6 +139,7 @@
           hx-target="#test-pipeline-result"
           hx-swap="innerHTML"
           class="space-y-3">
+        {% if selected_workflow %}<input type="hidden" name="workflow" value="{{ selected_workflow.slug }}">{% endif %}
         <div>
             <label for="test-brief" class="block text-xs text-gray-500 mb-1">Creative Brief</label>
             <textarea id="test-brief" name="brief" rows="2"
