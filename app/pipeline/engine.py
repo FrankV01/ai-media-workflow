@@ -19,8 +19,12 @@ context["_workflow_id"] / context["_workflow_slug"] /
 context["_workflow_media_model"] (the workflow the run executes under —
 scoping AI configuration profiles and overriding the media model when set)
 to blocks, and copies context["photo_shoot_name"] onto Job.workflow_name
-mid-run so a block (e.g. the Art Director) can title the job while it
-executes.
+mid-run so a block can title the job while it executes.
+
+Job titling is owned by the engine: untitled runs (no caller-supplied
+photo_shoot_name) get a "job_namer" step auto-prepended to the step list,
+so every workflow earns a generated title regardless of which creative
+roles it contains.
 
 Step format (simple):
     ["art_director", "prompt_architect", "media_producer"]
@@ -237,6 +241,10 @@ async def run_pipeline(
     disabled workflow raises WorkflowNotFoundError / WorkflowDisabledError
     before the job row is created.
 
+    When the run is untitled (workflow_name/context photo_shoot_name absent)
+    and a brief is present, a "job_namer" step is prepended to block_names so
+    the job gets a generated title at run start.
+
     Returns the job ID (int).
     """
     if workflow_name is None:
@@ -268,8 +276,17 @@ async def run_pipeline(
             context["_workflow_media_model"] = workflow.media_model_name
 
         if workflow_name is not None:
-            # Prevents the Art Director from inventing a different name
+            # Caller-supplied name wins — nothing may rename the shoot mid-run
             context.setdefault("photo_shoot_name", workflow_name)
+
+        if (
+            workflow_name is None
+            and not context.get("photo_shoot_name")
+            and str(context.get("brief") or "").strip()
+        ):
+            # Engine-owned titling: the namer names the shoot at run start
+            # (its JobStep makes the LLM call audited like any other step)
+            block_names = ["job_namer", *block_names]
 
         # Create the job row as PENDING — it transitions to RUNNING once the lock is acquired
         job = Job(workflow_name=job_name, workflow_id=workflow.id, status=JobStatus.PENDING)

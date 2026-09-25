@@ -21,8 +21,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.database
 import app.pipeline.engine as engine_module
 from app.blocks.base import Block, BlockMeta
-from app.blocks.registry import register
+from app.blocks.registry import discover_blocks, register
 from app.database import Base
+from app.models.creative import RoleExecution
 from app.models.job import Job, JobStatus, JobStep
 from app.models.workflow import Workflow
 from app.services.configuration.database import DatabaseConfigurationProvider
@@ -64,6 +65,25 @@ class WorkflowProbeBlock(Block):
         }
 
 
+def _fake_llm_client(content: str):
+    """Minimal AsyncOpenAI stand-in for the engine's auto-prepended job_namer."""
+    import types
+
+    message = types.SimpleNamespace(content=content)
+    choice = types.SimpleNamespace(message=message, finish_reason="stop")
+    usage = types.SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    response = types.SimpleNamespace(choices=[choice], usage=usage)
+
+    class FakeCompletions:
+        async def create(self, **_):
+            return response
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    return types.SimpleNamespace(chat=FakeChat())
+
+
 @pytest.fixture
 async def session_factory(tmp_path, monkeypatch):
     """Point the engine AND app session factories at a throwaway SQLite file."""
@@ -73,6 +93,14 @@ async def session_factory(tmp_path, monkeypatch):
     factory = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(engine_module, "async_session", factory)
     monkeypatch.setattr(app.database, "async_session", factory)
+    # Ensure job_namer et al. are registered for engine runs, and keep the
+    # auto-prepended naming step hermetic — no real LLM calls
+    import app.blocks.role_block as role_block_module
+
+    discover_blocks()
+    monkeypatch.setattr(
+        role_block_module, "AsyncOpenAI", lambda **_: _fake_llm_client("Test Shoot")
+    )
     yield factory
     await engine.dispose()
 
@@ -376,7 +404,14 @@ async def test_engine_stamps_job_workflow_and_scopes_context(session_factory):
 
     async with session_factory() as session:
         job = await session.get(Job, job_id)
-        step = (await session.execute(select(JobStep).where(JobStep.job_id == job_id))).scalar_one()
+        step = (
+            await session.execute(
+                select(JobStep).where(
+                    JobStep.job_id == job_id,
+                    JobStep.block_name == "test_workflow_probe",
+                )
+            )
+        ).scalar_one()
 
     assert job.status == JobStatus.COMPLETED
     assert job.workflow_id == wf_id
@@ -405,7 +440,7 @@ async def test_engine_uses_workflow_steps_when_block_names_omitted(session_facto
             .scalars()
             .all()
         )
-    assert [s.block_name for s in steps] == ["test_workflow_probe"]
+    assert [s.block_name for s in steps] == ["job_namer", "test_workflow_probe"]
 
 
 async def test_engine_falls_back_to_default_workflow(session_factory):
@@ -449,6 +484,99 @@ async def test_engine_rejects_unknown_workflow(session_factory):
         await engine_module.run_pipeline(
             workflow_name=None, workflow_id=999, context={"brief": "go"}
         )
+
+
+# ── Engine-owned job naming (auto-prepended job_namer step) ──────────────
+
+
+async def test_engine_prepends_namer_and_titles_untitled_run(session_factory):
+    """Untitled runs get a job_namer step first; its title becomes the job name."""
+    async with session_factory() as session:
+        wf = await create_workflow(session, name="Named Flow", steps=["test_workflow_probe"])
+        await session.commit()
+        wf_id = wf.id
+
+    job_id = await engine_module.run_pipeline(
+        workflow_name=None, workflow_id=wf_id, context={"brief": "a concept"}
+    )
+
+    async with session_factory() as session:
+        job = await session.get(Job, job_id)
+        steps = (
+            (
+                await session.execute(
+                    select(JobStep).where(JobStep.job_id == job_id).order_by(JobStep.order)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        namer_step = steps[0]
+        executions = (
+            (
+                await session.execute(
+                    select(RoleExecution).where(RoleExecution.job_step_id == namer_step.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert job.workflow_name == "Test Shoot"
+    assert [s.block_name for s in steps] == ["job_namer", "test_workflow_probe"]
+    assert namer_step.status == JobStatus.COMPLETED
+    assert json.loads(namer_step.output)["photo_shoot_name"] == "Test Shoot"
+    # The naming LLM call is audited like any other step
+    assert len(executions) == 1
+    assert executions[0].model_used is not None
+
+
+async def test_engine_skips_namer_when_name_supplied(session_factory):
+    """A caller-supplied workflow_name wins — no naming step is added."""
+    job_id = await engine_module.run_pipeline(
+        workflow_name="Client Shoot",
+        block_names=["test_workflow_probe"],
+        context={"brief": "a concept"},
+    )
+
+    async with session_factory() as session:
+        job = await session.get(Job, job_id)
+        steps = (
+            (
+                await session.execute(
+                    select(JobStep).where(JobStep.job_id == job_id).order_by(JobStep.order)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert job.workflow_name == "Client Shoot"
+    assert [s.block_name for s in steps] == ["test_workflow_probe"]
+
+
+async def test_engine_skips_namer_without_brief(session_factory):
+    """No brief → nothing to name from; the job stays untitled."""
+    job_id = await engine_module.run_pipeline(
+        workflow_name=None,
+        block_names=["test_workflow_probe"],
+        context={},
+    )
+
+    async with session_factory() as session:
+        job = await session.get(Job, job_id)
+        steps = (
+            (
+                await session.execute(
+                    select(JobStep).where(JobStep.job_id == job_id).order_by(JobStep.order)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert job.workflow_name == "Untitled shoot"
+    assert [s.block_name for s in steps] == ["test_workflow_probe"]
 
 
 # ── REST API ─────────────────────────────────────────────────────────────
