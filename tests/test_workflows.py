@@ -731,6 +731,9 @@ def test_workflows_pages_render(api_client):
     dashboard = client.get("/?workflow=page-flow")
     assert dashboard.status_code == 200
     assert "Page Flow" in dashboard.text
+    # Connected workflow selectors: page header + both run forms
+    for select_id in ("workflow-select", "run-workflow-select", "test-workflow-select"):
+        assert f'id="{select_id}"' in dashboard.text
 
     settings_page = client.get("/settings/ai?workflow=page-flow")
     assert settings_page.status_code == 200
