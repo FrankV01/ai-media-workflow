@@ -3,20 +3,24 @@
 {% block title %}Dashboard — AI Media Workflow{% endblock %}
 
 {% block content %}
+{% macro workflow_select(select_id, anchor="") %}
+<select id="{{ select_id }}"
+        onchange="window.location.href = '/?workflow=' + encodeURIComponent(this.value) + '{{ anchor }}'"
+        class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white
+               focus:outline-none focus:border-indigo-500">
+    {% for w in workflows %}
+    <option value="{{ w.slug }}" {% if selected_workflow and w.id == selected_workflow.id %}selected{% endif %}>
+        {{ w.name }}{% if not w.is_enabled %} (disabled){% endif %}
+    </option>
+    {% endfor %}
+</select>
+{% endmacro %}
+
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-2xl font-bold">Dashboard</h1>
     <div class="flex items-center gap-2">
         <label for="workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Workflow</label>
-        <select id="workflow-select"
-                onchange="window.location.href = '/?workflow=' + encodeURIComponent(this.value)"
-                class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white
-                       focus:outline-none focus:border-indigo-500">
-            {% for w in workflows %}
-            <option value="{{ w.slug }}" {% if selected_workflow and w.id == selected_workflow.id %}selected{% endif %}>
-                {{ w.name }}{% if not w.is_enabled %} (disabled){% endif %}
-            </option>
-            {% endfor %}
-        </select>
+        {{ workflow_select("workflow-select") }}
         <a href="/workflows" class="text-xs text-indigo-400 hover:text-indigo-300 ml-1">Manage</a>
     </div>
 </div>
@@ -85,8 +89,14 @@
 </section>
 
 <!-- Run Pipeline -->
-<section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
-    <h2 class="text-lg font-semibold mb-3">Run Pipeline</h2>
+<section id="run-pipeline" class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Run Pipeline</h2>
+        <div class="flex items-center gap-2">
+            <label for="run-workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Workflow</label>
+            {{ workflow_select("run-workflow-select", "#run-pipeline") }}
+        </div>
+    </div>
     {% if selected_workflow and not selected_workflow.is_enabled %}
     <p class="text-xs text-amber-500 mb-3">
         "{{ selected_workflow.name }}" is disabled — re-enable it on the
@@ -123,8 +133,14 @@
 </section>
 
 <!-- Test Pipeline (placeholder backend, skips real AI generation) -->
-<section class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
-    <h2 class="text-lg font-semibold mb-3">Test Pipeline</h2>
+<section id="test-pipeline" class="mt-8 bg-gray-900 rounded-lg p-5 border border-gray-800">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Test Pipeline</h2>
+        <div class="flex items-center gap-2">
+            <label for="test-workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Workflow</label>
+            {{ workflow_select("test-workflow-select", "#test-pipeline") }}
+        </div>
+    </div>
     {% if selected_workflow and not selected_workflow.is_enabled %}
     <p class="text-xs text-amber-500 mb-3">
         "{{ selected_workflow.name }}" is disabled — re-enable it on the

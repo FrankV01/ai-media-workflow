@@ -98,10 +98,11 @@ ComfyUI checkpoint than "Main".
 
 - Create/clone/edit/enable/disable on the `/workflows` page (JSON steps
   editor with a rendered preview); the default workflow can't be disabled.
-- The dashboard workflow selector scopes the pipeline visual, run buttons,
-  and job list; `/settings/ai?workflow=<slug>` edits that workflow's
-  profiles. `media_model_name` on a workflow overrides the env-selected
-  checkpoint for its runs.
+- The dashboard workflow selectors (page header, Run Pipeline, Test
+  Pipeline — all connected) scope the pipeline visual, run buttons, and job
+  list; `/settings/ai?workflow=<slug>` edits that workflow's profiles.
+  `media_model_name` on a workflow overrides the env-selected checkpoint
+  for its runs.
 - The migration seeds "Main" with the pipeline above and backfills existing
   profiles and jobs to it.
 
