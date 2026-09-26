@@ -14,6 +14,7 @@ import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from PIL import Image, ImageCms, ImageOps
 
@@ -49,6 +50,11 @@ class ConvertedImage:
     source_bytes: int
     jpeg_bytes: bytes = field(repr=False)
     flattened: bool = False  # transparency composited onto white
+
+    @property
+    def data(self) -> bytes:
+        """Payload bytes — the generic build_zip accessor."""
+        return self.jpeg_bytes
 
     @property
     def output_bytes(self) -> int:
@@ -146,14 +152,23 @@ def convert_png_bytes(data: bytes, source_name: str) -> ConvertedImage:
     )
 
 
-def build_zip(images: Sequence[ConvertedImage]) -> bytes:
-    """Pack converted JPEGs into an in-memory ZIP, deduping entry names."""
+class ZipEntry(Protocol):
+    """Anything packable by build_zip — a mutable output_name and payload bytes."""
+
+    output_name: str
+
+    @property
+    def data(self) -> bytes: ...
+
+
+def build_zip(images: Sequence[ZipEntry]) -> bytes:
+    """Pack converted images into an in-memory ZIP, deduping entry names."""
     buffer = io.BytesIO()
     used: set[str] = set()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for image in images:
             image.output_name = _unique_name(image.output_name, used)
-            archive.writestr(image.output_name, image.jpeg_bytes)
+            archive.writestr(image.output_name, image.data)
     return buffer.getvalue()
 
 

@@ -59,9 +59,13 @@ class Workflow(Base):
     media_configurations: Mapped[list["MediaModelConfiguration"]] = relationship(
         back_populates="workflow"
     )
+    block_configurations: Mapped[list["BlockConfiguration"]] = relationship(
+        back_populates="workflow"
+    )
 
 
 # Avoid circular import — import at module level for relationship resolution
+from app.models.block import BlockConfiguration  # noqa: E402, F401
 from app.models.creative import LlmRoleConfiguration  # noqa: E402, F401
 from app.models.job import Job  # noqa: E402, F401
 from app.models.media import MediaModelConfiguration  # noqa: E402, F401

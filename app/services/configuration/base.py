@@ -8,6 +8,9 @@ blocks never deal with ORM rows or raw JSON:
   LLM profiles
 - MediaDefaults / MediaProfileSettings / ResolvedMediaConfiguration —
   per-(workflow, block, backend, model) media profiles
+- BlockDefaults / ResolvedBlockConfiguration — per-(workflow, block)
+  settings profiles for non-LLM/non-media blocks (settings carried as a
+  JSON dict the block owns)
 
 `configuration_source` is 'code_default' when the row still ships the values
 the code seeded it with, 'custom' once a user has edited it, and 'legacy' on
@@ -32,6 +35,10 @@ MEDIA_DEFAULT_WARNING = (
     "Using code-default AI configuration for block '{block}' "
     "(backend '{backend}', model '{model}') in workflow '{workflow}'. "
     "Customize it at /settings/ai?workflow={workflow}."
+)
+BLOCK_DEFAULT_WARNING = (
+    "Using code-default configuration for block '{block}' "
+    "in workflow '{workflow}'. Customize it at /settings/ai?workflow={workflow}."
 )
 
 SOURCE_CODE_DEFAULT = "code_default"
@@ -103,6 +110,18 @@ def validate_media_profile_fields(
         ]
         if missing:
             raise ValueError(f"ComfyUI profiles require non-blank: {', '.join(missing)}")
+
+
+def validate_block_profile_fields(block_name: str, settings: dict[str, Any]) -> None:
+    """Canonical invariant checks for a generic block profile. Raises ValueError."""
+    if not block_name or not block_name.strip():
+        raise ValueError("block_name must be non-blank")
+    if not isinstance(settings, dict):
+        raise ValueError("settings must be an object")
+    try:
+        json.dumps(settings)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("settings must be JSON-serializable") from exc
 
 
 # ── LLM role configuration ───────────────────────────────────────────────
@@ -247,6 +266,34 @@ class ResolvedMediaConfiguration:
     settings: MediaProfileSettings
 
 
+# ── Generic block configuration ──────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class BlockDefaults:
+    """Code defaults for one (block_name) profile.
+
+    `settings` is the block's own JSON-serializable dict (e.g.
+    BackgroundRemovalSettings.to_json_dict()); the provider stores it
+    verbatim and never interprets the keys.
+    """
+
+    block_name: str
+    settings: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ResolvedBlockConfiguration:
+    """Immutable effective block configuration for one run."""
+
+    configuration_id: int | None
+    workflow_id: int | None
+    source: str
+    warning: str | None
+    block_name: str
+    settings: dict[str, Any]
+
+
 # ── Provider protocols ───────────────────────────────────────────────────
 
 
@@ -270,7 +317,22 @@ class MediaConfigurationProvider(Protocol):
         ...
 
 
-class ConfigurationProvider(LlmConfigurationProvider, MediaConfigurationProvider, Protocol):
+class BlockConfigurationProvider(Protocol):
+    """Resolves effective generic block configuration for a run."""
+
+    async def resolve_block(
+        self, defaults: BlockDefaults, *, workflow_id: int | None = None
+    ) -> ResolvedBlockConfiguration:
+        """Get-or-create the (workflow, block) profile and return resolved values."""
+        ...
+
+
+class ConfigurationProvider(
+    LlmConfigurationProvider,
+    MediaConfigurationProvider,
+    BlockConfigurationProvider,
+    Protocol,
+):
     """Combined provider implemented by DatabaseConfigurationProvider."""
 
     ...

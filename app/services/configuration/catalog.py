@@ -7,6 +7,9 @@ Public helpers that enumerate which blocks are configurable:
 - is_media_block()         — whether a block name is a media-producing block
                              (the MediaProducer family; 'media_producer' today)
 - media_block_names()      — valid block_name values for media profiles
+- configurable_blocks()    — registered blocks that own a generic
+                             BlockConfiguration profile (has_db_settings)
+- is_configurable_block()  — whether a block name has a block profile
 """
 
 from __future__ import annotations
@@ -36,3 +39,20 @@ def media_block_names() -> set[str]:
 def is_media_block(block_name: str) -> bool:
     """Whether block_name is a registered media-producing block."""
     return block_name in media_block_names()
+
+
+def configurable_blocks() -> dict[str, type]:
+    """Registered blocks that own a generic BlockConfiguration profile.
+
+    A block opts in by setting ``has_db_settings = True``; instances are
+    keyed by meta.name for settings-page and API lookup.
+    """
+    discover_blocks()
+    return {
+        cls.meta.name: cls for cls in list_block_classes() if getattr(cls, "has_db_settings", False)
+    }
+
+
+def is_configurable_block(block_name: str) -> bool:
+    """Whether block_name is a registered block with a settings profile."""
+    return block_name in configurable_blocks()

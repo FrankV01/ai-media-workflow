@@ -84,6 +84,7 @@ def upgrade_database(database_url: str | None = None) -> None:
 async def init_db() -> None:
     """Validate the migrated schema before the server accepts requests."""
     # Import models so they register with Base.metadata
+    import app.models.block  # noqa: F401
     import app.models.creative  # noqa: F401
     import app.models.job  # noqa: F401
     import app.models.media  # noqa: F401

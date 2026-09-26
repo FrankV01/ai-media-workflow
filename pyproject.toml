@@ -17,6 +17,7 @@ dependencies = [
     "httpx>=0.27",             # async HTTP client (for block I/O)
     "openai>=1.40",            # OpenAI API client for LLM blocks
     "Pillow>=10.0",            # image conversion and placeholder generation
+    "numpy>=1.26",             # pixel-array math for background removal
 ]
 
 [project.optional-dependencies]

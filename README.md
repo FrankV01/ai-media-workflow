@@ -148,6 +148,20 @@ percentage saved, and 24-bit sRGB color profile; non-PNG, oversized, or
 corrupt files in a batch are skipped and listed rather than failing the
 whole drop.
 
+The `/remove-background` page is the companion drop-zone tool for solid-color
+backdrops: it cuts the background out in memory (NumPy color-keying — no AI
+model) and returns a transparent PNG, or a `.zip` for a batch. Settings on
+the page: auto corner color detection or a manual color-picker override, a
+tolerance slider (default 15 — raise it if background specks remain), a 1px
+edge feather by default, Contiguous vs Global fill (contiguous only
+removes background touching the image edges, preserving same-color details
+inside the subject), plus optional erode/contract and despill edge polish. Every setting has an inline description and a Contiguous-vs-Global
+quick guide. Same 25 MB / 20-file / 100 MP limits as `/convert`. The same
+logic powers the `background_remover` pipeline block (below) — add it to a
+workflow to cut backgrounds out of generated images automatically; its
+settings are stored per-workflow under the Block Settings section of
+`/settings/ai`.
+
 The ComfyUI backend runs an SDXL base → refiner → 2x/4x upscale workflow, so
 each prompt variant produces three files.
 
@@ -180,7 +194,9 @@ each prompt variant produces three files.
   override the checkpoint via `media_model_name`). Behavior
   profiles — role system prompts/temperature/max_tokens/thinking per
   `(workflow, role, model_name)`, and media request/workflow defaults per
-  `(workflow, block, backend, model)` — live in the database and are edited
+  `(workflow, block, backend, model)` — plus generic per-`(workflow, block)`
+  settings profiles for blocks that opt in (`has_db_settings`, e.g.
+  `background_remover`) — live in the database and are edited
   via the web UI (`/settings/ai?workflow=<slug>`) or the
   `/api/configurations` REST endpoints (`?workflow=` query param).
   **Only missing profile rows are seeded** from code defaults — page loads
@@ -234,7 +250,11 @@ each prompt variant produces three files.
 | `GET` | `/api/configurations/media` | List media model profiles |
 | `PUT` | `/api/configurations/media/{block}` | Save a custom media profile (`backend_name`, `model_name` in body) |
 | `POST` | `/api/configurations/media/{block}/reset` | Restore code defaults (`backend_name`, `model_name` in body) |
+| `GET` | `/api/configurations/block` | List generic block profiles (blocks with `has_db_settings`) |
+| `PUT` | `/api/configurations/block/{block}` | Save a custom block profile (`settings` dict in body — validated by the block) |
+| `POST` | `/api/configurations/block/{block}/reset` | Restore code defaults (`block_name` in body) |
 | `POST` | `/api/convert/png-to-jpeg` | Convert uploaded PNGs to sRGB JPEG (q85, white alpha fill); returns the JPEG, or a ZIP for multiple files — manifest in `X-Convert-Results` |
+| `POST` | `/api/remove-background/` | Cut solid-color backgrounds out of uploaded PNGs (form fields: `key_color`, `tolerance`, `contiguous`, `feather`, `erode`, `despill`); returns the RGBA PNG, or a ZIP for multiple files — manifest in `X-Removal-Results` |
 
 All `/api/configurations` endpoints accept an optional `?workflow=<slug>`
 query parameter selecting which workflow's profiles to read or modify —
@@ -264,6 +284,8 @@ app/
                        audit snapshots)
     media.py         → MediaModelConfiguration (per-workflow/block/backend/model
                        profile), MediaGenerationExecution (per-request audit snapshot)
+    block.py         → BlockConfiguration (per-workflow/block generic settings
+                       profile for non-LLM/non-media blocks)
     setting.py       → Setting (key/value; not yet used)
   blocks/            → workflow blocks
     base.py          → Abstract Block + BlockMeta
@@ -276,6 +298,8 @@ app/
     art_critic.py    → quality evaluation + verdict
     social_media_specialist.py → platform post suggestions
     report_writer.py → markdown report blocks (art_critic_report, social_media_report)
+    background_remover.py → solid-background cutout block (settings in
+                       block_configurations; writes <name>_cutout.png)
     example_block.py → `echo` test block
   pipeline/
     engine.py        → sequential execution + conditional routing + job titling
@@ -291,7 +315,9 @@ app/
       sdxl_workflow.py → SDXL base + refiner + upscale workflow JSON
       placeholder.py → instant PNGs for testing
     image_convert.py → shared in-memory PNG→JPEG service (sRGB, white alpha fill)
-  api/               → REST endpoints (/api/blocks, /api/workflows, /api/workflow-definitions, /api/configurations, /api/convert)
+    background_removal.py → shared in-memory solid-background removal service
+                       (NumPy chroma keying; API page + block call it)
+  api/               → REST endpoints (/api/blocks, /api/workflows, /api/workflow-definitions, /api/configurations, /api/convert, /api/remove-background)
   web/               → routes.py (pages + HTMX partials), templates/, static/
 tests/               → pytest suite
 data/                → SQLite DB, media, default image output (gitignored)

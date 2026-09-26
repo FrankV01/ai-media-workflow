@@ -26,6 +26,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from app.api import background_removal as bg_removal_router
 from app.api import blocks as block_router
 from app.api import configurations as config_router
 from app.api import convert as convert_router
@@ -146,6 +147,9 @@ app.include_router(
 app.include_router(block_router.router, prefix="/api/blocks", tags=["blocks"])
 app.include_router(config_router.router, prefix="/api/configurations", tags=["configurations"])
 app.include_router(convert_router.router, prefix="/api/convert", tags=["convert"])
+app.include_router(
+    bg_removal_router.router, prefix="/api/remove-background", tags=["background-removal"]
+)
 app.include_router(web_router)  # serves HTML at /
 
 # --- Static files ---

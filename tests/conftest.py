@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.database
+import app.models.block  # noqa: F401 — register models on Base.metadata
 import app.models.creative  # noqa: F401 — register models on Base.metadata
 import app.models.job  # noqa: F401
 import app.models.media  # noqa: F401

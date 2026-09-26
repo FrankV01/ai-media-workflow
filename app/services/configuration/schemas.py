@@ -11,6 +11,8 @@ Role/block "known to the registry" checks happen in the callers
 (catalog helpers), since the service layer must not import blocks.
 """
 
+import json
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.configuration.base import (
@@ -157,4 +159,40 @@ class MediaResetInput(BaseModel):
             raise ValueError("model_name must be non-blank")
         if self.backend_name not in SUPPORTED_MEDIA_BACKENDS:
             raise ValueError(f"backend_name must be one of {', '.join(SUPPORTED_MEDIA_BACKENDS)}")
+        return self
+
+
+class BlockProfileInput(BaseModel):
+    """Editable fields of a generic block profile.
+
+    `settings` is the block's own JSON dict — semantic validation is
+    delegated to the block class (``parse_settings``) by callers, since the
+    service layer must not import blocks.
+    """
+
+    settings: dict
+
+    @model_validator(mode="after")
+    def _validate(self) -> "BlockProfileInput":
+        try:
+            json.dumps(self.settings)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("settings must be JSON-serializable") from exc
+        return self
+
+
+class BlockResetInput(BaseModel):
+    """Selector for a generic block profile reset."""
+
+    block_name: str
+
+    @field_validator("block_name")
+    @classmethod
+    def _strip_block(cls, v: str) -> str:
+        return v.strip()
+
+    @model_validator(mode="after")
+    def _validate(self) -> "BlockResetInput":
+        if not self.block_name:
+            raise ValueError("block_name must be non-blank")
         return self

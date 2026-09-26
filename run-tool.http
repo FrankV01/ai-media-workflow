@@ -123,6 +123,64 @@ Content-Type: image/png
 #   -F 'files=@a.png' -F 'files=@b.png' -OJ -D -
 ###
 
+### Remove a solid-color background — single file returns the RGBA .png body;
+### per-file metadata (key_color, removed_pct) rides in X-Removal-Results.
+### Form fields: key_color (hex, blank = corner auto-detect), tolerance (0-100),
+### contiguous (true = edge-connected only), feather (px), erode (px), despill.
+POST http://127.0.0.1:8000/api/remove-background/
+Content-Type: multipart/form-data; boundary=----aimwboundary
+
+------aimwboundary
+Content-Disposition: form-data; name="files"; filename="art.png"
+Content-Type: image/png
+
+< ./art.png
+------aimwboundary
+Content-Disposition: form-data; name="tolerance"
+
+40
+------aimwboundary
+Content-Disposition: form-data; name="contiguous"
+
+true
+------aimwboundary--
+
+###
+# Same thing with curl (auto key color + defaults → no extra fields needed):
+# curl -s -X POST http://127.0.0.1:8000/api/remove-background/ \
+#   -F 'files=@art.png' -OJ -D -
+#   global mode with edge polish:
+# curl -s -X POST http://127.0.0.1:8000/api/remove-background/ \
+#   -F 'files=@art.png' -F 'contiguous=false' -F 'feather=1.5' -F 'despill=true' -OJ -D -
+###
+
+### List the workflow-scoped generic block profiles (background_remover today)
+GET http://127.0.0.1:8000/api/configurations/block
+
+### Save a custom background_remover profile for the default workflow
+PUT http://127.0.0.1:8000/api/configurations/block/background_remover
+Content-Type: application/json
+
+{
+  "settings": {
+    "key_color": null,
+    "tolerance": 45,
+    "contiguous": true,
+    "erode": 1,
+    "feather": 1.0,
+    "despill": true
+  }
+}
+
+### Reset it back to code defaults
+POST http://127.0.0.1:8000/api/configurations/block/background_remover/reset
+Content-Type: application/json
+
+{
+  "block_name": "background_remover"
+}
+###
+
 ### List stored workflow definitions (Main is the seeded default)
 GET http://127.0.0.1:8000/api/workflow-definitions/
 

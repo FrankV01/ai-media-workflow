@@ -7,5 +7,6 @@ LlmConfigurationChange (save/reset mutation history), RoleExecution,
 Message (app/models/creative.py)
 Media profiles + audit: MediaModelConfiguration, MediaGenerationExecution
 (app/models/media.py)
+Generic per-workflow block profiles: BlockConfiguration (app/models/block.py)
 Configuration: Setting (app/models/setting.py)
 """

@@ -10,6 +10,9 @@ Mounted at /api/configurations.
 - GET  /media                        — list media model profiles
 - PUT  /media/{block_name}           — save a custom media profile (backend/model in body)
 - POST /media/{block_name}/reset     — restore code defaults (backend/model in body)
+- GET  /block                        — list generic block profiles (has_db_settings blocks)
+- PUT  /block/{block_name}           — save a custom block profile (settings in body)
+- POST /block/{block_name}/reset     — restore code defaults (block_name in body)
 
 Every profile is scoped to a workflow: an optional ?workflow=<slug> query
 parameter selects the scope on all endpoints; omitted → the default
@@ -46,9 +49,15 @@ from app.services.configuration.base import (
     LLM_CHANGE_ORIGIN_REST_API,
     MediaProfileSettings,
 )
-from app.services.configuration.catalog import is_media_block, registered_role_blocks
+from app.services.configuration.catalog import (
+    configurable_blocks,
+    is_media_block,
+    registered_role_blocks,
+)
 from app.services.configuration.database import DatabaseConfigurationProvider
 from app.services.configuration.schemas import (
+    BlockProfileInput,
+    BlockResetInput,
     LlmProfileInput,
     LlmResetInput,
     MediaProfileInput,
@@ -113,6 +122,17 @@ def _media_json(config, workflow: Workflow) -> dict[str, Any]:
             config.backend_name == settings.generation_backend.lower()
             and config.model_name == _effective_media_model(workflow, config.backend_name)
         ),
+        "created_at": config.created_at.isoformat() if config.created_at else None,
+        "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+    }
+
+
+def _block_json(config) -> dict[str, Any]:
+    return {
+        "block_name": config.block_name,
+        "settings": json.loads(config.settings_json),
+        "uses_code_defaults": config.uses_code_defaults,
+        "source": "code_default" if config.uses_code_defaults else "custom",
         "created_at": config.created_at.isoformat() if config.created_at else None,
         "updated_at": config.updated_at.isoformat() if config.updated_at else None,
     }
@@ -293,3 +313,63 @@ async def reset_media_configuration(
     defaults = code_media_defaults(block_name, body.backend_name, body.model_name)
     config = await _provider().reset_media_configuration(defaults, workflow_id=scope.id)
     return _media_json(config, scope)
+
+
+# ── Block endpoints ──────────────────────────────────────────────────────
+
+
+@router.get("/block")
+async def list_block_configurations(
+    workflow: str | None = None, session: AsyncSession = Depends(get_session)
+):
+    """List saved generic block profiles for one workflow scope."""
+    scope = await _workflow_scope(session, workflow)
+    configs = await _provider().list_block_configurations(scope.id)
+    return {
+        "workflow": {"slug": scope.slug, "name": scope.name},
+        "profiles": [_block_json(config) for config in configs],
+    }
+
+
+@router.put("/block/{block_name}")
+async def put_block_configuration(
+    block_name: str,
+    body: BlockProfileInput,
+    workflow: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Save a custom block profile for (workflow, block_name).
+
+    `settings` is normalized+validated by the block class itself; a
+    ValueError from `parse_settings` maps to 422.
+    """
+    scope = await _workflow_scope(session, workflow)
+    block_cls = configurable_blocks().get(block_name)
+    if block_cls is None:
+        raise HTTPException(404, f"Unknown configurable block '{block_name}'")
+    try:
+        normalized = block_cls.parse_settings(body.settings)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    config = await _provider().upsert_block_configuration(
+        block_name, normalized, workflow_id=scope.id
+    )
+    return _block_json(config)
+
+
+@router.post("/block/{block_name}/reset")
+async def reset_block_configuration(
+    block_name: str,
+    body: BlockResetInput,
+    workflow: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Reset (workflow, block_name) to the block's code defaults."""
+    scope = await _workflow_scope(session, workflow)
+    block_cls = configurable_blocks().get(block_name)
+    if block_cls is None or block_cls.meta.name != body.block_name.strip():
+        raise HTTPException(404, f"Unknown configurable block '{block_name}'")
+    config = await _provider().reset_block_configuration(
+        block_cls.code_block_defaults(), workflow_id=scope.id
+    )
+    return _block_json(config)

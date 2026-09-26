@@ -7,6 +7,8 @@ unique constraints:
 - LlmRoleConfiguration keyed by (workflow_id, role_id, model_name)
 - MediaModelConfiguration keyed by (workflow_id, block_name, backend_name,
   model_name)
+- BlockConfiguration keyed by (workflow_id, block_name) — generic JSON
+  settings profiles for non-LLM/non-media blocks
 
 Every method takes an optional workflow_id selecting the workflow scope;
 None resolves to the default workflow (lazily seeded "Main"), so ad-hoc
@@ -45,10 +47,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
 
+from app.models.block import BlockConfiguration
 from app.models.creative import CreativeRole, LlmConfigurationChange, LlmRoleConfiguration
 from app.models.media import MediaModelConfiguration
 from app.models.workflow import Workflow
 from app.services.configuration.base import (
+    BLOCK_DEFAULT_WARNING,
     LLM_CHANGE_ACTION_RESET_TO_DEFAULTS,
     LLM_CHANGE_ACTION_SAVE_CUSTOM,
     LLM_CHANGE_ORIGIN_SERVICE,
@@ -56,11 +60,14 @@ from app.services.configuration.base import (
     MEDIA_DEFAULT_WARNING,
     SOURCE_CODE_DEFAULT,
     SOURCE_CUSTOM,
+    BlockDefaults,
     LlmRoleDefaults,
     MediaDefaults,
     MediaProfileSettings,
+    ResolvedBlockConfiguration,
     ResolvedLlmConfiguration,
     ResolvedMediaConfiguration,
+    validate_block_profile_fields,
     validate_llm_profile_fields,
     validate_media_profile_fields,
 )
@@ -214,6 +221,30 @@ class DatabaseConfigurationProvider:
             config = (await session.execute(stmt)).scalar_one()
         return config
 
+    async def _get_or_create_block_config(
+        self, session, workflow_id: int, defaults: BlockDefaults
+    ) -> BlockConfiguration:
+        stmt = select(BlockConfiguration).where(
+            BlockConfiguration.workflow_id == workflow_id,
+            BlockConfiguration.block_name == defaults.block_name,
+        )
+        config = (await session.execute(stmt)).scalar_one_or_none()
+        if config is not None:
+            return config
+        try:
+            async with session.begin_nested():
+                config = BlockConfiguration(
+                    workflow_id=workflow_id,
+                    block_name=defaults.block_name,
+                    settings_json=json.dumps(defaults.settings),
+                    uses_code_defaults=True,
+                )
+                session.add(config)
+                await session.flush()
+        except IntegrityError:
+            config = (await session.execute(stmt)).scalar_one()
+        return config
+
     # ── normalization ────────────────────────────────────────────────────
 
     @staticmethod
@@ -234,6 +265,11 @@ class DatabaseConfigurationProvider:
             backend_name=defaults.backend_name.strip().lower(),
             model_name=defaults.model_name.strip(),
         )
+
+    @staticmethod
+    def _normalize_block_defaults(defaults: BlockDefaults) -> BlockDefaults:
+        """Strip the block_name key field."""
+        return replace(defaults, block_name=defaults.block_name.strip())
 
     # ── Resolution (runtime path) ────────────────────────────────────────
 
@@ -524,6 +560,89 @@ class DatabaseConfigurationProvider:
             workflow = await self._resolve_workflow(session, workflow_id)
             config = await self._get_or_create_media_config(session, workflow.id, defaults)
             config.settings_json = defaults.settings.to_json()
+            config.uses_code_defaults = True
+            await session.flush()
+            return config
+
+        return await self._transact(work)
+
+    # ── Generic block profiles ───────────────────────────────────────────
+
+    async def resolve_block(
+        self, defaults: BlockDefaults, *, workflow_id: int | None = None
+    ) -> ResolvedBlockConfiguration:
+        """Get-or-insert the (workflow, block_name) profile."""
+        defaults = self._normalize_block_defaults(defaults)
+        validate_block_profile_fields(defaults.block_name, defaults.settings)
+
+        async def work(session):
+            workflow = await self._resolve_workflow(session, workflow_id)
+            config = await self._get_or_create_block_config(session, workflow.id, defaults)
+            source = SOURCE_CODE_DEFAULT if config.uses_code_defaults else SOURCE_CUSTOM
+            warning = (
+                BLOCK_DEFAULT_WARNING.format(
+                    block=defaults.block_name,
+                    workflow=workflow.slug,
+                )
+                if config.uses_code_defaults
+                else None
+            )
+            return ResolvedBlockConfiguration(
+                configuration_id=config.id,
+                workflow_id=workflow.id,
+                source=source,
+                warning=warning,
+                block_name=config.block_name,
+                settings=json.loads(config.settings_json),
+            )
+
+        return await self._transact(work)
+
+    async def list_block_configurations(
+        self, workflow_id: int | None = None
+    ) -> list[BlockConfiguration]:
+        """Return generic block profiles; `workflow_id` restricts to one scope."""
+        async with self._session_factory() as session:
+            stmt = select(BlockConfiguration)
+            if workflow_id is not None:
+                stmt = stmt.where(BlockConfiguration.workflow_id == workflow_id)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def upsert_block_configuration(
+        self,
+        block_name: str,
+        settings: dict[str, Any],
+        *,
+        workflow_id: int | None = None,
+    ) -> BlockConfiguration:
+        """Write a custom block profile (uses_code_defaults=False)."""
+        validate_block_profile_fields(block_name, settings)
+        profile_defaults = self._normalize_block_defaults(
+            BlockDefaults(block_name=block_name, settings=settings)
+        )
+
+        async def work(session):
+            workflow = await self._resolve_workflow(session, workflow_id)
+            config = await self._get_or_create_block_config(session, workflow.id, profile_defaults)
+            config.settings_json = json.dumps(profile_defaults.settings)
+            config.uses_code_defaults = False
+            await session.flush()
+            return config
+
+        return await self._transact(work)
+
+    async def reset_block_configuration(
+        self, defaults: BlockDefaults, *, workflow_id: int | None = None
+    ) -> BlockConfiguration:
+        """Restore code defaults for (workflow, block_name)."""
+        defaults = self._normalize_block_defaults(defaults)
+        validate_block_profile_fields(defaults.block_name, defaults.settings)
+
+        async def work(session):
+            workflow = await self._resolve_workflow(session, workflow_id)
+            config = await self._get_or_create_block_config(session, workflow.id, defaults)
+            config.settings_json = json.dumps(defaults.settings)
             config.uses_code_defaults = True
             await session.flush()
             return config

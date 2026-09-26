@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
+from app.models.block import BlockConfiguration
 from app.models.creative import LlmRoleConfiguration
 from app.models.media import MediaModelConfiguration
 from app.models.workflow import Workflow
@@ -322,9 +323,10 @@ async def clone_workflow(session, source_id: int, new_name: str) -> Workflow:
     """Copy a workflow's definition and all of its AI configuration profiles.
 
     The clone starts enabled and non-default with identical steps,
-    description, and media model. Every LlmRoleConfiguration and
-    MediaModelConfiguration row scoped to the source is duplicated under
-    the new workflow id, preserving values and uses_code_defaults.
+    description, and media model. Every LlmRoleConfiguration,
+    MediaModelConfiguration, and BlockConfiguration row scoped to the
+    source is duplicated under the new workflow id, preserving values and
+    uses_code_defaults.
     """
     source = await session.get(Workflow, source_id)
     if source is None:
@@ -369,6 +371,21 @@ async def clone_workflow(session, source_id: int, new_name: str) -> Workflow:
                 block_name=row.block_name,
                 backend_name=row.backend_name,
                 model_name=row.model_name,
+                settings_json=row.settings_json,
+                uses_code_defaults=row.uses_code_defaults,
+            )
+        )
+
+    block_rows = (
+        await session.execute(
+            select(BlockConfiguration).where(BlockConfiguration.workflow_id == source.id)
+        )
+    ).scalars()
+    for row in block_rows:
+        session.add(
+            BlockConfiguration(
+                workflow_id=clone.id,
+                block_name=row.block_name,
                 settings_json=row.settings_json,
                 uses_code_defaults=row.uses_code_defaults,
             )

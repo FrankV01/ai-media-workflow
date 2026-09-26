@@ -7,6 +7,8 @@ Full pages:
 - /jobs/<id>     — Job detail: step-by-step input/output + the effective
                    LLM execution audit (prompt snapshot, model, parameters)
 - /convert       — PNG→JPEG drop-zone converter (posts to /api/convert)
+- /remove-background — solid-background cutout tool (posts to
+                   /api/remove-background)
 - /workflows     — workflow definitions: create / clone / enable / disable /
                    set-default, and per-workflow edit page
 - /workflows/<id>— edit one workflow (name, description, media model,
@@ -18,6 +20,7 @@ Full pages:
 Form POSTs (redirect with a status query):
 - /settings/ai/llm/save, /settings/ai/llm/reset     — audited LLM mutations
 - /settings/ai/media/save, /settings/ai/media/reset — media profile mutations
+- /settings/ai/block/save, /settings/ai/block/reset — generic block profiles
 - /workflows/create, /workflows/<id>/{save,clone,enable,disable,set-default}
 
 HTMX partials (return HTML fragments, not full pages):
@@ -58,7 +61,11 @@ from app.services.configuration.base import (
     LLM_CHANGE_ORIGIN_WEB_SETTINGS,
     MediaProfileSettings,
 )
-from app.services.configuration.catalog import is_media_block, registered_role_blocks
+from app.services.configuration.catalog import (
+    configurable_blocks,
+    is_media_block,
+    registered_role_blocks,
+)
 from app.services.configuration.database import DatabaseConfigurationProvider
 from app.services.configuration.schemas import (
     LlmProfileInput,
@@ -92,6 +99,7 @@ _BLOCK_TITLES = {
     "social_media_specialist": "Social Media",
     "art_critic_report": "Critic Report",
     "social_media_report": "Social Report",
+    "background_remover": "Background Remover",
     "echo": "Echo",
 }
 
@@ -175,6 +183,12 @@ async def dashboard(request: Request, session: AsyncSession = Depends(get_sessio
 async def convert_page(request: Request):
     """Render the PNG→JPEG drop-zone converter page."""
     return templates.TemplateResponse(request, "convert.html")
+
+
+@router.get("/remove-background")
+async def remove_background_page(request: Request):
+    """Render the solid-background removal drop-zone page."""
+    return templates.TemplateResponse(request, "remove_background.html")
 
 
 @router.get("/jobs/{job_id}")
@@ -301,8 +315,13 @@ async def ai_settings_page(
         workflow_id=wf.id,
     )
 
+    blocks = configurable_blocks()
+    for block_cls in blocks.values():
+        await provider.resolve_block(block_cls.code_block_defaults(), workflow_id=wf.id)
+
     llm_rows = await provider.list_llm_configurations(wf.id)
     media_rows = await provider.list_media_configurations(wf.id)
+    block_rows = await provider.list_block_configurations(wf.id)
     changes = await provider.list_llm_configuration_changes([config.id for _, config in llm_rows])
     changes_by_config: dict[int, list] = {}
     for change in changes:  # already newest-first
@@ -317,6 +336,16 @@ async def ai_settings_page(
             "settings_dict": MediaProfileSettings.from_json(config.settings_json),
         }
         for config in media_rows
+    ]
+
+    block_profiles = [
+        {
+            "block_name": config.block_name,
+            "uses_code_defaults": config.uses_code_defaults,
+            "settings_dict": json.loads(config.settings_json),
+        }
+        for config in block_rows
+        if config.block_name in blocks
     ]
 
     profiles_by_role: dict[str, list] = {}
@@ -377,6 +406,7 @@ async def ai_settings_page(
             "media_code_defaults": code_media_defaults(
                 "media_producer", backend_name, media_model
             ).settings,
+            "block_profiles": block_profiles,
             "workflows": await list_workflows(session),
             "workflow": wf,
             "status": request.query_params.get("status"),
@@ -558,6 +588,51 @@ async def ai_settings_reset_media(
         workflow_id=wf.id,
     )
     return _settings_redirect("reset", "media", "media_producer", body.model_name, wf.slug)
+
+
+@router.post("/settings/ai/block/save")
+async def ai_settings_save_block(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Save a custom generic block profile in this workflow's scope.
+
+    All form fields except `block_name`/`workflow` become the settings
+    dict; the block class coerces, validates, and normalizes it.
+    """
+    form = await request.form()
+    block_name = str(form.get("block_name", "")).strip()
+    workflow_slug = str(form.get("workflow", ""))
+    wf = await _scope_from_form(session, workflow_slug)
+    block_cls = configurable_blocks().get(block_name)
+    if block_cls is None:
+        raise HTTPException(404, f"Unknown configurable block '{block_name}'")
+    payload = {k: v for k, v in form.items() if k not in {"block_name", "workflow"}}
+    try:
+        normalized = block_cls.parse_settings(payload)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    await DatabaseConfigurationProvider().upsert_block_configuration(
+        block_name, normalized, workflow_id=wf.id
+    )
+    return _settings_redirect("saved", "block", block_name, "", wf.slug)
+
+
+@router.post("/settings/ai/block/reset")
+async def ai_settings_reset_block(
+    block_name: str = Form(...),
+    workflow: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Reset a generic block profile in this workflow's scope."""
+    wf = await _scope_from_form(session, workflow)
+    block_cls = configurable_blocks().get(block_name.strip())
+    if block_cls is None:
+        raise HTTPException(404, f"Unknown configurable block '{block_name}'")
+    await DatabaseConfigurationProvider().reset_block_configuration(
+        block_cls.code_block_defaults(), workflow_id=wf.id
+    )
+    return _settings_redirect("reset", "block", block_name.strip(), "", wf.slug)
 
 
 # ── Workflow management pages ────────────────────────────────────────────

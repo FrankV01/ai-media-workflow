@@ -56,6 +56,7 @@ to the `always` branch.
 | `social_media_specialist` | RoleBlock | Creates marketing content (social posts + licensing metadata); appends canonical JSON contract to resolved prompt | `social_media_specialist_output`, `social_media_posts` |
 | `art_critic_report` | Block | Writes critique to art_critic_report.md | `art_critic_report_path`, `report_files` |
 | `social_media_report` | Block | Writes post suggestions to social_media_specialist.md | `social_media_report_path`, `report_files` |
+| `background_remover` | Block | Cuts solid-color backgrounds out of `generated_images` (pure NumPy/Pillow chroma key — no AI model); settings profiled per workflow (`has_db_settings`) | `cutout_images`, `cutout_metadata`, `background_remover_output` |
 | `echo` | Block | Test/utility block (`example_block.py`) | `echo_result` |
 
 ### Context flow
@@ -142,6 +143,34 @@ Status mapping: 415 non-PNG (bad extension or signature), 413 oversized
 mode instead records bad files in `skipped[]` and still returns the valid
 conversions — the response body is a ZIP only when ≥2 files converted.
 
+### Background removal tool + block
+
+`/remove-background` is a second standalone drop-zone page posting to
+`POST /api/remove-background/` (same 1–20 PNGs / 25 MB / 100 MP limits and
+`X-Removal-Results` manifest shape as `/convert`; `app/web/static/remove_background.js`
+drives the same five UI states). The shared service is
+`app/services/background_removal.py` — pure NumPy + Pillow color segmentation,
+no AI model: RGB Euclidean distance to a key color (auto-detected as the
+median of the four corner patches or given via `key_color` hex), gated by a
+0–100 `tolerance` (default 15 — deliberately conservative); `contiguous=True` keeps only edge-connected matches (Pillow
+`floodfill` on a writable `Image.frombytes` mask — `Image.fromarray` output is
+read-only in Pillow 12.x and floodfill silently no-ops), `False` removes every
+matching pixel; optional `erode` (MinFilter matte contraction), `feather`
+(Gaussian alpha blur, default 1 px), and `despill` (un-composites edge pixels from the
+background color). Output is RGBA PNG; the manifest adds `key_color` and
+`removed_pct` per file.
+
+The `background_remover` block (`has_db_settings = True`) reuses the same
+service on `context["generated_images"]`, writing `<stem>_cutout.png` next to
+each source and exposing `cutout_images`/`cutout_metadata` downstream. Its
+settings live in `block_configurations` — the generic `(workflow_id,
+block_name)` profile model for non-LLM/non-media blocks, seeded/reset through
+the same `resolve_block`/`upsert_block_configuration`/`reset_block_configuration`
+provider paths and edited in the Block Settings section of `/settings/ai` or
+via `/api/configurations/block*`. Blocks opt in via `has_db_settings` +
+`code_block_defaults()`/`parse_settings()` classmethods; `catalog.configurable_blocks()`
+discovers them, and workflow clones copy their profiles.
+
 ## Code Style & Conventions
 
 - **Formatting**: Ruff with line-length 100. Run `ruff check --fix . && ruff format .` (note: `migrations/` has pre-existing lint findings; prefer `ruff check --fix app tests`).
@@ -214,8 +243,8 @@ time, and `brief` is reset to `_original_brief` before they run.
 ## Database
 
 - **ORM**: SQLAlchemy 2.0 async sessions. Use `Depends(get_session)` in routes; the engine opens its own session per run.
-- **Models in use**: `Workflow` (`name`, `slug`, `description`, `steps_json`, `media_model_name`, `is_enabled`, `is_default`); `Job` (`workflow_name` = photo shoot title, `workflow_id` = the workflow it ran under, `status`, `error`, `warnings`, `generated_assets`, `report_files`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; the mutation-audit model `LlmConfigurationChange`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
-- **AI configuration**: `CreativeRole` is stable identity metadata only. Mutable behavior profiles live in `LlmRoleConfiguration` keyed by `(workflow_id, role, model_name)` — the run's workflow selects the scope and `LLM_MODEL` selects the model within it — and `MediaModelConfiguration` keyed by `(workflow_id, block, backend, model)`. `app/services/configuration/` resolves profiles: **missing rows only** are seeded from code defaults (`uses_code_defaults=True`) and emit a warning on every use until customized via `/settings/ai?workflow=<slug>` or `/api/configurations?workflow=<slug>` (omitted scope → the default workflow). Resolution (`resolve_llm`/`resolve_media`), the settings page GET, and pipeline runs **never overwrite existing rows** — the only mutations are the explicit Save/Reset paths. Secrets, URLs, timeouts, poll intervals, and filesystem paths stay env-only.
+- **Models in use**: `Workflow` (`name`, `slug`, `description`, `steps_json`, `media_model_name`, `is_enabled`, `is_default`); `Job` (`workflow_name` = photo shoot title, `workflow_id` = the workflow it ran under, `status`, `error`, `warnings`, `generated_assets`, `report_files`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; the generic block-settings model `BlockConfiguration`; the mutation-audit model `LlmConfigurationChange`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
+- **AI configuration**: `CreativeRole` is stable identity metadata only. Mutable behavior profiles live in `LlmRoleConfiguration` keyed by `(workflow_id, role, model_name)` — the run's workflow selects the scope and `LLM_MODEL` selects the model within it — and `MediaModelConfiguration` keyed by `(workflow_id, block, backend, model)`, and `BlockConfiguration` keyed by `(workflow_id, block_name)` for non-LLM/non-media blocks that set `has_db_settings` (`background_remover`). `app/services/configuration/` resolves profiles: **missing rows only** are seeded from code defaults (`uses_code_defaults=True`) and emit a warning on every use until customized via `/settings/ai?workflow=<slug>` or `/api/configurations?workflow=<slug>` (omitted scope → the default workflow). Resolution (`resolve_llm`/`resolve_media`), the settings page GET, and pipeline runs **never overwrite existing rows** — the only mutations are the explicit Save/Reset paths. Secrets, URLs, timeouts, poll intervals, and filesystem paths stay env-only.
 - **LLM configuration change audit**: Every explicit LLM save/reset writes an `LlmConfigurationChange` row in the same transaction — `action` (`save_custom`/`reset_to_defaults`), `origin` (`service`/`web_settings`/`rest_api` — the web and API layers pass their own origin; the provider default is `service`), and JSON `before_snapshot`/`after_snapshot` of the mutable fields (`system_prompt`, `temperature`, `max_tokens`, `enable_thinking`, `uses_code_defaults`). An event is recorded even when values are identical. Newest-first listing via `list_llm_configuration_changes`; the settings page renders the 5 most recent per profile and `GET /api/configurations/llm/{role}/history?model_name=…` exposes them (404 for unknown role or missing exact model profile). There is no media audit table yet.
 - **AI execution audit**: Every attempted LLM call and image-generation request stores an *immutable snapshot* — copied prompt/model/parameters (`RoleExecution.system_prompt`, `MediaGenerationExecution.settings_snapshot`), not the mutable configuration FK, are the audit authority. The engine persists each record against the corresponding `JobStep`, including failed calls, and never updates configuration or role rows. Job detail (web `/jobs/{id}` and `GET /api/workflows/jobs/{id}`) exposes per-step `llm_executions` — the effective system prompt, model, config id/source, and parameters actually used.
 - **Media precedence**: explicit Prompt Architect `parameters` override the media profile's request defaults, which override code defaults. Seed is per-request, never a profile default. The ComfyUI backend receives its model/workflow settings via an injected `SdxlWorkflowConfig`; operational URL/poll/timeout/output remain env settings.
@@ -233,7 +262,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 
 - Framework: pytest + pytest-asyncio (`asyncio_mode = "auto"`, so async tests need no marker)
 - Run: `pytest` from project root
-- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, and structured errors), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping)
+- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, and structured errors), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping), `test_background_removal.py` (chroma-key service: auto/override key color, tolerance, contiguous/global, erode/feather/despill; `/api/remove-background/` endpoint; `background_remover` block; `BlockConfiguration` seed/upsert/reset and workflow scoping)
 - LLM calls are mocked by monkeypatching `app.blocks.role_block.AsyncOpenAI`; see `_fake_llm_client` in `test_blocks.py`
 - Tests that generate files monkeypatch `settings.image_output_dir` to `tmp_path` — never write into the real output dir
 
