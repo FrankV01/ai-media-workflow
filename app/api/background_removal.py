@@ -9,6 +9,8 @@ response header. No files are written to disk.
 """
 
 import json
+import logging
+import time
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -26,6 +28,8 @@ from app.services.image_convert import (
     NotAPngError,
     build_zip,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -113,10 +117,29 @@ async def remove_background(
     batch = len(files) > 1
     skipped: list[dict[str, str]] = []
     converted: list[RemovedImage] = []
-    for upload in files:
-        result = await _process_upload(upload, removal, batch=batch, skipped=skipped)
+    total = len(files)
+    for i, upload in enumerate(files, 1):
+        name = (upload.filename or "upload").replace("\\", "/").split("/")[-1]
+        size_mb = (upload.size or 0) / (1024 * 1024)
+        logger.info("remove-background: processing %d/%d %s (%.1f MB)", i, total, name, size_mb)
+        start = time.perf_counter()
+        try:
+            result = await _process_upload(upload, removal, batch=batch, skipped=skipped)
+        except HTTPException as exc:
+            logger.warning("remove-background: failed %s — %s", name, exc.detail)
+            raise
         if result is not None:
             converted.append(result)
+            logger.info(
+                "remove-background: done %s — %dx%d, %.1f%% transparent in %.2fs",
+                result.output_name,
+                result.width,
+                result.height,
+                result.removed_pct,
+                time.perf_counter() - start,
+            )
+        else:
+            logger.warning("remove-background: skipped %s — %s", name, skipped[-1]["reason"])
 
     if not converted:
         raise HTTPException(422, "No convertible PNG files were provided")

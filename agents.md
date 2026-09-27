@@ -148,7 +148,11 @@ conversions — the response body is a ZIP only when ≥2 files converted.
 `/remove-background` is a second standalone drop-zone page posting to
 `POST /api/remove-background/` (same 1–20 PNGs / 25 MB / 100 MP limits and
 `X-Removal-Results` manifest shape as `/convert`; `app/web/static/remove_background.js`
-drives the same five UI states). The shared service is
+drives the same five UI states). Success renders a preview over a CSS
+transparency checkerboard — the blob object URL for a single file; for
+batches it parses the returned ZIP client-side (central directory +
+`DecompressionStream('deflate-raw')`, degrades gracefully) and shows a
+thumbnail per result card. The shared service is
 `app/services/background_removal.py` — pure NumPy + Pillow color segmentation,
 no AI model: RGB Euclidean distance to a key color (auto-detected as the
 median of the four corner patches or given via `key_color` hex), gated by a

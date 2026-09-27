@@ -13,8 +13,10 @@
     var errorMsg = document.getElementById("rb-error-message");
     var downloadLink = document.getElementById("rb-download");
     var metadataEl = document.getElementById("rb-metadata");
+    var previewEl = document.getElementById("rb-preview");
     var skippedEl = document.getElementById("rb-skipped");
     var againBtn = document.getElementById("rb-again");
+    var rerunBtn = document.getElementById("rb-rerun");
     var retryBtn = document.getElementById("rb-retry");
 
     var keyAuto = document.getElementById("rb-key-auto");
@@ -27,6 +29,9 @@
     var despill = document.getElementById("rb-despill");
 
     var objectUrl = null;
+    var previewUrls = [];
+    var lastFiles = [];
+    var lastSkipped = [];
     var busy = false;
 
     var DRAG_CLASSES = ["border-indigo-500", "bg-indigo-500/10"];
@@ -59,6 +64,19 @@
         setState("error");
     }
 
+    function releaseResults() {
+        if (objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            objectUrl = null;
+        }
+        previewUrls.forEach(function (url) {
+            URL.revokeObjectURL(url);
+        });
+        previewUrls = [];
+        previewEl.textContent = "";
+        metadataEl.textContent = "";
+    }
+
     function metadataRow(label, value) {
         var row = el("div", "flex justify-between gap-4 text-sm");
         row.appendChild(el("span", "text-gray-500", label));
@@ -66,8 +84,130 @@
         return row;
     }
 
-    function renderCard(item) {
+    function u16(view, offset) {
+        return view.getUint16(offset, true);
+    }
+
+    function u32(view, offset) {
+        return view.getUint32(offset, true);
+    }
+
+    /* Minimal ZIP reader: walks the central directory, returns {name, method, data}. */
+    function extractZipEntries(buffer) {
+        var view = new DataView(buffer);
+        var eocd = -1;
+        var scanFrom = Math.max(0, buffer.byteLength - 65557);
+        for (var i = buffer.byteLength - 22; i >= scanFrom; i--) {
+            if (u32(view, i) === 0x06054b50) {
+                eocd = i;
+                break;
+            }
+        }
+        if (eocd < 0) throw new Error("not a zip archive");
+
+        var entries = [];
+        var count = u16(view, eocd + 10);
+        var pos = u32(view, eocd + 16);
+        var decoder = new TextDecoder();
+        for (var e = 0; e < count && pos < buffer.byteLength; e++) {
+            if (u32(view, pos) !== 0x02014b50) break;
+            var method = u16(view, pos + 10);
+            var compSize = u32(view, pos + 20);
+            var nameLen = u16(view, pos + 28);
+            var extraLen = u16(view, pos + 30);
+            var commentLen = u16(view, pos + 32);
+            var localOff = u32(view, pos + 42);
+            var name = decoder.decode(new Uint8Array(buffer, pos + 46, nameLen));
+            var dataStart = localOff + 30 + u16(view, localOff + 26) + u16(view, localOff + 28);
+            entries.push({
+                name: name,
+                method: method,
+                data: buffer.slice(dataStart, dataStart + compSize),
+            });
+            pos += 46 + nameLen + extraLen + commentLen;
+        }
+        return entries;
+    }
+
+    function inflateRaw(bytes) {
+        var stream = new Blob([bytes])
+            .stream()
+            .pipeThrough(new DecompressionStream("deflate-raw"));
+        return new Response(stream).arrayBuffer();
+    }
+
+    /* Builds output_name -> object URL for every entry; degrades to {} on failure. */
+    function previewMapFromZip(blob) {
+        if (typeof DecompressionStream === "undefined") return Promise.resolve({});
+        return blob
+            .arrayBuffer()
+            .then(extractZipEntries)
+            .then(function (entries) {
+                var map = {};
+                return Promise.all(
+                    entries.map(function (entry) {
+                        var bytes =
+                            entry.method === 8
+                                ? inflateRaw(entry.data)
+                                : Promise.resolve(entry.data);
+                        return bytes.then(function (data) {
+                            var url = URL.createObjectURL(new Blob([data], { type: "image/png" }));
+                            previewUrls.push(url);
+                            map[entry.name] = url;
+                        });
+                    })
+                ).then(function () {
+                    return map;
+                });
+            })
+            .catch(function () {
+                return {};
+            });
+    }
+
+    function openLightbox(src, alt) {
+        var overlay = el(
+            "div",
+            "fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-zoom-out"
+        );
+        var stage = el("div", "rb-checkerboard rounded p-2");
+        var img = el("img", "max-h-[95vh] max-w-[95vw] object-contain");
+        img.src = src;
+        img.alt = alt || "cutout preview";
+        stage.appendChild(img);
+        overlay.appendChild(stage);
+        function close() {
+            document.removeEventListener("keydown", onKey);
+            overlay.remove();
+        }
+        function onKey(event) {
+            if (event.key === "Escape") close();
+        }
+        overlay.addEventListener("click", close);
+        document.addEventListener("keydown", onKey);
+        document.body.appendChild(overlay);
+    }
+
+    function checkerboardImg(src, alt, imgClass, wrapClass) {
+        var wrap = el("div", "rb-checkerboard rounded " + (wrapClass || ""));
+        var img = el("img", "object-contain cursor-zoom-in " + (imgClass || ""));
+        img.src = src;
+        img.alt = alt || "cutout preview";
+        img.title = "Click to enlarge";
+        img.addEventListener("click", function () {
+            openLightbox(src, alt);
+        });
+        wrap.appendChild(img);
+        return wrap;
+    }
+
+    function renderCard(item, previewUrl) {
         var card = el("div", "bg-gray-800/60 border border-gray-700 rounded p-3 space-y-1");
+        if (previewUrl) {
+            card.appendChild(
+                checkerboardImg(previewUrl, item.output_name, "h-64 mx-auto", "mb-2 p-1")
+            );
+        }
         card.appendChild(el("p", "text-sm font-medium text-gray-100 mb-1", item.output_name));
         card.appendChild(
             metadataRow("Dimensions", item.width + " × " + item.height + " px")
@@ -86,6 +226,7 @@
     }
 
     function showSuccess(blob, isZip, manifest) {
+        releaseResults();
         objectUrl = URL.createObjectURL(blob);
         var items = manifest.converted || [];
         var name = isZip
@@ -97,9 +238,26 @@
             ? "Download ZIP (" + items.length + " files)"
             : "Download PNG";
 
-        metadataEl.textContent = "";
-        items.forEach(function (item) {
-            metadataEl.appendChild(renderCard(item));
+        if (!isZip) {
+            previewEl.appendChild(
+                checkerboardImg(
+                    objectUrl,
+                    items[0] && items[0].output_name,
+                    "max-h-[70vh] mx-auto",
+                    "border border-gray-700 p-2 flex justify-center"
+                )
+            );
+        }
+
+        var previewsReady = isZip
+            ? previewMapFromZip(blob)
+            : Promise.resolve({});
+
+        previewsReady.then(function (previewMap) {
+            items.forEach(function (item) {
+                var url = isZip ? previewMap[item.output_name] : null;
+                metadataEl.appendChild(renderCard(item, url));
+            });
         });
 
         skippedEl.textContent = "";
@@ -198,14 +356,15 @@
             );
             return;
         }
+        lastFiles = sendable;
+        lastSkipped = skipped;
         upload(sendable, skipped);
     }
 
     function reset() {
-        if (objectUrl) {
-            URL.revokeObjectURL(objectUrl);
-            objectUrl = null;
-        }
+        releaseResults();
+        lastFiles = [];
+        lastSkipped = [];
         fileInput.value = "";
         dropzone.classList.remove.apply(dropzone.classList, DRAG_CLASSES);
         setState("idle");
@@ -259,5 +418,8 @@
     });
 
     againBtn.addEventListener("click", reset);
+    rerunBtn.addEventListener("click", function () {
+        if (!busy && lastFiles.length) upload(lastFiles, lastSkipped);
+    });
     retryBtn.addEventListener("click", reset);
 })();

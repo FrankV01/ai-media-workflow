@@ -25,6 +25,8 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from starlette.types import Scope
 
 from app.api import background_removal as bg_removal_router
 from app.api import blocks as block_router
@@ -36,6 +38,15 @@ from app.blocks.registry import discover_blocks
 from app.config import settings
 from app.database import init_db
 from app.web.routes import router as web_router
+
+# Uvicorn only attaches handlers to its own loggers — without this, app.*
+# loggers' INFO records are silently dropped. Scoped to the "app" namespace
+# (not root) so library loggers like sqlalchemy don't double-print.
+_handler = logging.StreamHandler()
+_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+_app_logger = logging.getLogger("app")
+_app_logger.addHandler(_handler)
+_app_logger.setLevel(settings.log_level.upper())
 
 logger = logging.getLogger(__name__)
 
@@ -152,5 +163,15 @@ app.include_router(
 )
 app.include_router(web_router)  # serves HTML at /
 
+
 # --- Static files ---
-app.mount("/static", StaticFiles(directory="app/web/static"), name="static")
+class DevStaticFiles(StaticFiles):
+    """StaticFiles that forces revalidation so the browser never serves stale JS/CSS."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["cache-control"] = "no-cache"
+        return response
+
+
+app.mount("/static", DevStaticFiles(directory="app/web/static"), name="static")

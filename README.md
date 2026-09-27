@@ -156,7 +156,11 @@ tolerance slider (default 15 — raise it if background specks remain), a 1px
 edge feather by default, Contiguous vs Global fill (contiguous only
 removes background touching the image edges, preserving same-color details
 inside the subject), plus optional erode/contract and despill edge polish. Every setting has an inline description and a Contiguous-vs-Global
-quick guide. Same 25 MB / 20-file / 100 MP limits as `/convert`. The same
+quick guide. Same 25 MB / 20-file / 100 MP limits as `/convert`. Results
+preview over a transparency checkerboard — the single PNG directly, batch
+thumbnails extracted from the returned ZIP in the browser (click a preview
+to inspect it near-fullscreen) — and a Re-run
+button re-processes the same files after tweaking settings. The same
 logic powers the `background_remover` pipeline block (below) — add it to a
 workflow to cut backgrounds out of generated images automatically; its
 settings are stored per-workflow under the Block Settings section of
