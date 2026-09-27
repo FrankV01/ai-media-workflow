@@ -153,6 +153,19 @@ def test_social_media_specialist_post_parsing_fallback():
     assert posts == []
 
 
+def test_social_media_specialist_post_parsing_mixed_markdown():
+    """Posts still extract when the model returns the markdown+JSON contract."""
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+
+    specialist = SocialMediaSpecialist()
+    raw = "## Markdown\n\n**Title**: Hi\n\n---\n\n## JSON\n\n" + json.dumps(
+        {"posts": [{"platform": "image feed", "title": "Hi"}]}
+    )
+    posts = specialist._extract_posts(raw)
+    assert len(posts) == 1
+    assert posts[0]["platform"] == "image feed"
+
+
 def test_social_media_prompt_is_generic():
     from app.blocks.social_media_specialist import SOCIAL_MEDIA_SYSTEM_PROMPT
 
@@ -173,31 +186,34 @@ def test_social_media_prompt_is_generic():
 
 
 def test_social_media_output_contract_contains_schema():
-    from app.blocks.prompt_architect import build_output_contract
     from app.blocks.social_media_specialist import (
-        SOCIAL_MEDIA_RESPONSE_SCHEMA,
         SOCIAL_MEDIA_SYSTEM_PROMPT,
+        build_output_contract,
     )
 
-    contract = build_output_contract(SOCIAL_MEDIA_SYSTEM_PROMPT, SOCIAL_MEDIA_RESPONSE_SCHEMA)
-    assert "Respond with ONLY a JSON object" in contract
-    keys = ("posts", "licensing", "brand_voice", "campaign_tags", "seo_keywords", "summary")
-    for key in keys:
+    contract = build_output_contract(SOCIAL_MEDIA_SYSTEM_PROMPT)
+    assert "## Markdown" in contract
+    assert "**Title**:" in contract
+    assert "---" in contract
+    assert "## JSON" in contract
+    for key in ("posts", "platform", "title", "description", "tags"):
         assert f'"{key}"' in contract
+    for dropped in ("licensing", "brand_voice", "campaign_tags", "seo_keywords", "alt_text"):
+        assert f'"{dropped}"' not in contract
     for vendor in ("instagram", "twitter", "adobe"):
         assert vendor not in contract.lower()
 
 
 def test_social_media_output_contract_merges_user_json():
     """User JSON redefines official keys and adds keys; official keys remain."""
-    from app.blocks.prompt_architect import build_output_contract
-    from app.blocks.social_media_specialist import SOCIAL_MEDIA_RESPONSE_SCHEMA
+    from app.blocks.social_media_specialist import build_output_contract
 
     prompt = 'Custom strategist. Return {"summary": "<one line>", "extra_key": "<x>"}'
-    contract = build_output_contract(prompt, SOCIAL_MEDIA_RESPONSE_SCHEMA)
+    contract = build_output_contract(prompt)
     assert "<one line>" in contract
     assert '"posts"' in contract
     assert '"extra_key"' in contract
+    assert "## Markdown" in contract
 
 
 @pytest.mark.asyncio
@@ -224,8 +240,9 @@ async def test_social_media_appends_contract_to_resolved_prompt():
     specialist = SocialMediaSpecialist(provider=_StubProvider())
     resolved = await specialist.resolve_configuration({})
     assert resolved.system_prompt.startswith("You are a custom strategist.")
-    assert '"licensing"' in resolved.system_prompt
-    assert "Respond with ONLY a JSON object" in resolved.system_prompt
+    assert "## Markdown" in resolved.system_prompt
+    assert "## JSON" in resolved.system_prompt
+    assert '"posts"' in resolved.system_prompt
 
 
 # ── Art Critic block tests ─────────────────────────────────────────────
@@ -1035,8 +1052,8 @@ async def test_social_media_specialist_chains_into_report(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_social_media_report_renders_licensing(monkeypatch, tmp_path):
-    """Licensing entries in the specialist output get their own report section."""
+async def test_social_media_report_renders_lead_markdown(monkeypatch, tmp_path):
+    """The specialist's markdown lead post renders ahead of the JSON block."""
     from app.config import settings
 
     monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
@@ -1044,14 +1061,15 @@ async def test_social_media_report_renders_licensing(monkeypatch, tmp_path):
         "photo_shoot_name": "Cyber Chic",
         "_job_id": 11,
         "_job_created_date": "2026-09-23",
-        "social_media_specialist_output": json.dumps(
-            {
-                "posts": [{"platform": "image feed", "title": "Hi"}],
-                "licensing": [{"platform": "stock marketplace", "title": "Neon Portrait"}],
-                "summary": "x",
-            }
+        "social_media_specialist_output": (
+            "## Markdown\n\n"
+            "**Title**: Neon Portrait\n\n"
+            "**Description**: A cyber-chic portrait.\n\n"
+            "**Tags**: neon, cyber\n\n"
+            "---\n\n## JSON\n\n"
+            + json.dumps({"posts": [{"platform": "image feed", "title": "Neon Portrait"}]})
         ),
-        "social_media_posts": [{"platform": "image feed", "title": "Hi"}],
+        "social_media_posts": [{"platform": "image feed", "title": "Neon Portrait"}],
         "generated_images": [str(tmp_path / "a_1x.png")],
     }
 
@@ -1060,6 +1078,7 @@ async def test_social_media_report_renders_licensing(monkeypatch, tmp_path):
 
     report_path = tmp_path / "2026-09-23" / "cyber-chic" / "job11" / "social_media_specialist.md"
     text = report_path.read_text(encoding="utf-8")
-    assert "## Licensing" in text
-    assert "### stock marketplace" in text
+    assert "**Title**: Neon Portrait" in text
+    assert "### image feed" in text
+    assert "## Licensing" not in text
     assert result["social_media_report_path"].endswith("social_media_specialist.md")

@@ -11,18 +11,19 @@ She has access to:
 - The generation results and file paths (Media Producer)
 - The quality critique and verdict (Art Critic)
 
-From these she produces structured JSON with marketing content for two
-channel categories: per-channel social media post suggestions and listing
-metadata for content licensing platforms.
+From these she produces a Markdown lead post followed by structured JSON:
+a per-channel list of post suggestions covering social channels and content
+licensing marketplaces alike.
 
-The JSON response contract is defined in code (SOCIAL_MEDIA_RESPONSE_SCHEMA)
-and appended to the resolved system prompt at run time, so it applies to
-default and customized prompts alike. Any JSON object embedded in a custom
-prompt is merged over the schema — official key names always remain.
+The response contract is defined in code (SOCIAL_MEDIA_MARKDOWN_TEMPLATE +
+SOCIAL_MEDIA_RESPONSE_SCHEMA) and appended to the resolved system prompt at
+run time, so it applies to default and customized prompts alike. Any JSON
+object embedded in a custom prompt is merged over the schema — official key
+names always remain.
 
 Input:  Full pipeline context (all *_output keys + generated_images)
-Output: context["brief"] — human-readable summary
-        context["social_media_specialist_output"] — full JSON marketing content
+Output: context["brief"] — human-readable summary (Markdown + JSON)
+        context["social_media_specialist_output"] — full marketing content
         context["social_media_posts"] — parsed list of post dicts
 
 Suggested next role: None (terminal for now)
@@ -36,7 +37,7 @@ from dataclasses import replace
 from typing import Any
 
 from app.blocks.base import BlockMeta
-from app.blocks.prompt_architect import build_output_contract
+from app.blocks.prompt_architect import build_output_contract as _build_contract
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
 from app.services.configuration.base import ResolvedLlmConfiguration
@@ -54,15 +55,15 @@ You will receive a complete production dossier containing:
 3. A summary of the generated assets (including file paths)
 4. A quality critique from the Art Critic
 
-Your task is to create marketing content for the generated assets across two \
-categories of distribution channels:
+Your task is to create one post suggestion per distribution channel — social \
+feeds, microblogs, and content licensing marketplaces alike:
 
 - **Social media** — post suggestions tailored to each channel's conventions: \
 format, caption length, tag usage, and tone. Each post should feel native to \
 its channel, not like a cross-post.
-- **Content licensing platforms** — listing metadata for each asset: a concise \
-descriptive title, an accurate description grounded in the visible content, \
-relevant search keywords, and a suggested category.
+- **Content licensing platforms** — listing-style posts: a concise descriptive \
+title, an accurate description grounded in the visible content, and relevant \
+search keywords as tags.
 
 Guidelines:
 - Adapt tone, length, and format to each channel rather than reusing identical copy.
@@ -75,37 +76,38 @@ brands, people, or copyrighted works; describe qualities generically.
 Be creative, authentic, and strategic.\
 """
 
+SOCIAL_MEDIA_MARKDOWN_TEMPLATE = """\
+## Markdown
+
+**Title**: <content title — descriptive, punchy and attention-grabbing>
+**Description**: <full post caption/body text, channel-appropriate length>
+**Tags**: <hashtag or topic tag>, <hashtag or topic tag>, <etc>\
+"""
+
 SOCIAL_MEDIA_RESPONSE_SCHEMA: dict[str, Any] = {
     "posts": [
         {
-            "platform": "<social channel name or type, e.g. image feed, microblog, "
-            "professional network, short-video app>",
-            "title": "<post title or headline — punchy and attention-grabbing>",
+            "platform": "<image feed, microblog, stock-marketplace>",
+            "title": "<content title — descriptive, punchy and attention-grabbing>",
             "description": "<full post caption/body text, channel-appropriate length>",
             "tags": ["<hashtag or topic tag>", "..."],
-            "alt_text": "<accessibility alt-text describing the image>",
-            "suggested_time": "<best posting time, e.g. 'Tuesday 10am'>",
-            "content_type": "<format suited to the channel: single image, carousel, "
-            "short video, story>",
-            "call_to_action": "<suggested CTA, e.g. 'Link in bio', 'Save for later'>",
-            "notes": "<channel-specific tips or considerations>",
         }
     ],
-    "licensing": [
-        {
-            "platform": "<content licensing platform or marketplace>",
-            "title": "<concise, descriptive asset title>",
-            "description": "<accurate listing description grounded in the visible content>",
-            "keywords": ["<relevant search keyword>", "..."],
-            "category": "<suggested asset category>",
-            "notes": "<platform-specific considerations>",
-        }
-    ],
-    "brand_voice": "<1-2 sentence summary of the tone/voice used>",
-    "campaign_tags": ["<3-5 overarching campaign tags>"],
-    "seo_keywords": ["<5-10 search keywords for discoverability>"],
-    "summary": "<brief executive summary of the marketing strategy>",
 }
+
+
+def build_output_contract(system_prompt: str) -> str:
+    """Return the Social Media Specialist's Markdown + JSON response contract.
+
+    SOCIAL_MEDIA_RESPONSE_SCHEMA: official key names always remain (they can't
+    be removed or renamed), while user values may redefine them and extra user
+    keys pass through.
+    """
+    return _build_contract(
+        system_prompt,
+        SOCIAL_MEDIA_RESPONSE_SCHEMA,
+        markdown_example=SOCIAL_MEDIA_MARKDOWN_TEMPLATE,
+    )
 
 
 @register
@@ -141,7 +143,7 @@ class SocialMediaSpecialist(RoleBlock):
     default_temperature = 0.7
 
     async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:
-        """Resolve the profile, then append the canonical JSON response contract.
+        """Resolve the profile, then append the Markdown + JSON response contract.
 
         The contract applies whether the prompt is the code default or a user
         customization, so the specialist's output stays parseable either way.
@@ -149,8 +151,7 @@ class SocialMediaSpecialist(RoleBlock):
         resolved = await super().resolve_configuration(context)
         return replace(
             resolved,
-            system_prompt=resolved.system_prompt
-            + build_output_contract(resolved.system_prompt, SOCIAL_MEDIA_RESPONSE_SCHEMA),
+            system_prompt=resolved.system_prompt + build_output_contract(resolved.system_prompt),
         )
 
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:

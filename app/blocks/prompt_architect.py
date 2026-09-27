@@ -125,16 +125,30 @@ def extract_json_object(raw: str) -> dict | None:
     return None
 
 
-def build_output_contract(system_prompt: str, schema: dict[str, Any]) -> str:
-    """Return a JSON response contract to append to a system prompt.
+def build_output_contract(
+    system_prompt: str, schema: dict[str, Any], *, markdown_example: str | None = None
+) -> str:
+    """Return a response contract to append to a system prompt.
 
     Any JSON object embedded in the prompt is merged over the canonical
     schema: official key names always remain (they can't be removed or
     renamed), while user values may redefine them and extra user keys
     pass through.
+
+    When markdown_example is given, the contract asks for a Markdown section
+    (a human-readable lead post) followed by an hr and the JSON object;
+    otherwise it asks for the JSON object alone.
     """
     user_schema = extract_json_object(system_prompt) or {}
     merged = {**schema, **user_schema}
+    if markdown_example is not None:
+        return (
+            "\n\nRespond with Markdown separated by an hr and then this JSON "
+            "in this exact format.\n\n"
+            + markdown_example.rstrip()
+            + "\n\n---\n\n## JSON\n\n"
+            + json.dumps(merged, indent=2)
+        )
     return (
         "\n\nRespond with ONLY a JSON object (no markdown fences, no preamble) "
         "using this exact structure:\n\n" + json.dumps(merged, indent=2)

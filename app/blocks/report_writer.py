@@ -29,6 +29,26 @@ def _json_block(raw: str) -> str:
     return "```\n" + str(raw).strip() + "\n```"
 
 
+def _lead_markdown(raw: str) -> str:
+    """Return the human-readable markdown preceding a JSON object, if any.
+
+    The social_media_specialist contract emits a Markdown lead post, then an
+    hr, then the JSON — strip the scaffolding headings/hr and keep the prose.
+    """
+    if not isinstance(raw, str) or "{" not in raw:
+        return ""
+    lead = raw.split("{", 1)[0].strip()
+    if not lead or lead.startswith("`"):
+        return ""
+    if lead.startswith("## Markdown"):
+        lead = lead[len("## Markdown") :].strip()
+    if lead.endswith("## JSON"):
+        lead = lead[: -len("## JSON")].strip()
+    if lead.endswith("---"):
+        lead = lead[:-3].strip()
+    return lead
+
+
 class MarkdownReportBlock(Block):
     """Base for blocks that write a markdown report into the job's output dir."""
 
@@ -154,12 +174,12 @@ class SocialMediaReport(MarkdownReportBlock):
             lines += [f"- `{p}`" for p in context["generated_images"]]
         else:
             lines.append("_No generated images recorded._")
-        lines += [
-            "",
-            "## Full Strategy",
-            "",
-            _json_block(context.get("social_media_specialist_output")),
-        ]
+        output = context.get("social_media_specialist_output")
+        lead = _lead_markdown(output)
+        lines += ["", "## Full Strategy", ""]
+        if lead:
+            lines += [lead, ""]
+        lines.append(_json_block(output))
 
         posts = context.get("social_media_posts") or []
         if posts:
@@ -170,19 +190,6 @@ class SocialMediaReport(MarkdownReportBlock):
                     f"### {post.get('platform') or 'unknown'}",
                     "",
                     "```json\n" + json.dumps(post, indent=2, ensure_ascii=False) + "\n```",
-                ]
-
-        output = context.get("social_media_specialist_output")
-        parsed = extract_json_object(output) if isinstance(output, str) else None
-        licensing = (parsed or {}).get("licensing") or []
-        if licensing:
-            lines += ["", "## Licensing"]
-            for entry in licensing:
-                lines += [
-                    "",
-                    f"### {entry.get('platform') or 'unknown'}",
-                    "",
-                    "```json\n" + json.dumps(entry, indent=2, ensure_ascii=False) + "\n```",
                 ]
 
         return "\n".join(lines).rstrip("\n") + "\n"
