@@ -31,13 +31,15 @@ Suggested next role: None (terminal for now)
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import replace
 from typing import Any
 
 from app.blocks.base import BlockMeta
-from app.blocks.prompt_architect import build_output_contract as _build_contract
+from app.blocks.output_contract import (
+    build_output_contract as _build_contract,
+    extract_json_object,
+)
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
 from app.services.configuration.base import ResolvedLlmConfiguration
@@ -93,6 +95,7 @@ SOCIAL_MEDIA_RESPONSE_SCHEMA: dict[str, Any] = {
             "tags": ["<hashtag or topic tag>", "..."],
         }
     ],
+    "summary": "<1-2 sentence overview of the posting strategy>",
 }
 
 
@@ -211,32 +214,10 @@ class SocialMediaSpecialist(RoleBlock):
 
     def _extract_posts(self, raw: str) -> list[dict]:
         """Extract the posts list from the LLM's JSON response."""
-        text = raw.strip()
-
-        # Strip markdown fences
-        if text.startswith("```"):
-            first_nl = text.index("\n")
-            text = text[first_nl + 1 :]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-
-        # Try direct parse
-        try:
-            data = json.loads(text)
-            return data.get("posts", [])
-        except json.JSONDecodeError:
-            pass
-
-        # Try finding JSON in text
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end > start:
-            try:
-                data = json.loads(text[start : end + 1])
-                return data.get("posts", [])
-            except json.JSONDecodeError:
-                pass
+        data = extract_json_object(raw)
+        if data is not None:
+            posts = data.get("posts", [])
+            return posts if isinstance(posts, list) else []
 
         logger.warning("SocialMediaSpecialist: could not parse posts JSON")
         return []

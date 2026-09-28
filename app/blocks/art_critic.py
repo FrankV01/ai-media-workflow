@@ -10,10 +10,11 @@ for conditional branching (on_good / on_bad / always). In the default
 workflow neither verdict attaches extra blocks — both fall through to the
 "always" branch (Social Media Specialist); there is no retry loop.
 
-The JSON response contract is defined in code (ART_CRITIC_RESPONSE_SCHEMA)
-and appended to the resolved system prompt at run time, so it applies to
-default and customized prompts alike. Any JSON object embedded in a custom
-prompt is merged over the schema — official key names always remain.
+The response contract is defined in code (ART_CRITIC_MARKDOWN_TEMPLATE +
+ART_CRITIC_RESPONSE_SCHEMA) and appended to the resolved system prompt at
+run time, so it applies to default and customized prompts alike. Any JSON
+object embedded in a custom prompt is merged over the schema — official key
+names always remain.
 
 Input:  context["brief"] — typically the media_producer summary + image paths
         context["art_director_output"] — original creative brief (for comparison)
@@ -27,13 +28,15 @@ Suggested next role: None — routing is handled by the pipeline engine
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import replace
 from typing import Any
 
 from app.blocks.base import BlockMeta
-from app.blocks.prompt_architect import build_output_contract as _build_contract
+from app.blocks.output_contract import (
+    build_output_contract as _build_contract,
+    extract_json_object,
+)
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
 from app.services.configuration.base import ResolvedLlmConfiguration
@@ -66,6 +69,13 @@ Scoring guidelines:
 Be honest but constructive. Even "good" work should receive specific feedback.\
 """
 
+ART_CRITIC_MARKDOWN_TEMPLATE = """\
+## Markdown
+
+<the critique as readable prose: an opening overall assessment, then what \
+works, what falls short, and concrete suggestions — a few short paragraphs>\
+"""
+
 ART_CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
     "verdict": '"good" or "bad"',
     "overall_score": "<1-10 integer>",
@@ -77,14 +87,18 @@ ART_CRITIC_RESPONSE_SCHEMA: dict[str, Any] = {
 
 
 def build_output_contract(system_prompt: str) -> str:
-    """Return the canonical JSON response contract to append to a system prompt.
+    """Return the canonical Markdown + JSON response contract.
 
     Any JSON object embedded in the prompt is merged over
     ART_CRITIC_RESPONSE_SCHEMA: official key names always remain (they can't
     be removed or renamed), while user values may redefine them and extra
     user keys pass through.
     """
-    return _build_contract(system_prompt, ART_CRITIC_RESPONSE_SCHEMA)
+    return _build_contract(
+        system_prompt,
+        ART_CRITIC_RESPONSE_SCHEMA,
+        markdown_example=ART_CRITIC_MARKDOWN_TEMPLATE,
+    )
 
 
 @register
@@ -111,7 +125,7 @@ class ArtCritic(RoleBlock):
     default_temperature = 0.4  # Lower temp for more consistent evaluations
 
     async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:
-        """Resolve the profile, then append the canonical JSON response contract.
+        """Resolve the profile, then append the Markdown + JSON response contract.
 
         The contract applies whether the prompt is the code default or a user
         customization, so the critic's output stays parseable either way.
@@ -164,46 +178,17 @@ class ArtCritic(RoleBlock):
     def _extract_verdict(self, raw: str) -> str:
         """Extract the verdict from the critic's JSON output.
 
-        Falls back to text analysis if JSON parsing fails.
+        Falls back to 'bad' if the JSON object can't be found or parsed.
         """
-        text = raw.strip()
-
-        # Strip markdown fences
-        if text.startswith("```"):
-            first_nl = text.index("\n")
-            text = text[first_nl + 1 :]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-
-        # Try JSON parse
-        try:
-            data = json.loads(text)
-            verdict = data.get("verdict", "").lower().strip()
-            if verdict in ("good", "bad"):
-                return verdict
-
+        data = extract_json_object(raw)
+        if data is not None:
+            verdict = data.get("verdict", "")
+            if isinstance(verdict, str) and verdict.lower().strip() in ("good", "bad"):
+                return verdict.lower().strip()
             # Fallback: derive from overall_score
             score = data.get("overall_score", 0)
             if isinstance(score, (int, float)) and score >= 6:
                 return "good"
-            return "bad"
-        except (json.JSONDecodeError, AttributeError):
-            pass
-
-        # Try finding JSON block in text
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end > start:
-            try:
-                data = json.loads(text[start : end + 1])
-                verdict = data.get("verdict", "").lower().strip()
-                if verdict in ("good", "bad"):
-                    return verdict
-                score = data.get("overall_score", 0)
-                return "good" if isinstance(score, (int, float)) and score >= 6 else "bad"
-            except (json.JSONDecodeError, AttributeError):
-                pass
 
         logger.warning("ArtCritic: could not parse verdict, defaulting to 'bad'")
         return "bad"

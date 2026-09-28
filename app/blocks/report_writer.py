@@ -3,30 +3,70 @@ app.blocks.report_writer — markdown report writer blocks
 
 Non-LLM blocks that render prior role output as markdown files written
 next to the generated images (IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/).
+Role output is rendered as markdown — JSON payloads are converted to
+markdown fields/lists rather than embedded verbatim; output that already
+is prose/markdown (or fails to parse) is emitted as-is.
 
 Input:  context[source_key] (role output), generated_images / generation_metadata
 Output: {path_key} — absolute path of the written report — and report_files,
         the accumulated list of report paths the engine persists to the Job.
 """
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from app.blocks.base import Block, BlockMeta
-from app.blocks.prompt_architect import extract_json_object
+from app.blocks.output_contract import extract_json_object
 from app.blocks.registry import register
 from app.config import settings
 from app.pipeline.naming import output_subdir
 
 
-def _json_block(raw: str) -> str:
-    """Pretty-printed ```json fence when parseable, plain fence otherwise."""
-    parsed = extract_json_object(raw) if isinstance(raw, str) else None
-    if parsed is not None:
-        return "```json\n" + json.dumps(parsed, indent=2, ensure_ascii=False) + "\n```"
-    return "```\n" + str(raw).strip() + "\n```"
+def _md_key(key: str) -> str:
+    """'overall_score' -> 'Overall Score'."""
+    return key.replace("_", " ").title()
+
+
+def _md_scalar(value: Any) -> str:
+    return "—" if value is None else str(value)
+
+
+def _json_to_markdown(value: Any, depth: int = 0) -> list[str]:
+    """Render a JSON-decoded value as markdown lines (no code fences).
+
+    dict keys become `- **Label:**` bullet items, lists nest as sub-bullets,
+    scalars render inline; unknown/extra keys from custom prompt schemas
+    pass through. Every field is a bullet so lines don't collapse into a
+    single paragraph when the markdown is rendered.
+    """
+    indent = "  " * depth
+    if isinstance(value, dict):
+        lines = []
+        for key, val in value.items():
+            label = f"{indent}- **{_md_key(key)}:**"
+            if isinstance(val, (dict, list)):
+                if not val:
+                    lines.append(f"{label} —")
+                else:
+                    lines.append(label)
+                    lines += _json_to_markdown(val, depth + 1)
+            else:
+                lines.append(f"{label} {_md_scalar(val)}")
+        return lines
+    if isinstance(value, list):
+        lines = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                sub = _json_to_markdown(item, depth + 1)
+                if sub:
+                    first = sub[0].lstrip()
+                    lines.append(f"{indent}- {first.removeprefix('- ')}")
+                    lines += sub[1:]
+            else:
+                lines.append(f"{indent}- {_md_scalar(item)}")
+        return lines
+    return [f"{indent}- {_md_scalar(value)}"]
 
 
 def _lead_markdown(raw: str) -> str:
@@ -112,9 +152,18 @@ class ArtCriticReport(MarkdownReportBlock):
             "",
             "## Critique",
             "",
-            _json_block(context.get("art_critic_output")),
-            "",
         ]
+
+        output = context.get("art_critic_output")
+        lead = _lead_markdown(output)
+        if lead:
+            lines += [lead, ""]
+        parsed = extract_json_object(output) if isinstance(output, str) else None
+        if parsed is not None:
+            lines += _json_to_markdown({k: v for k, v in parsed.items() if k != "verdict"})
+        elif not lead:
+            lines.append(str(output).strip())
+        lines.append("")
 
         critique_note = (
             "Critique: see the shared critique above — the Art Critic evaluates the set as a whole."
@@ -174,14 +223,23 @@ class SocialMediaReport(MarkdownReportBlock):
             lines += [f"- `{p}`" for p in context["generated_images"]]
         else:
             lines.append("_No generated images recorded._")
+
         output = context.get("social_media_specialist_output")
-        lead = _lead_markdown(output)
+        posts = context.get("social_media_posts") or []
+
         lines += ["", "## Full Strategy", ""]
+        lead = _lead_markdown(output)
         if lead:
             lines += [lead, ""]
-        lines.append(_json_block(output))
+        parsed = extract_json_object(output) if isinstance(output, str) else None
+        if parsed is not None:
+            # posts render under "## Posts"; everything else (summary, custom
+            # schema keys) renders here as markdown fields
+            skip = {"posts"} if posts else set()
+            lines += _json_to_markdown({k: v for k, v in parsed.items() if k not in skip})
+        elif not lead:
+            lines.append(str(output).strip())
 
-        posts = context.get("social_media_posts") or []
         if posts:
             lines += ["", "## Posts"]
             for post in posts:
@@ -189,7 +247,7 @@ class SocialMediaReport(MarkdownReportBlock):
                     "",
                     f"### {post.get('platform') or 'unknown'}",
                     "",
-                    "```json\n" + json.dumps(post, indent=2, ensure_ascii=False) + "\n```",
+                    *_json_to_markdown({k: v for k, v in post.items() if k != "platform"}),
                 ]
 
         return "\n".join(lines).rstrip("\n") + "\n"

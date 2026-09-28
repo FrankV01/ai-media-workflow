@@ -43,7 +43,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.blocks.base import Block, BlockMeta
-from app.blocks.prompt_architect import extract_json_object
+from app.blocks.output_contract import extract_json_object
 from app.blocks.registry import register
 from app.config import settings
 from app.pipeline.naming import output_subdir

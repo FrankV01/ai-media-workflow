@@ -196,7 +196,7 @@ def test_social_media_output_contract_contains_schema():
     assert "**Title**:" in contract
     assert "---" in contract
     assert "## JSON" in contract
-    for key in ("posts", "platform", "title", "description", "tags"):
+    for key in ("posts", "platform", "title", "description", "tags", "summary"):
         assert f'"{key}"' in contract
     for dropped in ("licensing", "brand_voice", "campaign_tags", "seo_keywords", "alt_text"):
         assert f'"{dropped}"' not in contract
@@ -292,6 +292,18 @@ def test_art_critic_verdict_markdown_fenced():
     assert critic._extract_verdict(raw) == "good"
 
 
+def test_art_critic_verdict_markdown_lead():
+    """Verdict parses when the contract's markdown lead precedes the JSON."""
+    from app.blocks.art_critic import ArtCritic
+
+    critic = ArtCritic()
+    raw = (
+        "## Markdown\n\nA cohesive set with confident lighting.\n\n---\n\n## JSON\n\n"
+        + json.dumps({"verdict": "bad", "overall_score": 4})
+    )
+    assert critic._extract_verdict(raw) == "bad"
+
+
 def test_art_critic_verdict_fallback_to_bad():
     """Unparseable output should default to bad (conservative)."""
     from app.blocks.art_critic import ArtCritic
@@ -312,11 +324,13 @@ def test_art_critic_output_contract_contains_schema():
     from app.blocks.art_critic import ART_CRITIC_SYSTEM_PROMPT, build_output_contract
 
     contract = build_output_contract(ART_CRITIC_SYSTEM_PROMPT)
-    assert "Respond with ONLY a JSON object" in contract
+    assert "## Markdown" in contract
+    assert "---" in contract
+    assert "## JSON" in contract
     keys = ("verdict", "overall_score", "strengths", "weaknesses", "recommendations", "summary")
     for key in keys:
         assert f'"{key}"' in contract
-    assert "critique" not in contract
+    assert '"critique"' not in contract
 
 
 def test_art_critic_output_contract_merges_user_json():
@@ -356,7 +370,8 @@ async def test_art_critic_appends_contract_to_resolved_prompt():
     resolved = await critic.resolve_configuration({})
     assert resolved.system_prompt.startswith("You are a custom critic.")
     assert '"verdict"' in resolved.system_prompt
-    assert "Respond with ONLY a JSON object" in resolved.system_prompt
+    assert "## Markdown" in resolved.system_prompt
+    assert "## JSON" in resolved.system_prompt
 
 
 def test_media_producer_suggests_art_critic():
@@ -622,7 +637,7 @@ def test_validate_prompt_output_blank_values():
 
 
 def test_extract_json_object_fenced_and_preamble():
-    from app.blocks.prompt_architect import extract_json_object
+    from app.blocks.output_contract import extract_json_object
 
     assert extract_json_object('```json\n{"a": 1}\n```') == {"a": 1}
     assert extract_json_object('Sure! {"a": 1} done') == {"a": 1}
@@ -818,10 +833,10 @@ def test_prompt_architect_prompt_is_generic():
 
 
 def test_prompt_architect_output_contract_contains_schema():
+    from app.blocks.output_contract import build_output_contract
     from app.blocks.prompt_architect import (
         PROMPT_ARCHITECT_RESPONSE_SCHEMA,
         PROMPT_ARCHITECT_SYSTEM_PROMPT,
-        build_output_contract,
     )
 
     contract = build_output_contract(
@@ -843,10 +858,8 @@ def test_prompt_architect_output_contract_contains_schema():
 
 def test_prompt_architect_output_contract_merges_user_json():
     """User JSON redefines official keys and adds keys; official keys remain."""
-    from app.blocks.prompt_architect import (
-        PROMPT_ARCHITECT_RESPONSE_SCHEMA,
-        build_output_contract,
-    )
+    from app.blocks.output_contract import build_output_contract
+    from app.blocks.prompt_architect import PROMPT_ARCHITECT_RESPONSE_SCHEMA
 
     prompt = 'Custom architect. Return {"positive_prompt": "<short punchy>", "extra_key": "<x>"}'
     contract = build_output_contract(prompt, PROMPT_ARCHITECT_RESPONSE_SCHEMA)
@@ -890,6 +903,32 @@ def test_report_blocks_registered():
         assert cls.meta.category == "utility"
 
 
+def test_json_to_markdown_renders_fields():
+    """JSON values render as markdown fields/bullets — never braces or fences."""
+    from app.blocks.report_writer import _json_to_markdown
+
+    lines = _json_to_markdown(
+        {
+            "overall_score": 8,
+            "strengths": ["composition", "lighting"],
+            "details": {"seed": 42},
+            "variants": [{"name": "wide", "positive_prompt": "x"}],
+            "empty": [],
+            "nothing": None,
+        }
+    )
+    text = "\n".join(lines)
+    assert "**Overall Score:** 8" in text
+    assert "**Strengths:**" in text
+    assert "  - composition" in text
+    assert "**Details:**" in text
+    assert "  - **Seed:** 42" in text
+    assert "- **Name:** wide" in text
+    assert "**Empty:** —" in text
+    assert "**Nothing:** —" in text
+    assert "{" not in text and "```" not in text
+
+
 @pytest.mark.asyncio
 async def test_art_critic_report_writes_markdown(monkeypatch, tmp_path):
     from app.config import settings
@@ -920,7 +959,9 @@ async def test_art_critic_report_writes_markdown(monkeypatch, tmp_path):
     assert path.exists()
     text = path.read_text(encoding="utf-8")
     assert "## Critique" in text
-    assert "```json" in text
+    assert "```" not in text
+    assert "**Overall Score:** 8" in text
+    assert "**Summary:** Nice" in text
     assert "## a_1x.png" in text
     assert "## a_2x.png" in text
     assert "**good**" in text
@@ -951,6 +992,35 @@ async def test_art_critic_report_non_json_fallback(monkeypatch, tmp_path):
     assert "_No generated images recorded._" in text
     assert "```json" not in text
     assert result["report_files"] == [str(path)]
+
+
+@pytest.mark.asyncio
+async def test_art_critic_report_renders_lead_markdown(monkeypatch, tmp_path):
+    """The critic's markdown lead renders ahead of the JSON-derived fields."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    context = {
+        "photo_shoot_name": "Cyber Chic",
+        "_job_id": 12,
+        "_job_created_date": "2026-09-23",
+        "art_critic_output": (
+            "## Markdown\n\nA cohesive, striking set with confident lighting.\n\n"
+            "---\n\n## JSON\n\n"
+            + json.dumps({"verdict": "good", "overall_score": 8, "summary": "Nice"})
+        ),
+        "art_critic_verdict": "good",
+    }
+
+    block = get_block("art_critic_report")()
+    result = await block.run(context)
+
+    path = tmp_path / "2026-09-23" / "cyber-chic" / "job12" / "art_critic_report.md"
+    text = path.read_text(encoding="utf-8")
+    assert "A cohesive, striking set with confident lighting." in text
+    assert "- **Overall Score:** 8" in text
+    assert "```" not in text
+    assert result["art_critic_report_path"] == str(path)
 
 
 @pytest.mark.asyncio
@@ -989,8 +1059,11 @@ async def test_social_media_report_writes_markdown(monkeypatch, tmp_path):
     text = path.read_text(encoding="utf-8")
     assert "## Assets" in text
     assert "## Full Strategy" in text
+    assert "**Summary:** x" in text
+    assert "```" not in text
     assert "## Posts" in text
     assert "### instagram" in text
+    assert "**Title:** Hi" in text
     assert "### twitter" in text
     assert result["report_files"] == ["/prev/report.md", str(path)]
 
