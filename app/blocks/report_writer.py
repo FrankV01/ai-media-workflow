@@ -1,17 +1,24 @@
 """
 app.blocks.report_writer — markdown report writer blocks
 
-Non-LLM blocks that render prior role output as markdown files written
+Non-LLM blocks that render prior pipeline output as markdown files written
 next to the generated images (IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/).
 Role output is rendered as markdown — JSON payloads are converted to
 markdown fields/lists rather than embedded verbatim; output that already
-is prose/markdown (or fails to parse) is emitted as-is.
+is prose/markdown (or fails to parse) is emitted as-is. The media producer
+report renders the recorded generation settings (resolved media profile +
+effective per-request parameters) from context["_media_executions"], and
+the LLM report renders the effective per-role LLM settings (model, sampling
+parameters, thinking flag, full system prompt) from context["_executions"].
 
-Input:  context[source_key] (role output), generated_images / generation_metadata
+Input:  context[source_key] (role output or media/LLM execution records),
+        generated_images / generation_metadata
 Output: {path_key} — absolute path of the written report — and report_files,
         the accumulated list of report paths the engine persists to the Job.
 """
 
+import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -250,4 +257,225 @@ class SocialMediaReport(MarkdownReportBlock):
                     *_json_to_markdown({k: v for k, v in post.items() if k != "platform"}),
                 ]
 
+        return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _parse_json(value: Any) -> Any:
+    """Decode a JSON string field; pass dicts/lists through, else None."""
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return None
+
+
+# Request-default keys of a media profile; any other profile key is a
+# backend workflow field (ComfyUI refiner/upscale settings).
+_REQUEST_DEFAULT_KEYS = (
+    "width",
+    "height",
+    "cfg_scale",
+    "steps",
+    "sampler",
+    "scheduler",
+    "clip_skip",
+)
+
+
+@register
+class MediaProducerReport(MarkdownReportBlock):
+    meta = BlockMeta(
+        name="media_producer_report",
+        description=(
+            "Writes the resolved generation settings (media profile and "
+            "effective per-request parameters) to media_producer_report.md "
+            "alongside the generated images"
+        ),
+        version="0.1.0",
+        category="utility",
+        inputs=["_media_executions", "generated_images"],
+        outputs=["media_producer_report_path", "report_files"],
+    )
+    filename = "media_producer_report.md"
+    source_key = "_media_executions"
+    path_key = "media_producer_report_path"
+
+    @staticmethod
+    def _profile_lines(profile: dict[str, Any]) -> list[str]:
+        """Resolved media profile: request defaults, then backend workflow fields."""
+        defaults = {k: profile.get(k) for k in _REQUEST_DEFAULT_KEYS if k in profile}
+        lines = ["### Request Defaults", "", *_json_to_markdown(defaults)]
+        workflow_fields = {
+            k: v for k, v in profile.items() if k not in _REQUEST_DEFAULT_KEYS and v is not None
+        }
+        if workflow_fields:
+            lines += ["", "### Backend Workflow Fields", "", *_json_to_markdown(workflow_fields)]
+        lines.append("")
+        return lines
+
+    def _request_lines(
+        self,
+        record: dict[str, Any],
+        snapshot: dict[str, Any],
+        shared: tuple[dict[str, Any], Any],
+    ) -> list[str]:
+        shared_record, shared_profile = shared
+        variant = record.get("variant_name") or "main"
+        status = record.get("status") or "unknown"
+        lines = ["", f"### `{variant}` — {status}", ""]
+
+        # Effective parameters dispatched to the backend (the Media Producer
+        # already merged any Prompt Architect `parameters` overrides in)
+        request = snapshot.get("request")
+        if isinstance(request, dict) and request:
+            lines += _json_to_markdown(request)
+        lines.append(f"- **Seed Used:** {_md_scalar(record.get('seed_used'))}")
+
+        started, finished = record.get("started_at"), record.get("finished_at")
+        if isinstance(started, datetime) and isinstance(finished, datetime):
+            lines.append(f"- **Duration:** {(finished - started).total_seconds():.2f}s")
+
+        if status != "completed" and (record.get("error") or record.get("error_type")):
+            error = " ".join(p for p in (record.get("error_type"), record.get("error")) if p)
+            lines.append(f"- **Error:** {error}")
+
+        # Backend/model/profile normally match the run header — flag
+        # deviations (e.g. multiple media-producing blocks in one workflow)
+        for key, label in (("backend_name", "Backend"), ("model_name", "Model")):
+            if record.get(key) and record.get(key) != shared_record.get(key):
+                lines.append(f"- **{label}:** {record[key]}")
+        profile = snapshot.get("profile")
+        if isinstance(profile, dict) and profile != shared_profile:
+            lines += ["", "#### Variant Profile (differs from the shared profile)", ""]
+            lines += self._profile_lines(profile)
+
+        images = _parse_json(record.get("image_paths")) or []
+        if images:
+            lines.append("- **Images:**")
+            lines += [f"  - `{p}`" for p in images]
+
+        metadata = _parse_json(record.get("backend_metadata"))
+        if isinstance(metadata, dict) and metadata:
+            lines.append("- **Backend Metadata:**")
+            lines += _json_to_markdown(metadata, depth=1)
+
+        return lines
+
+    def _render(self, context: dict[str, Any]) -> str:
+        records = context.get(self.source_key) or []
+        if not records:
+            lines = self._header(context, "Media Producer Report")
+            return "\n".join(lines) + "\n\n_No generation requests recorded._\n"
+        snapshots = [_parse_json(r.get("settings_snapshot")) or {} for r in records]
+        lines = self._header(context, "Media Producer Report")
+
+        first = records[0]
+        lines += [
+            f"- Backend: {_md_scalar(first.get('backend_name'))}",
+            f"- Model: {_md_scalar(first.get('model_name'))}",
+            f"- Configuration Source: {_md_scalar(first.get('configuration_source'))}",
+        ]
+        if first.get("configuration_id") is not None:
+            lines.append(f"- Configuration ID: {first['configuration_id']}")
+        lines.append("")
+
+        shared_profile = snapshots[0].get("profile")
+        if isinstance(shared_profile, dict) and shared_profile:
+            lines += ["## Media Profile", ""]
+            lines += self._profile_lines(shared_profile)
+
+        lines.append("## Requests")
+        shared = (first, shared_profile)
+        for record, snapshot in zip(records, snapshots):
+            lines += self._request_lines(record, snapshot, shared)
+        return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _fence(text: str) -> str:
+    """Return a backtick fence one longer than the longest backtick run in
+    text (minimum 3), so prompts containing code fences still render."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+@register
+class LlmReport(MarkdownReportBlock):
+    meta = BlockMeta(
+        name="llm_report",
+        description=(
+            "Writes the effective LLM settings (model, temperature, "
+            "max_tokens, thinking, system prompt) of every role call to "
+            "llm_report.md alongside the generated images"
+        ),
+        version="0.1.0",
+        category="utility",
+        inputs=["_executions"],
+        outputs=["llm_report_path", "report_files"],
+    )
+    filename = "llm_report.md"
+    source_key = "_executions"
+    path_key = "llm_report_path"
+
+    def _render(self, context: dict[str, Any]) -> str:
+        records = context.get(self.source_key) or []
+        if not records:
+            lines = self._header(context, "LLM Report")
+            return "\n".join(lines) + "\n\n_No LLM calls recorded._\n"
+        lines = self._header(context, "LLM Report")
+        lines += [
+            f"- Endpoint: {settings.llm_base_url} (environment)",
+            f"- Request Timeout: {settings.llm_timeout:g}s (environment)",
+            "",
+            "## Roles",
+        ]
+        for record in records:
+            status = record.get("status") or "unknown"
+            lines += [
+                "",
+                f"### `{record.get('role_name') or 'unknown'}` — "
+                f"{_md_scalar(record.get('role_title'))} — {status}",
+                "",
+                f"- **Model:** {_md_scalar(record.get('model_used'))}",
+                f"- **Temperature:** {_md_scalar(record.get('temperature'))}",
+                f"- **Max Tokens:** {_md_scalar(record.get('max_tokens'))}",
+                "- **Thinking:** "
+                + ("enabled" if record.get("reasoning_effort") is None else "disabled"),
+                f"- **Configuration Source:** {_md_scalar(record.get('configuration_source'))}",
+            ]
+            if record.get("configuration_id") is not None:
+                lines.append(f"- **Configuration ID:** {record['configuration_id']}")
+            lines.append(f"- **Output Format:** {_md_scalar(record.get('output_format'))}")
+            if record.get("suggested_next_role"):
+                lines.append(f"- **Suggested Next Role:** {record['suggested_next_role']}")
+            if record.get("total_tokens") is not None:
+                lines.append(
+                    f"- **Tokens:** {_md_scalar(record.get('prompt_tokens'))} prompt + "
+                    f"{_md_scalar(record.get('completion_tokens'))} completion = "
+                    f"{record['total_tokens']} total"
+                )
+            if record.get("finish_reason"):
+                lines.append(f"- **Finish Reason:** {record['finish_reason']}")
+            started, finished = record.get("started_at"), record.get("finished_at")
+            if isinstance(started, datetime) and isinstance(finished, datetime):
+                lines.append(f"- **Duration:** {(finished - started).total_seconds():.2f}s")
+            if status != "completed" and (record.get("error") or record.get("error_type")):
+                error = " ".join(p for p in (record.get("error_type"), record.get("error")) if p)
+                lines.append(f"- **Error:** {error}")
+
+            prompt = record.get("system_prompt") or ""
+            fence = _fence(prompt)
+            lines += [
+                "",
+                "#### System Prompt",
+                "",
+                f"<details><summary>{len(prompt)} characters</summary>",
+                "",
+                f"{fence}text",
+                prompt,
+                fence,
+                "</details>",
+            ]
         return "\n".join(lines).rstrip("\n") + "\n"

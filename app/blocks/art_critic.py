@@ -35,6 +35,8 @@ from typing import Any
 from app.blocks.base import BlockMeta
 from app.blocks.output_contract import (
     build_output_contract as _build_contract,
+)
+from app.blocks.output_contract import (
     extract_json_object,
 )
 from app.blocks.registry import register

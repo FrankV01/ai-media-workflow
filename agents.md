@@ -27,14 +27,15 @@ For project overview and setup, see [`README.md`](README.md).
 ## Current Pipeline
 
 ```
-concept → Art Director → Prompt Architect → Media Producer → Art Critic → Critic Report
-                                                                 │
-                                                          ┌──────┴──────┐
-                                                       on_bad        always
-                                                          │              │
-                                                   (nothing —      Social Media
-                                                    continues    Specialist →
-                                                    to always)   Social Report
+concept → Art Director → Prompt Architect → Media Producer → Media Report → Art Critic → Critic Report
+                                                                                │
+                                                                         ┌──────┴──────┐
+                                                                      on_bad        always
+                                                                         │              │
+                                                                  (nothing —      Social Media
+                                                                   continues    Specialist →
+                                                                   to always)   Social Report →
+                                                                                LLM Report
 ```
 
 This is the seeded "Main" workflow (its step list also lives in code as
@@ -56,6 +57,8 @@ to the `always` branch.
 | `social_media_specialist` | RoleBlock | Creates marketing content (per-channel post suggestions incl. licensing marketplaces); appends a Markdown lead-post + JSON contract to resolved prompt | `social_media_specialist_output`, `social_media_posts` |
 | `art_critic_report` | Block | Writes critique to art_critic_report.md | `art_critic_report_path`, `report_files` |
 | `social_media_report` | Block | Writes post suggestions to social_media_specialist.md | `social_media_report_path`, `report_files` |
+| `media_producer_report` | Block | Writes the resolved generation settings (media profile + per-request params from `_media_executions`) to media_producer_report.md | `media_producer_report_path`, `report_files` |
+| `llm_report` | Block | Writes the effective LLM settings of every role call in the run (model, temperature, max_tokens, thinking, config source, full system prompt, token usage — from `_executions`) to llm_report.md | `llm_report_path`, `report_files` |
 | `background_remover` | Block | Cuts solid-color backgrounds out of `generated_images` (pure NumPy/Pillow chroma key — no AI model); settings profiled per workflow (`has_db_settings`) | `cutout_images`, `cutout_metadata`, `background_remover_output` |
 | `echo` | Block | Test/utility block (`example_block.py`) | `echo_result` |
 
@@ -79,8 +82,8 @@ Special context keys:
 - `_generation_backend` — per-run backend override (`"placeholder"`), used by the UI's test-run button and accepted via the API's `context` field
 - `_workflow_id` / `_workflow_slug` — the workflow the run executes under; set by the engine and read by RoleBlock/MediaProducer when resolving configuration profiles
 - `_workflow_media_model` — set by the engine when the workflow pins `media_model_name`; the Media Producer resolves that model's profile instead of the env-selected one
-- `_executions` — in-memory LLM call records accumulated by RoleBlocks, including failures; after each step the engine persists only the newly added records and their ordered messages into the normalized audit tables
-- `_media_executions` — in-memory per-request image generation records accumulated by MediaProducer, including failures; persisted after each step into `MediaGenerationExecution` rows
+- `_executions` — in-memory LLM call records accumulated by RoleBlocks, including failures; after each step the engine persists only the newly added records and their ordered messages into the normalized audit tables; also read by `llm_report` (each record carries the resolved model/temperature/max_tokens/thinking and the effective system prompt actually sent — the list accumulates for the whole run, so the report documents every role that ran before it)
+- `_media_executions` — in-memory per-request image generation records accumulated by MediaProducer, including failures; persisted after each step into `MediaGenerationExecution` rows and read by `media_producer_report` (its `settings_snapshot` holds the resolved profile + effective request params actually dispatched)
 - `_warnings` — deduplicated AI-configuration warnings accumulated by blocks; persisted to `Job.warnings` (JSON list) after every step and surfaced in the API and job detail page
 - `report_files` — list of markdown report paths written by report blocks; the engine copies it to `Job.report_files`
 - `photo_shoot_name` — the shoot title. Seeded by an API caller, or generated by the engine's auto-prepended `job_namer` step (LLM title, falling back to the first words of the concept when the call fails). The engine copies it to `Job.workflow_name` after each step, which is the job title shown in the UI
@@ -122,8 +125,8 @@ default unless `--output-dir` is given. The slug is derived from
 subdir via `GenerationRequest.extras["output_subdir"]`; both backends save under it, and the
 ComfyUI `filename_prefix` includes it so ComfyUI's own output folder is grouped the same way.
 Each variant yields three files: `_refined_1x`, `_upscaled_2x`, `_upscaled_4x`.
-Report blocks also write `art_critic_report.md` and `social_media_specialist.md`
-into the same per-job directory.
+Report blocks also write `media_producer_report.md`, `art_critic_report.md`,
+`social_media_specialist.md`, and `llm_report.md` into the same per-job directory.
 
 ### PNG→JPEG converter tool
 

@@ -897,7 +897,12 @@ async def test_prompt_architect_appends_contract_to_resolved_prompt():
 
 
 def test_report_blocks_registered():
-    for name in ("art_critic_report", "social_media_report"):
+    for name in (
+        "art_critic_report",
+        "social_media_report",
+        "media_producer_report",
+        "llm_report",
+    ):
         cls = get_block(name)
         assert cls.meta.name == name
         assert cls.meta.category == "utility"
@@ -1025,7 +1030,12 @@ async def test_art_critic_report_renders_lead_markdown(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_report_blocks_validate_require_source():
-    for name in ("art_critic_report", "social_media_report"):
+    for name in (
+        "art_critic_report",
+        "social_media_report",
+        "media_producer_report",
+        "llm_report",
+    ):
         block = get_block(name)()
         with pytest.raises(ValueError):
             await block.validate({})
@@ -1072,11 +1082,350 @@ def test_default_workflow_contains_report_blocks():
     from app.services.workflows import DEFAULT_WORKFLOW_STEPS
 
     assert (
+        DEFAULT_WORKFLOW_STEPS.index("media_producer_report")
+        == DEFAULT_WORKFLOW_STEPS.index("media_producer") + 1
+    )
+    assert (
         DEFAULT_WORKFLOW_STEPS.index("art_critic_report")
         == DEFAULT_WORKFLOW_STEPS.index("art_critic") + 1
     )
     routing = next(item for item in DEFAULT_WORKFLOW_STEPS if isinstance(item, dict))
-    assert routing["always"] == ["social_media_specialist", "social_media_report"]
+    assert routing["always"] == [
+        "social_media_specialist",
+        "social_media_report",
+        "llm_report",
+    ]
+    assert routing["always"][-1] == "llm_report"
+
+
+@pytest.mark.asyncio
+async def test_media_producer_report_writes_markdown(monkeypatch, tmp_path):
+    from datetime import UTC, datetime
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    snapshot = {
+        "profile": {
+            "width": 1024,
+            "height": 1024,
+            "cfg_scale": 7.0,
+            "steps": 69,
+            "sampler": "dpmpp_2m",
+            "scheduler": "karras",
+            "clip_skip": 1,
+            "refiner_checkpoint": "refiner.safetensors",
+            "upscale_2x_model": "2x.pth",
+            "upscale_4x_model": "4x.pth",
+            "refiner_steps": 20,
+            "refiner_cfg_scale": 6.0,
+            "refiner_sampler": "dpmpp_2m",
+            "refiner_scheduler": "karras",
+            "refiner_denoise": 0.25,
+        },
+        "request": {
+            "width": 512,
+            "height": 512,
+            "cfg_scale": 5.0,
+            "steps": 30,
+            "sampler": "dpmpp_2m",
+            "scheduler": "karras",
+            "clip_skip": 2,
+            "seed": -1,
+        },
+    }
+    context = {
+        "photo_shoot_name": "Cyber Chic",
+        "_job_id": 7,
+        "_job_created_date": "2026-09-23",
+        "_media_executions": [
+            {
+                "configuration_id": 3,
+                "configuration_source": "custom",
+                "block_name": "media_producer",
+                "backend_name": "comfyui",
+                "model_name": "sdxl_base.safetensors",
+                "variant_name": "main",
+                "settings_snapshot": json.dumps(snapshot),
+                "seed_used": 4242,
+                "backend_metadata": json.dumps({"prompt_id": "abc", "output_scales": [1, 2, 4]}),
+                "image_paths": json.dumps([str(tmp_path / "aimw_main_refined_1x_00001_.png")]),
+                "status": "completed",
+                "started_at": datetime(2026, 9, 23, 12, 0, 0, tzinfo=UTC),
+                "finished_at": datetime(2026, 9, 23, 12, 0, 12, tzinfo=UTC),
+            }
+        ],
+    }
+
+    block = get_block("media_producer_report")()
+    await block.validate(context)
+    result = await block.run(context)
+
+    path = tmp_path / "2026-09-23" / "cyber-chic" / "job7" / "media_producer_report.md"
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "# Media Producer Report — Cyber Chic" in text
+    assert "- Backend: comfyui" in text
+    assert "- Model: sdxl_base.safetensors" in text
+    assert "- Configuration Source: custom" in text
+    assert "- Configuration ID: 3" in text
+    assert "## Media Profile" in text
+    assert "### Request Defaults" in text
+    assert "**Steps:** 69" in text
+    assert "### Backend Workflow Fields" in text
+    assert "**Refiner Denoise:** 0.25" in text
+    assert "### `main` — completed" in text
+    assert "**Steps:** 30" in text  # effective request value, not the profile default
+    assert "**Width:** 512" in text
+    assert "**Seed Used:** 4242" in text
+    assert "**Duration:** 12.00s" in text
+    assert "aimw_main_refined_1x_00001_.png" in text
+    assert "**Prompt Id:** abc" in text
+    assert "```" not in text
+    assert result["media_producer_report_path"] == str(path)
+    assert result["report_files"] == [str(path)]
+
+
+@pytest.mark.asyncio
+async def test_media_producer_report_uses_snapshot_not_defaults(monkeypatch, tmp_path):
+    """The report renders the recorded snapshot, not the code DEFAULT_PARAMS."""
+    from app.blocks.media_producer import DEFAULT_PARAMS
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    assert DEFAULT_PARAMS["steps"] != 40  # sanity: snapshot must differ
+
+    snapshot = {
+        "profile": {**DEFAULT_PARAMS, "steps": 40, "refiner_checkpoint": "r.ckpt"},
+        "request": {"width": 768, "height": 768, "steps": 12, "seed": 5},
+    }
+    context = {
+        "photo_shoot_name": "x",
+        "_job_id": 8,
+        "_job_created_date": "2026-09-23",
+        "_media_executions": [
+            {
+                "configuration_id": None,
+                "configuration_source": "custom",
+                "block_name": "media_producer",
+                "backend_name": "placeholder",
+                "model_name": "placeholder",
+                "variant_name": "main",
+                "settings_snapshot": json.dumps(snapshot),
+                "seed_used": 5,
+                "backend_metadata": None,
+                "image_paths": json.dumps([]),
+                "status": "completed",
+                "started_at": None,
+                "finished_at": None,
+            }
+        ],
+    }
+
+    block = get_block("media_producer_report")()
+    result = await block.run(context)
+
+    path = tmp_path / "2026-09-23" / "x" / "job8" / "media_producer_report.md"
+    text = path.read_text(encoding="utf-8")
+    assert "**Steps:** 40" in text  # resolved profile value
+    assert "**Steps:** 12" in text  # effective request value
+    assert "**Steps:** 69" not in text  # DEFAULT_PARAMS value must not appear
+    assert "**Refiner Checkpoint:** r.ckpt" in text
+    assert "Refiner Denoise" not in text  # null workflow fields are omitted
+    assert result["media_producer_report_path"] == str(path)
+
+
+@pytest.mark.asyncio
+async def test_llm_report_writes_markdown(monkeypatch, tmp_path):
+    from datetime import UTC, datetime
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    started = datetime(2026, 9, 23, 12, 0, 0, tzinfo=UTC)
+    finished = datetime(2026, 9, 23, 12, 0, 10, tzinfo=UTC)
+    context = {
+        "photo_shoot_name": "Cyber Chic",
+        "_job_id": 7,
+        "_job_created_date": "2026-09-23",
+        "report_files": ["/x/prior.md"],
+        "_executions": [
+            {
+                "role_name": "art_director",
+                "role_title": "Art Director",
+                "configuration_id": 3,
+                "configuration_source": "custom",
+                "system_prompt": "You are the Art Director. Be bold.",
+                "output_format": "text",
+                "suggested_next_role": "prompt_architect",
+                "model_used": "qwen/model",
+                "temperature": 0.7,
+                "max_tokens": 32768,
+                "reasoning_effort": None,
+                "finish_reason": "stop",
+                "status": "completed",
+                "error_type": None,
+                "error": None,
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "started_at": started,
+                "finished_at": finished,
+            },
+            {
+                "role_name": "prompt_architect",
+                "role_title": "Prompt Architect",
+                "configuration_id": None,
+                "configuration_source": "code_default",
+                "system_prompt": "Return ONLY JSON.",
+                "output_format": "json",
+                "suggested_next_role": "media_producer",
+                "model_used": "qwen/model",
+                "temperature": 0.7,
+                "max_tokens": 32768,
+                "reasoning_effort": "none",
+                "finish_reason": None,
+                "status": "failed",
+                "error_type": "ValueError",
+                "error": "LLM returned empty content",
+                "prompt_tokens": 20,
+                "completion_tokens": 0,
+                "total_tokens": None,
+                "started_at": started,
+                "finished_at": finished,
+            },
+        ],
+    }
+
+    block = get_block("llm_report")()
+    await block.validate(context)
+    result = await block.run(context)
+
+    path = tmp_path / "2026-09-23" / "cyber-chic" / "job7" / "llm_report.md"
+    assert path.exists()
+    text = path.read_text(encoding="utf-8")
+    assert "# LLM Report — Cyber Chic" in text
+    assert f"- Endpoint: {settings.llm_base_url}" in text
+    assert "### `art_director` — Art Director — completed" in text
+    assert "**Thinking:** enabled" in text
+    assert "### `prompt_architect` — Prompt Architect — failed" in text
+    assert "**Thinking:** disabled" in text
+    assert "**Tokens:** 100 prompt + 50 completion = 150 total" in text
+    assert "**Duration:** 10.00s" in text
+    assert "**Error:** ValueError LLM returned empty content" in text
+    assert "You are the Art Director. Be bold." in text
+    assert "**Configuration ID:** 3" in text
+    assert "**Suggested Next Role:** prompt_architect" in text
+    assert "#### System Prompt" in text
+    assert settings.openai_api_key not in text
+    assert result["llm_report_path"] == str(path)
+    assert result["report_files"] == ["/x/prior.md", str(path)]
+
+
+@pytest.mark.asyncio
+async def test_llm_report_uses_recorded_settings_not_config_defaults(monkeypatch, tmp_path):
+    """The report renders the recorded call settings, not the env defaults."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "llm_temperature", 0.7)
+    monkeypatch.setattr(settings, "llm_max_tokens", 32768)
+    monkeypatch.setattr(settings, "llm_model", "qwen/default-model")
+
+    context = {
+        "photo_shoot_name": "x",
+        "_job_id": 8,
+        "_job_created_date": "2026-09-23",
+        "_executions": [
+            {
+                "role_name": "art_director",
+                "role_title": "Art Director",
+                "configuration_id": 1,
+                "configuration_source": "custom",
+                "system_prompt": "prompt",
+                "output_format": "text",
+                "suggested_next_role": None,
+                "model_used": "custom/model",
+                "temperature": 0.2,
+                "max_tokens": 512,
+                "reasoning_effort": None,
+                "finish_reason": "stop",
+                "status": "completed",
+                "error_type": None,
+                "error": None,
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "started_at": None,
+                "finished_at": None,
+            }
+        ],
+    }
+
+    block = get_block("llm_report")()
+    result = await block.run(context)
+
+    path = tmp_path / "2026-09-23" / "x" / "job8" / "llm_report.md"
+    text = path.read_text(encoding="utf-8")
+    assert "custom/model" in text
+    assert "**Temperature:** 0.2" in text
+    assert "**Max Tokens:** 512" in text
+    assert "32768" not in text
+    assert "qwen/default-model" not in text
+    assert result["llm_report_path"] == str(path)
+
+
+@pytest.mark.asyncio
+async def test_llm_report_fences_prompt_with_backticks(monkeypatch, tmp_path):
+    """A system prompt containing ``` gets a longer enclosing fence."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    context = {
+        "photo_shoot_name": "x",
+        "_job_id": 9,
+        "_job_created_date": "2026-09-23",
+        "_executions": [
+            {
+                "role_name": "art_critic",
+                "role_title": "Art Critic",
+                "configuration_id": None,
+                "configuration_source": "code_default",
+                "system_prompt": "Reply like:\n```json\n{}\n```",
+                "output_format": "json",
+                "suggested_next_role": None,
+                "model_used": "m",
+                "temperature": 0.5,
+                "max_tokens": 1024,
+                "reasoning_effort": "none",
+                "finish_reason": "stop",
+                "status": "completed",
+                "error_type": None,
+                "error": None,
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "started_at": None,
+                "finished_at": None,
+            }
+        ],
+    }
+
+    block = get_block("llm_report")()
+    result = await block.run(context)
+
+    text = (tmp_path / "2026-09-23" / "x" / "job9" / "llm_report.md").read_text(encoding="utf-8")
+    assert "````" in text
+    assert "```json\n{}\n```" in text
+    assert result["llm_report_path"].endswith("llm_report.md")
+
+
+@pytest.mark.asyncio
+async def test_llm_report_requires_executions():
+    from app.blocks.report_writer import LlmReport
+
+    with pytest.raises(ValueError):
+        await LlmReport().validate({})
 
 
 def test_report_blocks_read_role_output_keys():

@@ -95,10 +95,12 @@ _BLOCK_TITLES = {
     "art_director": "Art Director",
     "prompt_architect": "Prompt Architect",
     "media_producer": "Media Producer",
+    "media_producer_report": "Media Report",
     "art_critic": "Art Critic",
     "social_media_specialist": "Social Media",
     "art_critic_report": "Critic Report",
     "social_media_report": "Social Report",
+    "llm_report": "LLM Report",
     "background_remover": "Background Remover",
     "echo": "Echo",
 }

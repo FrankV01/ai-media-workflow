@@ -63,12 +63,16 @@ User prompt
   → Prompt Architect      (converts brief into structured generation prompts — JSON with
                            positive / negative / refiner-positive / refiner-negative prompts)
   → Media Producer        (dispatches prompts to the generation backend, collects images)
+  → Media Report          (writes media_producer_report.md — the resolved generation
+                           settings actually used: media profile + per-request params)
   → Art Critic            (evaluates quality, sets verdict: good / bad)
   → Critic Report         (writes art_critic_report.md next to the images)
   → Routing               (branches based on verdict)
       ├─ on_bad  → (no retry; falls through to always)
       └─ always  → Social Media Specialist (creates marketing content: per-channel post suggestions)
                  → Social Report (writes social_media_specialist.md)
+                 → LLM Report (writes llm_report.md — the effective LLM settings of every
+                               role call: model, temperature, max_tokens, thinking, system prompt)
 ```
 
 Each block writes its report into the pipeline context as
@@ -128,8 +132,10 @@ IMAGE_OUTPUT_DIR/
         aimw_main_upscaled_2x_00001_.png
         aimw_main_upscaled_4x_00001_.png
         aimw_<variant name>_refined_1x_00001_.png
+        media_producer_report.md
         art_critic_report.md
         social_media_specialist.md
+        llm_report.md
       …
 ```
 
@@ -301,7 +307,8 @@ app/
     media_producer.py   → image generation dispatch, output grouping
     art_critic.py    → quality evaluation + verdict
     social_media_specialist.py → platform post suggestions
-    report_writer.py → markdown report blocks (art_critic_report, social_media_report)
+    report_writer.py → markdown report blocks (art_critic_report,
+                       social_media_report, media_producer_report, llm_report)
     background_remover.py → solid-background cutout block (settings in
                        block_configurations; writes <name>_cutout.png)
     example_block.py → `echo` test block
