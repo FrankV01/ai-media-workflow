@@ -127,6 +127,10 @@ ComfyUI `filename_prefix` includes it so ComfyUI's own output folder is grouped 
 Each variant yields three files: `_refined_1x`, `_upscaled_2x`, `_upscaled_4x`.
 Report blocks also write `media_producer_report.md`, `art_critic_report.md`,
 `social_media_specialist.md`, and `llm_report.md` into the same per-job directory.
+The job detail page's Reports box has "Open folder" (POST
+`/partials/jobs/{id}/open-folder`, which runs `open`/`explorer`/`xdg-open` on the
+server-derived job dir via `app/services/open_folder.py` — only meaningful when
+browser and server share a machine) and "Copy path" buttons.
 
 ### PNG→JPEG converter tool
 

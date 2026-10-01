@@ -30,6 +30,9 @@ HTMX partials (return HTML fragments, not full pages):
 - /partials/workflow            — pipeline visual for ?workflow=<slug>
 - /partials/run-pipeline        — queue a pipeline run (background)
 - /partials/run-test-pipeline   — same, but with placeholder image backend
+- /partials/jobs/<id>/open-folder — open the job's output dir in the OS
+                   file manager (server-side; only meaningful when the
+                   browser and server share a machine)
 
 The default pipeline definition lives in app/services/workflows.py
 (DEFAULT_WORKFLOW_STEPS) and is seeded as the "Main" workflow row; the
@@ -72,6 +75,11 @@ from app.services.configuration.schemas import (
     LlmResetInput,
     MediaProfileInput,
     MediaResetInput,
+)
+from app.services.open_folder import (
+    OpenerUnavailableError,
+    job_output_dir,
+    open_folder,
 )
 from app.services.workflows import (
     DEFAULT_WORKFLOW_STEPS,
@@ -239,6 +247,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         "error": job_raw.error,
         "warnings": json.loads(job_raw.warnings) if job_raw.warnings else [],
         "report_files": json.loads(job_raw.report_files) if job_raw.report_files else [],
+        "folder_path": str(job_output_dir(job_raw)),
         "steps": [
             {
                 "block_name": s.block_name,
@@ -955,6 +964,33 @@ async def partial_job_preview(
         ],
     }
     return templates.TemplateResponse(request, "partials/job_preview.html", {"job": job})
+
+
+@router.post("/partials/jobs/{job_id}/open-folder", response_class=HTMLResponse)
+async def partial_open_job_folder(
+    request: Request,
+    job_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Open the job's output folder in the OS file manager (server-side)."""
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    path = job_output_dir(job)
+    error = None
+    try:
+        open_folder(path)
+    except FileNotFoundError:
+        error = "Folder not found — is the output volume mounted?"
+    except OpenerUnavailableError:
+        error = "No file manager available on this host"
+    except OSError as exc:
+        error = f"Could not open folder: {exc}"
+    return templates.TemplateResponse(
+        request,
+        "partials/open_folder_result.html",
+        {"ok": error is None, "path": str(path), "error": error},
+    )
 
 
 async def _runnable_workflow(session: AsyncSession, slug: str) -> Workflow:

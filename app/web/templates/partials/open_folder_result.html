@@ -1,0 +1,13 @@
+{% if error %}
+<div class="flex items-start gap-2 p-2 rounded bg-red-900/30 border border-red-800/50">
+    <span class="text-red-400 shrink-0">✗</span>
+    <p class="text-xs text-red-300">{{ error }}</p>
+</div>
+{% else %}
+<div class="flex items-start gap-2 p-2 rounded bg-emerald-900/30 border border-emerald-800/50">
+    <span class="text-emerald-400 shrink-0">✓</span>
+    <p class="text-xs text-emerald-300">
+        Opened folder <code class="font-mono text-xs">{{ path }}</code>
+    </p>
+</div>
+{% endif %}

@@ -77,7 +77,24 @@
 
     {% if job.report_files %}
     <div class="mt-4 p-3 rounded bg-gray-800/60 border border-gray-700/50">
-        <p class="text-sm text-gray-300 font-medium">Reports</p>
+        <div class="flex items-center justify-between">
+            <p class="text-sm text-gray-300 font-medium">Reports</p>
+            <div class="flex items-center gap-2">
+                <button
+                    class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    hx-post="/partials/jobs/{{ job.id }}/open-folder"
+                    hx-target="#open-folder-status"
+                    hx-swap="innerHTML"
+                >Open folder</button>
+                <button
+                    class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+                    data-path="{{ job.folder_path }}"
+                    onclick="navigator.clipboard.writeText(this.dataset.path).then(() => { const t = this.textContent; this.textContent = 'Copied'; setTimeout(() => this.textContent = t, 1500); })"
+                >Copy path</button>
+            </div>
+        </div>
+        <code class="font-mono text-xs text-gray-400">{{ job.folder_path }}</code>
+        <div id="open-folder-status" class="mt-2"></div>
         <ul class="mt-1 space-y-1">
             {% for path in job.report_files %}
             <li><code class="font-mono text-xs text-gray-400">{{ path }}</code></li>
