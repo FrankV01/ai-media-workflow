@@ -17,14 +17,18 @@ Full pages:
                    workflow when omitted): LLM role profiles (with audited
                    change history) + media model profiles
 - /settings/general — global customer delivery settings: note, attribution,
-                   license Markdown, and signature image upload/preview
+                   license Markdown, signature image upload/preview, plus
+                   global Store Fronts settings (FourthWall listing options
+                   and the unsupported PayHip note)
 
 Form POSTs (redirect with a status query):
 - /settings/ai/llm/save, /settings/ai/llm/reset     — audited LLM mutations
 - /settings/ai/media/save, /settings/ai/media/reset — media profile mutations
 - /settings/ai/block/save, /settings/ai/block/reset — generic block profiles
 - /settings/general/{save,signature,signature/clear} — delivery settings
+- /settings/general/storefronts/save             — storefront (FourthWall) settings
 - /jobs/<id>/archives/retry                        — archive-only retry
+- /jobs/<id>/listings/retry                        — listing-only retry
 - /workflows/create, /workflows/<id>/{save,clone,enable,disable,set-default}
 
 HTMX partials (return HTML fragments, not full pages):
@@ -93,6 +97,13 @@ from app.services.delivery_archive import (
     reserve_archive_retry,
     schedule_archive_retry,
 )
+from app.services.fourthwall import (
+    ListingRetryError,
+    list_listings,
+    listing_retryable,
+    reserve_listing_retry,
+    schedule_listing_retry,
+)
 from app.services.general_settings import (
     MAX_SIGNATURE_BYTES,
     DeliverySettingsError,
@@ -107,6 +118,11 @@ from app.services.open_folder import (
     OpenerUnavailableError,
     job_output_dir,
     open_folder,
+)
+from app.services.storefront_settings import (
+    StorefrontSettingsError,
+    get_storefront_settings,
+    save_storefront_settings,
 )
 from app.services.workflows import (
     DEFAULT_WORKFLOW_STEPS,
@@ -138,6 +154,7 @@ _BLOCK_TITLES = {
     "llm_report": "LLM Report",
     "background_remover": "Background Remover",
     "delivery_archive": "Delivery Archive",
+    "fourthwall_listing": "FourthWall Listing",
     "echo": "Echo",
 }
 
@@ -271,6 +288,25 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         for a in await list_archives(session, job_raw.id)
     ]
 
+    listings = [
+        {
+            "id": listing.id,
+            "attempt": listing.attempt,
+            "status": listing.status.value,
+            "storefront": listing.storefront,
+            "product_id": listing.product_id,
+            "name": listing.name,
+            "price_usd": listing.price_usd,
+            "created_at": (
+                listing.created_at.strftime("%b %d, %Y %H:%M:%S")
+                if listing.created_at
+                else "—"
+            ),
+            "error": listing.error,
+        }
+        for listing in await list_listings(session, job_raw.id)
+    ]
+
     job = {
         "id": job_raw.id,
         "workflow_name": job_raw.workflow_name,
@@ -293,6 +329,9 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         "archives": archives,
         "archive_retryable": archive_retry_ineligibility(job_raw, sorted_steps) is None,
         "archive_error": request.query_params.get("archive_error"),
+        "listings": listings,
+        "listing_retryable": await listing_retryable(session, job_raw.id),
+        "listing_error": request.query_params.get("listing_error"),
         "folder_path": str(job_output_dir(job_raw)),
         "steps": [
             {
@@ -1135,13 +1174,18 @@ async def _general_settings_context(
     *,
     errors: list[str] | None = None,
     values: dict | None = None,
+    storefront_values: dict | None = None,
     status: str | None = None,
 ) -> dict:
     """Template context for /settings/general (saved values win over form replay)."""
     delivery = await get_delivery_settings(session)
+    storefront = await get_storefront_settings(session)
     has_signature = signature_path(delivery.signature_asset) is not None
     return {
         "delivery": values if values is not None else delivery.to_dict(),
+        "storefront": (
+            storefront_values if storefront_values is not None else storefront.to_dict()
+        ),
         "has_signature": has_signature,
         "errors": errors or [],
         "status": status,
@@ -1256,6 +1300,50 @@ async def general_settings_signature_preview(session: AsyncSession = Depends(get
     return FileResponse(path, media_type=media_type)
 
 
+@router.post("/settings/general/storefronts/save")
+async def storefront_settings_save(
+    request: Request,
+    enabled: str | None = Form(None),
+    price_usd: str = Form(""),
+    publish_on_create: str | None = Form(None),
+    file_size_limit_mb: str = Form("25"),
+    description_template: str = Form(""),
+    max_preview_images: str = Form("4"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Save the global storefront (FourthWall) settings."""
+    enabled_flag = enabled == "on"
+    publish_flag = publish_on_create == "on"
+    try:
+        await save_storefront_settings(
+            session,
+            enabled=enabled_flag,
+            price_usd=price_usd.strip() or None,
+            publish_on_create=publish_flag,
+            file_size_limit_mb=file_size_limit_mb.strip() or "25",
+            description_template=description_template,
+            max_preview_images=max_preview_images.strip() or "4",
+        )
+    except StorefrontSettingsError as exc:
+        context = await _general_settings_context(
+            session,
+            errors=exc.errors,
+            storefront_values={
+                "enabled": enabled_flag,
+                "price_usd": price_usd,
+                "publish_on_create": publish_flag,
+                "file_size_limit_mb": file_size_limit_mb,
+                "description_template": description_template,
+                "max_preview_images": max_preview_images,
+            },
+        )
+        return templates.TemplateResponse(
+            request, "general_settings.html", context, status_code=422
+        )
+    await session.commit()
+    return RedirectResponse("/settings/general?status=storefront", status_code=303)
+
+
 @router.post("/jobs/{job_id}/archives/retry")
 async def web_retry_job_archive(job_id: int, session: AsyncSession = Depends(get_session)):
     """Reserve and schedule an archive-only retry, then return to the job page."""
@@ -1265,4 +1353,16 @@ async def web_retry_job_archive(job_id: int, session: AsyncSession = Depends(get
         url = f"/jobs/{job_id}?{urlencode({'archive_error': str(exc)})}"
         return RedirectResponse(url, status_code=303)
     schedule_archive_retry(job_id, step_id)
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/jobs/{job_id}/listings/retry")
+async def web_retry_job_listing(job_id: int, session: AsyncSession = Depends(get_session)):
+    """Reserve and schedule a listing-only retry, then return to the job page."""
+    try:
+        step_id = await reserve_listing_retry(session, job_id)
+    except ListingRetryError as exc:
+        url = f"/jobs/{job_id}?{urlencode({'listing_error': str(exc)})}"
+        return RedirectResponse(url, status_code=303)
+    schedule_listing_retry(job_id, step_id)
     return RedirectResponse(f"/jobs/{job_id}", status_code=303)

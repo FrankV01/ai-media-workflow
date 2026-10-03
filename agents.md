@@ -21,7 +21,7 @@ For project overview and setup, see [`README.md`](README.md).
 6. **Workflows are first-class DB rows.** A `Workflow` (`app/models/workflow.py`) is a named pipeline definition: ordered steps in the engine's `list[str | dict]` format (block names + `on_good`/`on_bad`/`always` routing dicts), enable/disable flags, a single default, and an optional `media_model_name` override. `app/services/workflows.py` owns CRUD/validation/clone; the engine resolves the workflow before a run, uses its `steps_json` when no explicit `block_names` are given, and stamps `Job.workflow_id`. Every run executes inside a workflow "container" — its AI configuration profiles are scoped to that workflow (see Database). "Main" (slug `main`) is the seeded default workflow; disabling the default is rejected. New workflows are created blank or by cloning (clone copies steps + all scoped LLM/media profiles). Managed on the `/workflows` page (create/clone/enable/disable/set-default) and `/workflows/{id}` (validated JSON steps editor with rendered preview); the dashboard selector scopes runs and the job list, and `/settings/ai?workflow=<slug>` scopes that workflow's profiles.
 7. **Generation backends are pluggable.** `app/services/generation/` provides `ComfyUIBackend` (production; SDXL base → refiner → 2x/4x upscale workflow built in `sdxl_workflow.py`) and `PlaceholderBackend` (fast testing). Switch via `GENERATION_BACKEND` in `.env`, or per run via `context["_generation_backend"]`.
 8. **UI is server-rendered.** Jinja2 templates + HTMX. No JS build step. Tailwind via CDN.
-9. **Config via environment + database.** `pydantic-settings` reads `.env` for secrets, URLs, timeouts, and filesystem paths (see `.env.example`; defaults live in `app/config.py`). Mutable behavior is DB-backed: per-workflow AI profiles (`/settings/ai`) and global, unscoped delivery settings (customer note, attribution, license, signature reference) under the `delivery.general_settings` Setting row, edited on `/settings/general`.
+9. **Config via environment + database.** `pydantic-settings` reads `.env` for secrets, URLs, timeouts, and filesystem paths (see `.env.example`; defaults live in `app/config.py`). Mutable behavior is DB-backed: per-workflow AI profiles (`/settings/ai`) and global, unscoped delivery settings (customer note, attribution, license, signature reference) under the `delivery.general_settings` Setting row, plus global storefront listing options under the `storefronts.fourthwall` Setting row — both edited on `/settings/general`.
 10. **Startup health checks.** `app/main.py` verifies the LLM endpoint, ComfyUI (only when it's the configured backend), and output directory writability before accepting requests, and refuses to start otherwise. When launched via `python main.py` (auto-reload enabled), a startup failure exits the whole process with a non-zero status instead of leaving a hung reloader. `main.py` also honors `HOST`/`PORT` environment overrides.
 
 ## Current Pipeline
@@ -51,6 +51,9 @@ There is no retry loop: a bad verdict has no blocks attached, so the run falls t
 to the `always` branch. `delivery_archive` is the last top-level step of the shipped
 template and of migrated stored definitions that lacked it — not a forced invariant:
 custom step lists may omit or reorder it. It has no dependency on `art_critic` and never reads `_verdict`.
+The opt-in `fourthwall_listing` block (Store Fronts) is not in the shipped
+template — add it as a terminal step on `/workflows/{id}` to publish the
+delivery ZIP as a FourthWall digital product.
 
 ### Active Blocks
 
@@ -68,6 +71,7 @@ custom step lists may omit or reorder it. It has no dependency on `art_critic` a
 | `llm_report` | Block | Writes the effective LLM settings of every role call in the run (model, temperature, max_tokens, thinking, config source, full system prompt, token usage — from `_executions`) to llm_report.md | `llm_report_path`, `report_files` |
 | `background_remover` | Block | Cuts solid-color backgrounds out of `generated_images` (pure NumPy/Pillow chroma key — no AI model); settings profiled per workflow (`has_db_settings`) | `cutout_images`, `cutout_metadata`, `background_remover_output` |
 | `delivery_archive` | Block | Last step of the default template (and migrated definitions that lacked it) — builds the customer ZIP delivery of the whole job output (files, reports, README/license/signature, manifest); attempt metadata and inventories/checksums/Markdown snapshots live in `delivery_archives`/`delivery_archive_entries`, ZIPs written beside the job's output files (`IMAGE_OUTPUT_DIR/_delivery/` now only hosts the `.staging` build dir and legacy archives); archive-only retry via `/api/workflows/jobs/{id}/archives/retry` never reruns creative steps | `delivery_archive_id`, `delivery_archive_path`, `delivery_archive_sha256`, `delivery_archive_status` |
+| `fourthwall_listing` | Block | Opt-in terminal step (not in the shipped template) — publishes the latest ready delivery archive as a FourthWall digital product: creates the product from DB-sourced copy, uploads the customer ZIP, and attaches per-variant preview images. Best-effort: every outcome (disabled, missing credentials/archive/price, API failure) records a `StorefrontListing` attempt or skips quietly and lands in `_warnings` — it never fails the job. Listing-only retry via `/api/workflows/jobs/{id}/listings/retry` never reruns creative steps | `storefront_listing_id`, `fourthwall_product_id`, `storefront_listing_status`, `fourthwall_listing_output` |
 | `echo` | Block | Test/utility block (`example_block.py`) | `echo_result` |
 
 ### Context flow
@@ -199,6 +203,54 @@ stale invocations return without doing work. Each attempt snapshots the
 *current* global settings and files — it never reruns naming/LLM/media work
 and is not generic resume or crash recovery.
 
+### FourthWall listing block + Store Fronts settings
+
+`fourthwall_listing` (`app/blocks/fourthwall_listing.py`; service
+`app/services/fourthwall.py`) is an opt-in terminal block — not in the
+shipped workflow template — that publishes the job's latest ready
+`DeliveryArchive` as a FourthWall **digital** product (`type: "digital"`,
+not the `type: "design"` print-on-demand flow): `POST /products`, then the
+product-scoped `digital-files/upload-url` → signed GCS `PUT` →
+`digital-files` confirm for the customer ZIP, then per-variant preview
+images via `media/upload-url` → `PUT` → `/products/{id}/images`. The signed
+PUTs carry `x-goog-content-length-range: 0,<exact size>` and no auth header.
+API auth is HTTP Basic via `FOURTHWALL_API_USER`/`FOURTHWALL_API_PASSWORD`
+(env-only — never persisted). The product title is the shoot name; the
+description renders the `storefronts.fourthwall` `description_template`
+(`$title`/`$description`/`$tags`/`$attribution`) seeded from the Social
+Media Specialist's marketplace-flavored post (platform matching
+`market|stock|licens|store|shop`), falling back to `art_director_output` —
+there is no tags field on digital products, so tags are rendered into the
+description text. Previews are the smallest-pixel PNG per
+`generation_metadata` variant (header-only probe), converted to sRGB JPEG
+via `app/services/image_convert.py`, capped at `max_preview_images` (default
+4); cutouts are never used.
+
+The block is **best-effort**: a disabled storefront, missing credentials,
+missing archive, missing price, or any API failure returns
+`storefront_listing_status` `"skipped"`/`"failed"` plus a `_warnings` entry
+and never fails the step or job. Every attempt writes a `StorefrontListing`
+row (RUNNING → READY/FAILED) snapshotting the immutable listing payload,
+archive identity (name/size/SHA-256), and `settings_json`. Idempotency is
+keyed on `(job_id, delivery_archive_id)` — a ready listing for the latest
+archive skips; a new archive version may list again. The global
+`storefronts.fourthwall` Setting row (`/settings/general` → Store Fronts →
+FourthWall) holds `enabled`, `price_usd`, `publish_on_create` (default off
+— products are created hidden and published manually in the Fourthwall
+admin), `file_size_limit_mb` (default 25), `description_template`, and
+`max_preview_images`. PayHip is documented as manual-only on the same page
+— its API exposes no listing endpoints.
+
+Listing-only retry (`POST /api/workflows/jobs/{id}/listings/retry`,
+web `POST /jobs/{id}/listings/retry` →
+`reserve_listing_retry`/`run_listing_retry`) mirrors archive retry: the
+service resolves all inputs from persisted state, `reserve` claims the job
+atomically into RUNNING and appends a pending `fourthwall_listing` step,
+and `run` executes under `workload_guard` then restores the job's prior
+terminal status (COMPLETED or FAILED) regardless of outcome. Eligibility:
+job terminal, no unfinished steps, a ready archive exists, and the latest
+archive has no READY listing yet.
+
 ### PNG→JPEG converter tool
 
 `/convert` is a standalone drop-zone page (not part of any workflow) that posts
@@ -321,7 +373,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 ## Database
 
 - **ORM**: SQLAlchemy 2.0 async sessions. Use `Depends(get_session)` in routes; the engine opens its own session per run.
-- **Models in use**: `Workflow` (`name`, `slug`, `description`, `steps_json`, `media_model_name`, `is_enabled`, `is_default`); `Job` (`workflow_name` = photo shoot title, `workflow_id` = the workflow it ran under, `status`, `error`, `warnings`, `generated_assets`, `report_files`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); `Setting` (namespaced key/value rows — global delivery settings and migration backups); `DeliveryArchive`/`DeliveryArchiveEntry` (delivery audit); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; the generic block-settings model `BlockConfiguration`; the mutation-audit model `LlmConfigurationChange`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
+- **Models in use**: `Workflow` (`name`, `slug`, `description`, `steps_json`, `media_model_name`, `is_enabled`, `is_default`); `Job` (`workflow_name` = photo shoot title, `workflow_id` = the workflow it ran under, `status`, `error`, `warnings`, `generated_assets`, `report_files`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); `Setting` (namespaced key/value rows — global delivery settings and migration backups); `DeliveryArchive`/`DeliveryArchiveEntry` (delivery audit); `StorefrontListing` (storefront listing attempt audit); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; the generic block-settings model `BlockConfiguration`; the mutation-audit model `LlmConfigurationChange`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
 - **AI configuration**: `CreativeRole` is stable identity metadata only. Mutable behavior profiles live in `LlmRoleConfiguration` keyed by `(workflow_id, role, model_name)` — the run's workflow selects the scope and `LLM_MODEL` selects the model within it — and `MediaModelConfiguration` keyed by `(workflow_id, block, backend, model)`, and `BlockConfiguration` keyed by `(workflow_id, block_name)` for non-LLM/non-media blocks that set `has_db_settings` (`background_remover`). `app/services/configuration/` resolves profiles: **missing rows only** are seeded from code defaults (`uses_code_defaults=True`) and emit a warning on every use until customized via `/settings/ai?workflow=<slug>` or `/api/configurations?workflow=<slug>` (omitted scope → the default workflow). Resolution (`resolve_llm`/`resolve_media`), the settings page GET, and pipeline runs **never overwrite existing rows** — the only mutations are the explicit Save/Reset paths. Secrets, URLs, timeouts, poll intervals, and filesystem paths stay env-only.
 - **LLM configuration change audit**: Every explicit LLM save/reset writes an `LlmConfigurationChange` row in the same transaction — `action` (`save_custom`/`reset_to_defaults`), `origin` (`service`/`web_settings`/`rest_api` — the web and API layers pass their own origin; the provider default is `service`), and JSON `before_snapshot`/`after_snapshot` of the mutable fields (`system_prompt`, `temperature`, `max_tokens`, `enable_thinking`, `uses_code_defaults`). An event is recorded even when values are identical. Newest-first listing via `list_llm_configuration_changes`; the settings page renders the 5 most recent per profile and `GET /api/configurations/llm/{role}/history?model_name=…` exposes them (404 for unknown role or missing exact model profile). There is no media audit table yet.
 - **AI execution audit**: Every attempted LLM call and image-generation request stores an *immutable snapshot* — copied prompt/model/parameters (`RoleExecution.system_prompt`, `MediaGenerationExecution.settings_snapshot`), not the mutable configuration FK, are the audit authority. The engine persists each record against the corresponding `JobStep`, including failed calls, and never updates configuration or role rows. Job detail (web `/jobs/{id}` and `GET /api/workflows/jobs/{id}`) exposes per-step `llm_executions` — the effective system prompt, model, config id/source, and parameters actually used.
@@ -335,7 +387,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 - After pulling new code that adds model columns, **always run `alembic upgrade head`** before starting the server; SQLAlchemy will query columns that don't exist yet otherwise
 - Startup helpers auto-upgrade by default: `./start.sh` and `python main.py` run `alembic upgrade head` before the server starts (disable with `AI_MEDIA_AUTO_MIGRATE=0`). `init_db()` remains a safety check: it verifies the database is at the expected Alembic head and that every ORM table/column exists, and refuses to start otherwise — `alembic upgrade head` is required even for a brand-new empty database
 - `tests/test_database.py` covers this contract: rejection of unversioned/stale/falsely-stamped databases and recovery of the mixed schema left by the former create_all startup (`b7e2f4a1c9d6` added `workflows` + workflow-scoped config; migrations that create tables must skip when the table already exists because recovered DBs may have gotten it from create_all)
-- The current head `f7c3a9e1b5d8` adds `delivery_archives`/`delivery_archive_entries` and appends `delivery_archive` once to the top level of every stored workflow `steps_json` that lacks it (a definition already containing the block anywhere is skipped untouched)
+- The current head `g8d5b2e4f6a1` adds `storefront_listings` (one row per FourthWall listing attempt — immutable payload, archive identity, product id, status, errors); its predecessor `f7c3a9e1b5d8` adds `delivery_archives`/`delivery_archive_entries` and appends `delivery_archive` once to the top level of every stored workflow `steps_json` that lacks it (a definition already containing the block anywhere is skipped untouched)
 - The migration validates all definitions before any update and stores exact old/new JSON under the `delivery_archive.workflow_migration_backup` Setting key; its downgrade restores only rows still matching the migration-written JSON — destructive downgrades need explicit approval
 - **Deployment note (this checkout, 2026-10-03)**: the live `data/app.db` was upgraded `d1e4f6a8b3c5 → f7c3a9e1b5d8`; `alembic current` reports head and `init_db()` verified. A consistent backup sits at `data/app.db.backup-20261003T024959Z-before-delivery-archive` — it is untracked and NOT covered by `.gitignore`; never stage or commit DB backups. No commit/push or server restart was part of that deployment
 
@@ -343,7 +395,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 
 - Framework: pytest + pytest-asyncio (`asyncio_mode = "auto"`, so async tests need no marker)
 - Run: `pytest` from project root
-- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, structured errors, routing-bound `JobStep` ids/order/tail resequencing, and pending-step visibility before branch expansion — its session fixture calls `discover_blocks()` so the file also passes in isolation), `test_delivery_archive.py` (ZIP packaging/inventory/manifest-hash agreement, Markdown snapshots, expected-output enforcement, path/symlink/namespace safety, audit persistence, archive-only retry semantics, archive API surface), `test_general_settings.py` (delivery settings round-trip, signature validation limits and managed filenames, `/settings/general` page), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping), `test_background_removal.py` (chroma-key service: auto/override key color, tolerance, contiguous/global, erode/feather/despill; `/api/remove-background/` endpoint; `background_remover` block; `BlockConfiguration` seed/upsert/reset and workflow scoping)
+- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, structured errors, routing-bound `JobStep` ids/order/tail resequencing, and pending-step visibility before branch expansion — its session fixture calls `discover_blocks()` so the file also passes in isolation), `test_delivery_archive.py` (ZIP packaging/inventory/manifest-hash agreement, Markdown snapshots, expected-output enforcement, path/symlink/namespace safety, audit persistence, archive-only retry semantics, archive API surface), `test_general_settings.py` (delivery settings round-trip, signature validation limits and managed filenames, `/settings/general` page), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping), `test_background_removal.py` (chroma-key service: auto/override key color, tolerance, contiguous/global, erode/feather/despill; `/api/remove-background/` endpoint; `background_remover` block; `BlockConfiguration` seed/upsert/reset and workflow scoping), `test_fourthwall.py` (storefront settings round-trip/validation, `/settings/general` Store Fronts section, the full digital-product flow against an `httpx.MockTransport` fake — product payload, Basic auth, signed-upload headers, preview selection/conversion, size limit, skip/failure semantics, idempotency, listing-only retry, listings API)
 - LLM calls are mocked by monkeypatching `app.blocks.role_block.AsyncOpenAI`; see `_fake_llm_client` in `test_blocks.py`
 - Tests that generate files monkeypatch `settings.image_output_dir` to `tmp_path` — never write into the real output dir
 - Narrow regression pass for archive/engine work: `pytest tests/test_delivery_archive.py tests/test_general_settings.py tests/test_pipeline.py tests/test_database.py`

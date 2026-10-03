@@ -19,6 +19,7 @@ import app.models.delivery  # noqa: F401
 import app.models.job  # noqa: F401
 import app.models.media  # noqa: F401
 import app.models.setting  # noqa: F401
+import app.models.storefront  # noqa: F401
 from app.config import settings
 from app.database import Base
 

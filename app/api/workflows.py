@@ -25,6 +25,7 @@ from app.database import get_session
 from app.models.creative import RoleExecution
 from app.models.delivery import DeliveryArchive, DeliveryArchiveStatus
 from app.models.job import Job
+from app.models.storefront import StorefrontListing
 from app.models.workflow import Workflow
 from app.pipeline.engine import run_pipeline
 from app.pipeline.naming import PhotoShootNameError, resolve_photo_shoot_name
@@ -36,6 +37,12 @@ from app.services.delivery_archive import (
     list_archives,
     reserve_archive_retry,
     schedule_archive_retry,
+)
+from app.services.fourthwall import (
+    ListingRetryError,
+    list_listings,
+    reserve_listing_retry,
+    schedule_listing_retry,
 )
 from app.services.workflows import get_workflow_by_slug, validate_steps
 
@@ -162,6 +169,9 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
             executions_by_step.setdefault(execution.job_step_id, []).append(execution)
 
     archives = [_archive_metadata(a) for a in await list_archives(session, job_id)]
+    listings = [
+        _listing_metadata(listing) for listing in await list_listings(session, job_id)
+    ]
 
     return {
         "id": job.id,
@@ -176,6 +186,7 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
         "generated_assets": job.generated_assets,
         "report_files": json.loads(job.report_files) if job.report_files else [],
         "archives": archives,
+        "listings": listings,
         "steps": [
             {
                 "block_name": s.block_name,
@@ -301,4 +312,49 @@ async def retry_job_archive(job_id: int, session: AsyncSession = Depends(get_ses
     except ArchiveRetryError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     schedule_archive_retry(job_id, step_id)
+    return {"job_id": job_id, "status": "retrying"}
+
+
+def _listing_metadata(listing: StorefrontListing) -> dict[str, Any]:
+    """Attempt metadata for list/job responses."""
+    return {
+        "id": listing.id,
+        "attempt": listing.attempt,
+        "status": listing.status.value,
+        "storefront": listing.storefront,
+        "job_step_id": listing.job_step_id,
+        "delivery_archive_id": listing.delivery_archive_id,
+        "created_at": listing.created_at.isoformat() if listing.created_at else None,
+        "started_at": listing.started_at.isoformat() if listing.started_at else None,
+        "finished_at": listing.finished_at.isoformat() if listing.finished_at else None,
+        "name": listing.name,
+        "price_usd": listing.price_usd,
+        "publish_on_create": listing.publish_on_create,
+        "archive_name": listing.archive_name,
+        "archive_byte_size": listing.archive_byte_size,
+        "product_id": listing.product_id,
+        "error": listing.error,
+        "error_type": listing.error_type,
+    }
+
+
+@router.get("/jobs/{job_id}/listings")
+async def list_job_listings(job_id: int, session: AsyncSession = Depends(get_session)):
+    """Storefront listing attempt history for a job (metadata only)."""
+    job = await session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    return [
+        _listing_metadata(listing) for listing in await list_listings(session, job_id)
+    ]
+
+
+@router.post("/jobs/{job_id}/listings/retry", status_code=202)
+async def retry_job_listing(job_id: int, session: AsyncSession = Depends(get_session)):
+    """Reserve and schedule a listing-only retry (no LLM/generation reruns)."""
+    try:
+        step_id = await reserve_listing_retry(session, job_id)
+    except ListingRetryError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    schedule_listing_retry(job_id, step_id)
     return {"job_id": job_id, "status": "retrying"}

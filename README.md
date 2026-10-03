@@ -77,6 +77,8 @@ User prompt
   → Delivery Archive      (packages the complete job output — originals plus
                            generated docs — into the customer ZIP inside the
                            job output directory)
+  → FourthWall Listing    (optional — publishes the customer ZIP as a FourthWall
+                           digital product; not part of the shipped template)
 ```
 
 Each block writes its report into the pipeline context as
@@ -185,8 +187,8 @@ include non-secret operational metadata and local paths, and user-supplied
 secrets embedded in prompts or files are not automatically redacted — keep
 them out of job content. There is no watermark: attribution is your artist
 attribution text plus the optional signature image.
-Archives are not uploaded anywhere yet — a future uploader block will consume
-each attempt's readiness, path, id, and checksum.
+Archives can be published to FourthWall by the opt-in `fourthwall_listing`
+block (see "Storefront listings" below).
 
 Safety: an empty or missing source, a recorded-but-absent expected file
 (images, cutouts, or report paths recorded by earlier steps), a `_delivery`
@@ -248,7 +250,7 @@ database row holds them. ZIPs and images stay on disk; only metadata and text
 land in SQLite, never binary blobs. A `ready` attempt also yields stable
 block outputs — `delivery_archive_id`, `delivery_archive_path`,
 `delivery_archive_sha256`, and `delivery_archive_status` (`"ready"`) — the
-keys a future uploader block consumes.
+keys the `fourthwall_listing` block consumes.
 
 The job detail page has a "Delivery archives" box with download links,
 attempt history, and errors. When a job failed at its final archive step
@@ -257,6 +259,41 @@ with every earlier non-archive step completed and no unfinished steps, a
 current output files — it never reruns naming, LLM, or media generation;
 earlier failed attempts remain in the history, and a successful retry
 completes the same job.
+
+### Storefront listings (FourthWall)
+
+The opt-in `fourthwall_listing` block publishes the job's latest ready
+delivery archive as a FourthWall **digital** product — the customer ZIP
+becomes the buyer's downloadable file and the smallest image per generation
+variant (converted to JPEG, max 4 by default) becomes the storefront
+preview. It is not in the shipped workflow template; add it as a terminal
+step on `/workflows/{id}`.
+
+The block is best-effort by design — the creative work and ZIP already
+exist when it runs, so disabled settings, missing credentials or archive,
+and API failures record a `storefront_listings` attempt row and a job
+warning instead of failing the run. One product is created per archive
+version: a `ready` listing for the latest archive skips cleanly.
+
+Global options live under **Settings → General → Store Fronts →
+FourthWall**: enable flag, USD price, "publish on create" (off by default —
+products are created hidden and published manually in the Fourthwall admin),
+ZIP size limit (25 MB matches FourthWall's free-plan cap), the description
+template (`$title`/`$description`/`$tags`/`$attribution`, seeded from the
+Social Media Specialist's marketplace post), and the preview cap. API
+credentials stay in `.env` — `FOURTHWALL_API_USER` /
+`FOURTHWALL_API_PASSWORD` are the Open API username/password pair from the
+Fourthwall admin ("For developers"), used as HTTP Basic auth; they are never
+stored in the database. PayHip is noted on the same page as manual-only —
+its API exposes no listing endpoints.
+
+Every attempt is audited in `storefront_listings` (payload snapshot,
+archive name/size/hash, product id, status, error). The job detail page and
+`GET /api/workflows/jobs/{id}/listings` show the history, and
+`POST /api/workflows/jobs/{id}/listings/retry` (or the job page's **Retry
+listing** button) runs a listing-only retry under the workload guard
+without rerunning any creative steps — the job's prior terminal status is
+restored regardless of outcome.
 
 The `/convert` page is a standalone drag-and-drop PNG→JPEG tool (no pipeline
 involved): drop one or more PNGs and conversion starts immediately — no
@@ -426,6 +463,8 @@ app/
                        settings + migration backups)
     delivery.py      → DeliveryArchive + DeliveryArchiveEntry (attempt audit:
                        status, checksums, file inventory, Markdown snapshots)
+    storefront.py    → StorefrontListing (listing attempt audit: payload,
+                       archive identity, product id, status, errors)
   blocks/            → workflow blocks
     base.py          → Abstract Block + BlockMeta
     registry.py      → auto-discovery & @register decorator
@@ -441,6 +480,8 @@ app/
     background_remover.py → solid-background cutout block (settings in
                        block_configurations; writes <name>_cutout.png)
     delivery_archive.py → final block: customer ZIP delivery + retry outputs
+    fourthwall_listing.py → opt-in terminal block: publish the ZIP as a
+                       FourthWall digital product (best-effort)
     example_block.py → `echo` test block
   pipeline/
     engine.py        → sequential execution + conditional routing + job titling
@@ -460,6 +501,9 @@ app/
                        (NumPy chroma keying; API page + block call it)
     delivery_archive.py → ZIP build/verify/publish, audit persistence,
                        download-path safety, archive-only retry
+    fourthwall.py    → FourthWall Open API client (Basic auth, signed
+                       uploads), listing creation + audit, listing retry
+    storefront_settings.py → global `storefronts.fourthwall` settings row
     general_settings.py → global delivery settings + signature upload handling
   api/               → REST endpoints (/api/blocks, /api/workflows, /api/workflow-definitions, /api/configurations, /api/convert, /api/remove-background)
   web/               → routes.py (pages + HTMX partials), templates/, static/

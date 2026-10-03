@@ -9,4 +9,6 @@ Media profiles + audit: MediaModelConfiguration, MediaGenerationExecution
 (app/models/media.py)
 Generic per-workflow block profiles: BlockConfiguration (app/models/block.py)
 Configuration: Setting (app/models/setting.py)
+Delivery audit: DeliveryArchive, DeliveryArchiveEntry (app/models/delivery.py)
+Storefront audit: StorefrontListing (app/models/storefront.py)
 """

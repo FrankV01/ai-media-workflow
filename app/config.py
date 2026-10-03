@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     refiner_denoise: float = 0.25
     image_output_dir: Path = Path("/Volumes/SanDisk Mac AI/ComfyUI/output")
 
+    # FourthWall storefront integration (env-only: credentials are secrets and
+    # never enter the database). The Open API user/password pair is created in
+    # the Fourthwall admin under "For developers"; requests authenticate with
+    # HTTP Basic auth.
+    fourthwall_api_user: str = ""
+    fourthwall_api_password: str = ""
+    fourthwall_base_url: str = "https://api.fourthwall.com/open-api/v1.0"
+    fourthwall_timeout: float = 300.0  # max wait per API/upload request
+
     @field_validator("image_output_dir")
     @classmethod
     def require_absolute_image_output_dir(cls, value: Path) -> Path:
