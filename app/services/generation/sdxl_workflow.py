@@ -143,4 +143,16 @@ def build_sdxl_workflow(
             "inputs": {"images": ["18", 0], "filename_prefix": f"{prefix}_upscaled_4x"},
         },
     }
+
+    # Apply CLIP skip to the base pass only — the refiner encodes on its own
+    # checkpoint's CLIP under the refiner_* settings. clip_skip <= 1 is
+    # ComfyUI's default, so the node is omitted and the graph is unchanged.
+    if request.clip_skip > 1:
+        prompt["20"] = {
+            "class_type": "CLIPSetLastLayer",
+            "inputs": {"clip": ["1", 1], "stop_at_clip_layer": -request.clip_skip},
+        }
+        for encoder_id in ("2", "3"):
+            prompt[encoder_id]["inputs"]["clip"] = ["20", 0]
+
     return {"client_id": client_id, "prompt": prompt}, seed

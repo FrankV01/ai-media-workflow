@@ -168,10 +168,7 @@ async def test_create_archive_packages_everything(output_dir):
     result = await da.create_delivery_archive(job.id)
 
     slug = slugify_photo_shoot_name(job.workflow_name)
-    expected_dir = (
-        output_dir / "_delivery" / output_subdir(job.workflow_name, job.id, job.created_at.date())
-    )
-    expected = expected_dir / f"{slug}-job{job.id}.zip"
+    expected = source / f"{slug}-job{job.id}.zip"
     assert Path(result["delivery_archive_path"]) == expected
     assert expected.is_file()
     assert result["delivery_archive_status"] == "ready"
@@ -225,6 +222,11 @@ async def test_create_archive_packages_everything(output_dir):
     readme = members["_delivery/README.md"].decode()
     assert "Test Shoot" in readme
     assert f"Job: #{job.id}" in readme
+    assert "## Files" in readme
+    assert "[_delivery/README.md](README.md)" in readme
+    assert "[_delivery/creative_process.md](creative_process.md)" in readme
+    assert "[_delivery/manifest.json](manifest.json)" in readme
+    assert "](../report.md)" in readme
 
 
 async def test_archive_includes_note_license_signature(output_dir):
@@ -248,6 +250,8 @@ async def test_archive_includes_note_license_signature(output_dir):
     assert "© Studio X" in readme
     assert members["_delivery/LICENSE.md"].decode() == "# License\nYou may use this.\n"
     assert members["_delivery/signature.png"] == _png_bytes()
+    assert "[_delivery/LICENSE.md](LICENSE.md)" in readme
+    assert "[_delivery/signature.png](signature.png)" in readme
 
     snapshot = json.loads(archive.settings_json)
     assert snapshot["customer_note"] == "Dear customer"
@@ -269,6 +273,9 @@ async def test_attempts_version_and_settings_immutable(output_dir):
     assert first["delivery_archive_id"] != second["delivery_archive_id"]
     name2 = Path(second["delivery_archive_path"]).name
     assert name2.endswith("-v2.zip")
+    assert Path(first["delivery_archive_path"]).exists()
+    v2_members = _read_zip(Path(second["delivery_archive_path"]))
+    assert not any(n.endswith(".zip") for n in v2_members)
 
     async with app.database.async_session() as session:
         rows = (
@@ -287,13 +294,9 @@ async def test_attempts_version_and_settings_immutable(output_dir):
 
 
 async def test_publish_never_overwrites(output_dir):
-    job, _ = await _make_job(output_dir, SOURCE_FILES)
-    dest = (
-        output_dir / "_delivery" / output_subdir(job.workflow_name, job.id, job.created_at.date())
-    )
-    dest.mkdir(parents=True)
+    job, source = await _make_job(output_dir, SOURCE_FILES)
     slug = slugify_photo_shoot_name(job.workflow_name)
-    squat = dest / f"{slug}-job{job.id}.zip"
+    squat = source / f"{slug}-job{job.id}.zip"
     squat.write_bytes(b"taken")
 
     with pytest.raises(da.DeliveryArchiveError, match="already exists"):
@@ -314,11 +317,11 @@ async def _expect_failure(output_dir, job, files_before) -> None:
     assert entries == {}
     for rel, data in files_before.items():
         assert (Path(archive.source_dir) / rel).read_bytes() == data
-    dest = (
-        output_dir / "_delivery" / output_subdir(job.workflow_name, job.id, job.created_at.date())
-    )
-    if dest.exists():
-        leftover = [p for p in dest.rglob("*") if p.is_file()]
+    source_dir = Path(archive.source_dir)
+    assert not list(source_dir.glob("*.zip"))
+    staging = output_dir / "_delivery" / ".staging"
+    if staging.exists():
+        leftover = [p for p in staging.rglob("*") if p.is_file()]
         assert leftover == []
 
 
@@ -424,10 +427,10 @@ async def test_fails_when_source_tree_changes_during_packaging(output_dir, monke
     real = da._inventory
     calls = 0
 
-    def flaky_inventory(source):
+    def flaky_inventory(source, own_zip=None):
         nonlocal calls
         calls += 1
-        rows = real(source)
+        rows = real(source, own_zip)
         if calls == 2:
             return rows + [("added.txt", "file", Path(source) / "added.txt")]
         return rows
@@ -452,26 +455,20 @@ async def test_fails_when_post_verify_hash_errors(output_dir, monkeypatch):
         await da.create_delivery_archive(job.id)
     archive = await _archive(job.id)
     assert archive.status == DeliveryArchiveStatus.FAILED
-    dest = (
-        output_dir / "_delivery" / output_subdir(job.workflow_name, job.id, job.created_at.date())
-    )
-    leftover = [p for p in dest.rglob("*") if p.is_file()] if dest.exists() else []
-    assert leftover == []
+    assert not list(Path(archive.source_dir).glob("*.zip"))
 
 
-async def test_fails_when_destination_unwritable(output_dir):
+async def test_fails_when_staging_unwritable(output_dir):
     job, _ = await _make_job(output_dir, SOURCE_FILES)
-    dest = (
-        output_dir / "_delivery" / output_subdir(job.workflow_name, job.id, job.created_at.date())
-    )
-    dest.parent.mkdir(parents=True)
-    dest.write_bytes(b"file in the way")
+    staging = output_dir / "_delivery" / ".staging"
+    staging.parent.mkdir(parents=True)
+    staging.write_bytes(b"file in the way")
 
     with pytest.raises(Exception):
         await da.create_delivery_archive(job.id)
     archive = await _archive(job.id)
     assert archive.status == DeliveryArchiveStatus.FAILED
-    assert dest.read_bytes() == b"file in the way"
+    assert staging.read_bytes() == b"file in the way"
 
 
 async def test_fails_on_zip_verification(output_dir, monkeypatch):
@@ -502,11 +499,7 @@ async def test_ready_commit_failure_cleans_artifact(output_dir, monkeypatch):
 
     archive = await _archive(job.id)
     assert archive.status != DeliveryArchiveStatus.READY
-    dest = (
-        output_dir / "_delivery" / output_subdir(job.workflow_name, job.id, job.created_at.date())
-    )
-    leftover = [p for p in dest.rglob("*") if p.is_file()] if dest.exists() else []
-    assert leftover == []
+    assert not list(Path(archive.source_dir).glob("*.zip"))
 
 
 @register
@@ -861,7 +854,6 @@ async def test_fails_when_source_outside_output_root(output_dir):
             attempt=1,
             archive_id=1,
             source=source,
-            destination_dir=output_dir / "_delivery" / "x",
             delivery_settings={},
             process_md="",
             expected=[],
@@ -1326,10 +1318,7 @@ async def test_fails_when_temp_cleanup_fails_after_publication(output_dir, monke
     archive = await _archive(job.id)
     assert archive.status == DeliveryArchiveStatus.FAILED
     slug = slugify_photo_shoot_name(job.workflow_name)
-    dest = (
-        output_dir / "_delivery" / output_subdir(job.workflow_name, job.id, job.created_at.date())
-    )
-    assert not (dest / f"{slug}-job{job.id}.zip").exists()
+    assert not (Path(archive.source_dir) / f"{slug}-job{job.id}.zip").exists()
 
 
 async def test_fails_when_earlier_file_changes_during_later_copy(output_dir, monkeypatch):
@@ -1356,12 +1345,48 @@ async def test_fails_when_earlier_file_changes_during_later_copy(output_dir, mon
     assert archive.archive_path is None
 
 
+async def test_download_path_accepts_job_folder_archive(output_dir):
+    job, source = await _make_job(output_dir, SOURCE_FILES)
+    result = await da.create_delivery_archive(job.id)
+    archive = await _archive(job.id)
+
+    path = da.archive_download_path(archive)
+    assert path == Path(result["delivery_archive_path"]).resolve()
+    assert path.parent == source.resolve()
+
+
+async def _legacy_archive_record(output_dir, job: Job, source: Path) -> DeliveryArchive:
+    legacy_dir = da.delivery_root() / "2026-01-15" / "legacy-shoot" / f"job{job.id}"
+    legacy_dir.mkdir(parents=True)
+    legacy_zip = legacy_dir / f"legacy-shoot-job{job.id}.zip"
+    legacy_zip.write_bytes(b"pk-legacy")
+    async with app.database.async_session() as session:
+        archive = DeliveryArchive(
+            job_id=job.id,
+            attempt=1,
+            status=DeliveryArchiveStatus.READY,
+            source_dir=str(source),
+            settings_json="{}",
+            archive_path=str(legacy_zip),
+            archive_name=legacy_zip.name,
+        )
+        session.add(archive)
+        await session.commit()
+        return archive
+
+
+async def test_download_path_accepts_legacy_delivery_archive(output_dir):
+    job, source = await _make_job(output_dir, SOURCE_FILES)
+    archive = await _legacy_archive_record(output_dir, job, source)
+
+    assert da.archive_download_path(archive) == Path(archive.archive_path).resolve()
+
+
 async def test_download_path_rejects_redirected_delivery_root(output_dir):
     import shutil
 
-    job, _ = await _make_job(output_dir, SOURCE_FILES)
-    await da.create_delivery_archive(job.id)
-    archive = await _archive(job.id)
+    job, source = await _make_job(output_dir, SOURCE_FILES)
+    archive = await _legacy_archive_record(output_dir, job, source)
 
     delivery = output_dir / "_delivery"
     outside = output_dir.parent / "outside-delivery"
@@ -1369,4 +1394,66 @@ async def test_download_path_rejects_redirected_delivery_root(output_dir):
     delivery.symlink_to(outside)
 
     with pytest.raises(da.DeliveryArchiveError, match="delivery root"):
+        da.archive_download_path(archive)
+
+
+async def test_own_archives_excluded_but_unrelated_zips_packaged(output_dir):
+    files = dict(SOURCE_FILES)
+    files["unrelated.zip"] = b"unrelated zip payload"
+    files["nested/inner.zip"] = b"nested zip"
+    job, source = await _make_job(output_dir, files)
+    slug = slugify_photo_shoot_name(job.workflow_name)
+
+    first = await da.create_delivery_archive(job.id)
+    second = await da.create_delivery_archive(job.id)
+
+    assert Path(first["delivery_archive_path"]).name == f"{slug}-job{job.id}.zip"
+    assert (source / f"{slug}-job{job.id}.zip").exists()
+    assert (source / f"{slug}-job{job.id}-v2.zip").exists()
+    members = _read_zip(Path(second["delivery_archive_path"]))
+    assert members["unrelated.zip"] == b"unrelated zip payload"
+    assert members["nested/inner.zip"] == b"nested zip"
+    assert f"{slug}-job{job.id}.zip" not in members
+    assert f"{slug}-job{job.id}-v2.zip" not in members
+
+
+async def test_download_path_rejects_source_outside_output_root(output_dir):
+    job, source = await _make_job(output_dir, SOURCE_FILES)
+    archive = await _legacy_archive_record(output_dir, job, source)
+    async with app.database.async_session() as session:
+        archive = await session.get(DeliveryArchive, archive.id)
+        archive.source_dir = str(output_dir.parent / "elsewhere")
+        await session.commit()
+
+    with pytest.raises(da.DeliveryArchiveError, match="archive source"):
+        da.archive_download_path(archive)
+
+
+async def test_download_path_rejects_unsafe_archive_name(output_dir):
+    job, source = await _make_job(output_dir, SOURCE_FILES)
+    archive = await _legacy_archive_record(output_dir, job, source)
+    for bad_name in ("bad\\name.zip", "c:x.zip"):
+        async with app.database.async_session() as session:
+            row = await session.get(DeliveryArchive, archive.id)
+            row.archive_name = bad_name
+            await session.commit()
+            archive.archive_name = bad_name
+        with pytest.raises(da.DeliveryArchiveError, match="unsafe"):
+            da.archive_download_path(archive)
+
+
+async def test_download_path_rejects_symlinked_artifact(output_dir):
+    job, _ = await _make_job(output_dir, SOURCE_FILES)
+    result = await da.create_delivery_archive(job.id)
+    archive = await _archive(job.id)
+    real = Path(result["delivery_archive_path"])
+    link = real.with_name(f"link-{real.name}")
+    link.symlink_to(real)
+    async with app.database.async_session() as session:
+        row = await session.get(DeliveryArchive, archive.id)
+        row.archive_path = str(link)
+        await session.commit()
+        archive.archive_path = str(link)
+
+    with pytest.raises(da.DeliveryArchiveError, match="not deliverable"):
         da.archive_download_path(archive)

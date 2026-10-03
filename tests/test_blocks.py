@@ -459,12 +459,18 @@ async def test_media_producer_with_placeholder():
             }
         )
 
-        result = await block.run({"prompt_architect_output": prompt_json})
+        context = {"prompt_architect_output": prompt_json}
+        result = await block.run(context)
 
         assert "generated_images" in result
         assert len(result["generated_images"]) >= 2  # main + 1 variant
         assert "generation_metadata" in result
         assert result["generation_metadata"][0]["backend"] == "placeholder"
+        # parameters emitted by the LLM are ignored — the media profile wins
+        snapshot = json.loads(result["_media_executions"][0]["settings_snapshot"])
+        assert snapshot["request"]["width"] == 1024
+        assert snapshot["request"]["steps"] == 69
+        assert any("ignored Prompt Architect 'parameters'" in w for w in context["_warnings"])
     finally:
         settings.generation_backend = original_backend
 
@@ -569,7 +575,7 @@ async def test_role_block_rejects_empty_llm_output(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_prompt_architect_run_validates_and_normalizes(monkeypatch):
-    """Valid fenced JSON is validated, normalized, and split into generation_params."""
+    """Valid fenced JSON is validated, normalized, and stored as clean JSON."""
     import app.blocks.role_block as role_block_module
     from app.blocks.prompt_architect import PromptArchitect
 
@@ -587,7 +593,10 @@ async def test_prompt_architect_run_validates_and_normalizes(monkeypatch):
         "negative_refiner_prompt",
     ):
         assert key in parsed
-    assert result["generation_params"] == payload["parameters"]
+    assert "generation_params" not in result
+    # Model-emitted parameters are recorded verbatim in the stored JSON but
+    # are inert — the media profile owns request settings
+    assert parsed["parameters"] == payload["parameters"]
     assert result["brief"] == result["prompt_architect_output"]
     assert result["suggested_next_role"] == "media_producer"
 
@@ -848,11 +857,12 @@ def test_prompt_architect_output_contract_contains_schema():
         "negative_prompt",
         "positive_refiner_prompt",
         "negative_refiner_prompt",
-        "parameters",
         "variants",
     )
     for key in keys:
         assert f'"{key}"' in contract
+    # The media profile is authoritative — the contract must not advertise parameters
+    assert '"parameters"' not in contract
     assert "aspect_ratio" not in contract
 
 
@@ -1169,11 +1179,13 @@ async def test_media_producer_report_writes_markdown(monkeypatch, tmp_path):
     assert "- Model: sdxl_base.safetensors" in text
     assert "- Configuration Source: custom" in text
     assert "- Configuration ID: 3" in text
-    assert "## Media Profile" in text
-    assert "### Request Defaults" in text
-    assert "**Steps:** 69" in text
-    assert "### Backend Workflow Fields" in text
+    assert "## Media Profile" not in text
+    assert "Request Defaults" not in text
+    assert "**Steps:** 69" not in text  # profile request default is not shown
+    assert "## Backend Workflow Settings" in text
     assert "**Refiner Denoise:** 0.25" in text
+    assert "**Refiner Checkpoint:** refiner.safetensors" in text
+    assert "## Effective Requests" in text
     assert "### `main` — completed" in text
     assert "**Steps:** 30" in text  # effective request value, not the profile default
     assert "**Width:** 512" in text
@@ -1227,10 +1239,12 @@ async def test_media_producer_report_uses_snapshot_not_defaults(monkeypatch, tmp
 
     path = tmp_path / "2026-09-23" / "x" / "job8" / "media_producer_report.md"
     text = path.read_text(encoding="utf-8")
-    assert "**Steps:** 40" in text  # resolved profile value
+    assert "**Steps:** 40" not in text  # profile request defaults are not shown
     assert "**Steps:** 12" in text  # effective request value
     assert "**Steps:** 69" not in text  # DEFAULT_PARAMS value must not appear
+    assert "## Backend Workflow Settings" in text
     assert "**Refiner Checkpoint:** r.ckpt" in text
+    assert "## Effective Requests" in text
     assert "Refiner Denoise" not in text  # null workflow fields are omitted
     assert result["media_producer_report_path"] == str(path)
 
@@ -1504,3 +1518,56 @@ async def test_social_media_report_renders_lead_markdown(monkeypatch, tmp_path):
     assert "### image feed" in text
     assert "## Licensing" not in text
     assert result["social_media_report_path"].endswith("social_media_specialist.md")
+
+
+@pytest.mark.asyncio
+async def test_media_producer_report_variant_request_defaults_not_repeated(monkeypatch, tmp_path):
+    """A variant differing only in request defaults must not re-emit the
+    shared backend workflow settings."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "image_output_dir", str(tmp_path))
+    shared_profile = {
+        "steps": 69,
+        "refiner_checkpoint": "r.ckpt",
+        "refiner_denoise": 0.25,
+    }
+    snapshots = [
+        {"profile": shared_profile, "request": {"steps": 30, "seed": 1}},
+        {"profile": {**shared_profile, "steps": 40}, "request": {"steps": 10, "seed": 2}},
+    ]
+    records = [
+        {
+            "configuration_id": 1,
+            "configuration_source": "custom",
+            "block_name": "media_producer",
+            "backend_name": "comfyui",
+            "model_name": "base.safetensors",
+            "variant_name": variant,
+            "settings_snapshot": json.dumps(snapshot),
+            "seed_used": 1,
+            "backend_metadata": None,
+            "image_paths": json.dumps([]),
+            "status": "completed",
+            "started_at": None,
+            "finished_at": None,
+        }
+        for variant, snapshot in zip(("main", "v2"), snapshots)
+    ]
+    context = {
+        "photo_shoot_name": "x",
+        "_job_id": 9,
+        "_job_created_date": "2026-09-23",
+        "_media_executions": records,
+    }
+
+    block = get_block("media_producer_report")()
+    result = await block.run(context)
+    text = (tmp_path / "2026-09-23" / "x" / "job9" / "media_producer_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## Backend Workflow Settings" in text
+    assert "Variant Backend Workflow Settings" not in text
+    assert text.count("Refiner Checkpoint") == 1
+    assert "**Steps:** 40" not in text
+    assert result["media_producer_report_path"]

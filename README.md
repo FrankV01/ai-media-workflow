@@ -63,8 +63,9 @@ User prompt
   → Prompt Architect      (converts brief into structured generation prompts — JSON with
                            positive / negative / refiner-positive / refiner-negative prompts)
   → Media Producer        (dispatches prompts to the generation backend, collects images)
-  → Media Report          (writes media_producer_report.md — the resolved generation
-                           settings actually used: media profile + per-request params)
+  → Media Report          (writes media_producer_report.md — the generation
+                           settings actually used: backend workflow settings
+                           + effective per-request params)
   → Art Critic            (evaluates quality, sets verdict: good / bad)
   → Critic Report         (writes art_critic_report.md next to the images)
   → Routing               (branches based on verdict)
@@ -74,8 +75,8 @@ User prompt
                  → LLM Report (writes llm_report.md — the effective LLM settings of every
                                role call: model, temperature, max_tokens, thinking, system prompt)
   → Delivery Archive      (packages the complete job output — originals plus
-                           generated docs — into the customer ZIP under
-                           IMAGE_OUTPUT_DIR/_delivery/)
+                           generated docs — into the customer ZIP inside the
+                           job output directory)
 ```
 
 Each block writes its report into the pipeline context as
@@ -165,7 +166,10 @@ never written into the original source directory:
   media_producer_report.md
   …
   _delivery/
-    README.md            ← navigation + your customer note and attribution
+    README.md            ← navigation + your customer note and attribution;
+                           its `## Files` section lists every original source
+                           file and every generated `_delivery/` document
+                           with relative links
     creative_process.md  ← ordered role executions and messages actually sent,
                            with the effective model/settings snapshots
     LICENSE.md           ← your license text, when configured
@@ -190,26 +194,34 @@ name collision in the source, unsafe/traversal entry names, symlinks, known
 credential-style filenames (`.env` and friends), or non-UTF-8 Markdown fail
 the attempt rather than silently skipping content.
 
-ZIPs land in a sibling namespace outside the per-job source tree (so they are
-never recursively packaged), versioned per attempt — `-v2`, `-v3`, … —
-including failed attempts:
+ZIPs land inside the job's own output directory beside the originals,
+versioned per attempt — `-v2`, `-v3`, … — failed attempts consume version
+numbers too but never leave partial ZIPs. A job's own archive family is never
+packaged into later attempts, while unrelated ZIPs in the output folder ship
+normally:
 
 ```
 IMAGE_OUTPUT_DIR/
+  <yyyy-mm-dd>/                        ← job UTC creation date
+    <shoot-slug>/
+      job<id>/
+        aimw_main_refined_1x_00001_.png
+        <shoot-slug>-job<id>.zip       ← customer archive
+        <shoot-slug>-job<id>-v2.zip    ← retry versions are retained
   _delivery/
-    <yyyy-mm-dd>/                      ← job UTC creation date
-      <shoot-slug>/
-        job<id>/
-          <shoot-slug>-job<id>.zip
+    .staging/                          ← hidden temp build directory
+    <yyyy-mm-dd>/<shoot-slug>/job<id>/ ← archives created before the
+        <shoot-slug>-job<id>.zip           job-folder layout — existing
+                                         records stay downloadable
   _delivery_assets/
     signatures/                        ← uploaded signature images
 ```
 
-Publication is atomic: the ZIP is built and verified as a temporary file in
-the destination directory, then published via a hard link that never
-overwrites — so the destination filesystem must support hard links (the
-current SanDisk output volume is APFS). Original job files are only read,
-never linked or moved.
+Publication is atomic: the ZIP is built and verified as a temporary file
+under the hidden `_delivery/.staging/` directory, then published into the
+job folder via a hard link that never overwrites — so the output volume must
+support hard links (the current SanDisk volume is APFS). Original job files
+are only read, never linked or moved.
 
 Customer-facing text and signature are global settings (no per-workflow or
 per-run overrides) stored in the database under the `delivery.general_settings`

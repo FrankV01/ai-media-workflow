@@ -167,13 +167,14 @@ class MediaProfileSettings:
     """
     Typed media profile values.
 
-    Request defaults apply to every GenerationRequest the block builds
-    (Prompt Architect parameters still win per request). The workflow fields
-    are backend-specific: required for 'comfyui', optional/None otherwise.
-    Seed stays per-request (-1 = random) and is intentionally absent.
+    Request settings apply to every GenerationRequest the block builds —
+    the profile is authoritative (LLM-emitted `parameters` are ignored).
+    The workflow fields are backend-specific: required for 'comfyui',
+    optional/None otherwise. Seed stays per-request (-1 = random) and is
+    intentionally absent.
     """
 
-    # Request defaults
+    # Request settings
     width: int
     height: int
     cfg_scale: float

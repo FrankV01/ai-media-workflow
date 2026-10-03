@@ -6,7 +6,7 @@ next to the generated images (IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>
 Role output is rendered as markdown — JSON payloads are converted to
 markdown fields/lists rather than embedded verbatim; output that already
 is prose/markdown (or fails to parse) is emitted as-is. The media producer
-report renders the recorded generation settings (resolved media profile +
+report renders the recorded generation settings (backend workflow settings +
 effective per-request parameters) from context["_media_executions"], and
 the LLM report renders the effective per-role LLM settings (model, sampling
 parameters, thinking flag, full system prompt) from context["_executions"].
@@ -290,8 +290,9 @@ class MediaProducerReport(MarkdownReportBlock):
     meta = BlockMeta(
         name="media_producer_report",
         description=(
-            "Writes the resolved generation settings (media profile and "
-            "effective per-request parameters) to media_producer_report.md "
+            "Writes the resolved generation settings (backend workflow "
+            "settings and effective per-request parameters) to "
+            "media_producer_report.md"
             "alongside the generated images"
         ),
         version="0.1.0",
@@ -304,17 +305,11 @@ class MediaProducerReport(MarkdownReportBlock):
     path_key = "media_producer_report_path"
 
     @staticmethod
-    def _profile_lines(profile: dict[str, Any]) -> list[str]:
-        """Resolved media profile: request defaults, then backend workflow fields."""
-        defaults = {k: profile.get(k) for k in _REQUEST_DEFAULT_KEYS if k in profile}
-        lines = ["### Request Defaults", "", *_json_to_markdown(defaults)]
-        workflow_fields = {
+    def _backend_workflow_settings(profile: dict[str, Any]) -> dict[str, Any]:
+        """Non-request profile fields are the backend workflow settings."""
+        return {
             k: v for k, v in profile.items() if k not in _REQUEST_DEFAULT_KEYS and v is not None
         }
-        if workflow_fields:
-            lines += ["", "### Backend Workflow Fields", "", *_json_to_markdown(workflow_fields)]
-        lines.append("")
-        return lines
 
     def _request_lines(
         self,
@@ -327,8 +322,8 @@ class MediaProducerReport(MarkdownReportBlock):
         status = record.get("status") or "unknown"
         lines = ["", f"### `{variant}` — {status}", ""]
 
-        # Effective parameters dispatched to the backend (the Media Producer
-        # already merged any Prompt Architect `parameters` overrides in)
+        # Effective parameters dispatched to the backend (resolved from the
+        # media profile by the Media Producer)
         request = snapshot.get("request")
         if isinstance(request, dict) and request:
             lines += _json_to_markdown(request)
@@ -348,9 +343,20 @@ class MediaProducerReport(MarkdownReportBlock):
             if record.get(key) and record.get(key) != shared_record.get(key):
                 lines.append(f"- **{label}:** {record[key]}")
         profile = snapshot.get("profile")
-        if isinstance(profile, dict) and profile != shared_profile:
-            lines += ["", "#### Variant Profile (differs from the shared profile)", ""]
-            lines += self._profile_lines(profile)
+        if isinstance(profile, dict):
+            shared_fields = (
+                self._backend_workflow_settings(shared_profile)
+                if isinstance(shared_profile, dict)
+                else {}
+            )
+            variant_fields = self._backend_workflow_settings(profile)
+            if variant_fields and variant_fields != shared_fields:
+                lines += [
+                    "",
+                    "#### Variant Backend Workflow Settings (differ from shared)",
+                    "",
+                    *_json_to_markdown(variant_fields),
+                ]
 
         images = _parse_json(record.get("image_paths")) or []
         if images:
@@ -383,11 +389,17 @@ class MediaProducerReport(MarkdownReportBlock):
         lines.append("")
 
         shared_profile = snapshots[0].get("profile")
-        if isinstance(shared_profile, dict) and shared_profile:
-            lines += ["## Media Profile", ""]
-            lines += self._profile_lines(shared_profile)
+        if isinstance(shared_profile, dict):
+            backend_fields = self._backend_workflow_settings(shared_profile)
+            if backend_fields:
+                lines += [
+                    "## Backend Workflow Settings",
+                    "",
+                    *_json_to_markdown(backend_fields),
+                    "",
+                ]
 
-        lines.append("## Requests")
+        lines.append("## Effective Requests")
         shared = (first, shared_profile)
         for record, snapshot in zip(records, snapshots):
             lines += self._request_lines(record, snapshot, shared)

@@ -213,14 +213,14 @@
             </div>
             <p class="text-[11px] text-gray-500 mt-1">Backend and model are this profile's key — set by <span class="font-mono">GENERATION_BACKEND</span> / <span class="font-mono">COMFYUI_CHECKPOINT</span> in .env, or by this workflow's media model override.</p>
             {% if profile.is_active %}
-            <p class="text-[11px] text-indigo-300/80 mt-1 mb-3">In effect — runs of {{ workflow.name }} use these request defaults and ComfyUI settings. The Prompt Architect's <span class="font-mono">parameters</span> override request defaults per request.</p>
+            <p class="text-[11px] text-indigo-300/80 mt-1 mb-3">In effect — runs of {{ workflow.name }} use these request settings and ComfyUI settings. They are authoritative for every request; the Prompt Architect cannot override them.</p>
             {% elif profile.is_test_active %}
             <p class="text-[11px] text-gray-500 mt-1 mb-3">Used by Test runs only (placeholder backend). Normal runs use the active profile.</p>
             {% else %}
             <p class="text-[11px] text-amber-300/80 mt-1 mb-3">Not in effect — stored for when the backend/model selection switches to <span class="font-mono">{{ profile.backend_name }} / {{ profile.model_name }}</span>.</p>
             {% endif %}
 
-            <p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Request defaults</p>
+            <p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Request settings</p>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div><label class="text-xs text-gray-500 block mb-1">Width</label>
                     <input name="width" type="number" min="1" value="{{ s.width }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>
@@ -291,7 +291,7 @@
                            class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono text-gray-300 flex-1">
                 </div>
 
-                <p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Request defaults</p>
+                <p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Request settings</p>
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <div><label class="text-xs text-gray-500 block mb-1">Width</label>
                         <input name="width" type="number" min="1" value="{{ d.width }}" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm"></div>

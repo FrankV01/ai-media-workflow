@@ -405,7 +405,7 @@ async def test_media_profile_seeded_and_warns(temp_config_db):
     assert row.model_name == "placeholder"
 
 
-def test_build_requests_prefers_explicit_params_over_profile():
+def test_build_requests_ignores_prompt_parameters():
     profile = MediaProfileSettings(
         width=512,
         height=512,
@@ -417,13 +417,16 @@ def test_build_requests_prefers_explicit_params_over_profile():
     )
     parsed = {
         "positive_prompt": "p",
-        "parameters": {"steps": 99, "width": 64},
+        "parameters": {"steps": 99, "width": 64, "seed": 1234},
     }
     req = _build_requests(parsed, profile=profile)[0]
-    assert req.steps == 99  # explicit param wins
-    assert req.width == 64
-    assert req.cfg_scale == 3.0  # profile default
+    # The media profile is authoritative — LLM-emitted parameters are ignored
+    assert req.steps == 11
+    assert req.width == 512
+    assert req.cfg_scale == 3.0
     assert req.sampler == "euler"
+    assert req.clip_skip == 2
+    assert req.seed == -1
 
 
 def test_build_requests_falls_back_to_code_defaults():
@@ -455,7 +458,9 @@ def test_comfyui_backend_uses_injected_workflow_config():
 async def test_media_producer_placeholder_profile_and_audit(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "image_output_dir", tmp_path)
     context = {
-        "prompt_architect_output": json.dumps({"positive_prompt": "a rose"}),
+        "prompt_architect_output": json.dumps(
+            {"positive_prompt": "a rose", "parameters": {"steps": 1, "width": 16}}
+        ),
         "_generation_backend": "placeholder",
     }
     result = await MediaProducer().run(context)
@@ -469,7 +474,12 @@ async def test_media_producer_placeholder_profile_and_audit(monkeypatch, tmp_pat
     assert records[0]["configuration_source"] == "code_default"
     snapshot = json.loads(records[0]["settings_snapshot"])
     assert snapshot["profile"]["steps"] == 69
+    # profile wins — LLM-emitted parameters are ignored and warned about
+    assert snapshot["request"]["steps"] == 69
+    assert snapshot["request"]["width"] == 1024
+    assert snapshot["request"]["seed"] == -1
     assert any("code-default" in w for w in context["_warnings"])
+    assert any("ignored Prompt Architect 'parameters'" in w for w in context["_warnings"])
 
 
 async def test_media_producer_failure_audit_record(monkeypatch, tmp_path):

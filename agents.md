@@ -58,16 +58,16 @@ custom step lists may omit or reorder it. It has no dependency on `art_critic` a
 |---|---|---|---|
 | `job_namer` | RoleBlock | Auto-prepended by the engine for untitled runs; generates the shoot title (best-effort — never fails the pipeline) | `photo_shoot_name` |
 | `art_director` | RoleBlock | Expands concept into creative brief | `art_director_output` |
-| `prompt_architect` | RoleBlock | Converts brief to structured JSON prompts; appends canonical JSON contract to resolved prompt; fails the step unless all four prompts are present | `prompt_architect_output`, `generation_params` |
-| `media_producer` | Block | Dispatches to generation backend, collects images | `generated_images`, `generation_metadata`, `media_producer_output` |
+| `prompt_architect` | RoleBlock | Converts brief to structured JSON prompts; appends canonical JSON contract to resolved prompt; fails the step unless all four prompts are present | `prompt_architect_output` |
+| `media_producer` | Block | Dispatches to generation backend using the media profile's request settings (authoritative — model-emitted `parameters` are ignored with a warning), collects images | `generated_images`, `generation_metadata`, `media_producer_output` |
 | `art_critic` | RoleBlock | Evaluates quality, sets verdict; appends a Markdown lead + JSON contract to resolved prompt | `art_critic_output`, `_verdict` |
 | `social_media_specialist` | RoleBlock | Creates marketing content (per-channel post suggestions incl. licensing marketplaces); appends a Markdown lead-post + JSON contract to resolved prompt | `social_media_specialist_output`, `social_media_posts` |
 | `art_critic_report` | Block | Writes critique to art_critic_report.md | `art_critic_report_path`, `report_files` |
 | `social_media_report` | Block | Writes post suggestions to social_media_specialist.md | `social_media_report_path`, `report_files` |
-| `media_producer_report` | Block | Writes the resolved generation settings (media profile + per-request params from `_media_executions`) to media_producer_report.md | `media_producer_report_path`, `report_files` |
+| `media_producer_report` | Block | Writes the resolved generation settings (backend workflow settings + effective per-request params from `_media_executions`; request defaults are not restated) to media_producer_report.md | `media_producer_report_path`, `report_files` |
 | `llm_report` | Block | Writes the effective LLM settings of every role call in the run (model, temperature, max_tokens, thinking, config source, full system prompt, token usage — from `_executions`) to llm_report.md | `llm_report_path`, `report_files` |
 | `background_remover` | Block | Cuts solid-color backgrounds out of `generated_images` (pure NumPy/Pillow chroma key — no AI model); settings profiled per workflow (`has_db_settings`) | `cutout_images`, `cutout_metadata`, `background_remover_output` |
-| `delivery_archive` | Block | Last step of the default template (and migrated definitions that lacked it) — builds the customer ZIP delivery of the whole job output (files, reports, README/license/signature, manifest); attempt metadata and inventories/checksums/Markdown snapshots live in `delivery_archives`/`delivery_archive_entries`, binaries on disk under `IMAGE_OUTPUT_DIR/_delivery/`; archive-only retry via `/api/workflows/jobs/{id}/archives/retry` never reruns creative steps | `delivery_archive_id`, `delivery_archive_path`, `delivery_archive_sha256`, `delivery_archive_status` |
+| `delivery_archive` | Block | Last step of the default template (and migrated definitions that lacked it) — builds the customer ZIP delivery of the whole job output (files, reports, README/license/signature, manifest); attempt metadata and inventories/checksums/Markdown snapshots live in `delivery_archives`/`delivery_archive_entries`, ZIPs written beside the job's output files (`IMAGE_OUTPUT_DIR/_delivery/` now only hosts the `.staging` build dir and legacy archives); archive-only retry via `/api/workflows/jobs/{id}/archives/retry` never reruns creative steps | `delivery_archive_id`, `delivery_archive_path`, `delivery_archive_sha256`, `delivery_archive_status` |
 | `echo` | Block | Test/utility block (`example_block.py`) | `echo_result` |
 
 ### Context flow
@@ -103,8 +103,10 @@ The canonical response schema (`PROMPT_ARCHITECT_RESPONSE_SCHEMA`) is appended t
 resolved system prompt at run time — applied to default and customized prompts alike,
 with any JSON embedded in a custom prompt merged over it (official key names always
 remain). It requires `positive_prompt`, `negative_prompt`, `positive_refiner_prompt`,
-and `negative_refiner_prompt` (all non-blank), plus optional `parameters` (a per-request
-override of the media profile) and `variants`. `PromptArchitect.run` parses the response
+and `negative_refiner_prompt` (all non-blank), plus optional `variants`. Request
+settings are owned by the media profile — `parameters` in the response are recorded
+verbatim in `prompt_architect_output` but ignored by the Media Producer, which appends
+a job warning naming the ignored keys. `PromptArchitect.run` parses the response
 (tolerating markdown fences/preamble), raises `ValueError` if the JSON is missing or any
 required prompt is blank, and rewrites `prompt_architect_output`/`brief` as clean JSON.
 The Media Producer builds one `GenerationRequest` for the main prompt plus one per variant.
@@ -145,22 +147,29 @@ browser and server share a machine) and "Copy path" buttons.
 
 `delivery_archive` (`app/blocks/delivery_archive.py`; service
 `app/services/delivery_archive.py`) packages the whole derived job output dir
-into a customer ZIP published under `IMAGE_OUTPUT_DIR/_delivery/<date>/<slug>/job<id>/`
-(name `<slug>-job<id>.zip`, `-v2`/`-vN` on repeats; date = job UTC creation date).
-Nothing is written into the source tree — the generated docs live only inside
-the ZIP's reserved `_delivery/` namespace (README.md with note/attribution and
-relative links, creative_process.md, manifest.json, optional LICENSE.md and
-signature image). Expected outputs are the union of
+into a customer ZIP published **inside that same job directory**
+(`<slug>-job<id>.zip`, `-v2`/`-vN` retained on repeats). The job's own archive
+family (top-level `<stem>.zip`/`<stem>-vN.zip`) is excluded from packaging;
+unrelated ZIPs ship normally. Temporary builds stage under the hidden
+`IMAGE_OUTPUT_DIR/_delivery/.staging/` dir — `_delivery/` also still serves
+archives recorded before the job-folder layout, which stay downloadable.
+The only addition to the job directory is the published ZIP itself — the
+generated docs (README.md with note/attribution and relative links,
+creative_process.md, manifest.json, optional LICENSE.md and signature image)
+exist only inside the ZIP's reserved `_delivery/` namespace. Expected outputs are the union of
 `Job.generated_assets`/`report_files` and the
 `generated_images`/`cutout_images`/`report_files` recorded in *completed*
 `JobStep.output` snapshots — a recorded-but-missing file fails the attempt.
 Creative provenance comes from the saved `RoleExecution`/`Message` audit rows
 (immutable effective prompts/settings), never recomputed from mutable
 profiles. Build is streamed ZIP64 off the event loop and verified (CRC +
-SHA-256 per member) before publish: the temporary ZIP lives in the
-destination directory and is published via a no-overwrite **hard link**, so
-the destination filesystem must support hard links (APFS here); original
-source files are only read, never linked or moved. The
+SHA-256 per member) before publish: the temporary ZIP lives in `_delivery/.staging/`
+and is hard-linked into the job directory without overwriting — the output
+volume must support hard links (APFS here); original source files are only
+read, never linked or moved. `archive_download_path` accepts a ready artifact
+at `<source_dir>/<archive_name>` (new layout) or a same-named file under the
+validated legacy `delivery_root()` (old layout), rejecting redirected roots,
+symlinks, and escapes. The
 manifest deliberately omits its own digest and the ZIP digest (stored on the
 `DeliveryArchive` row) to avoid circularity. Unsafe entry names, `_delivery`
 namespace collisions, symlinked/redirected source or destination paths,
@@ -316,7 +325,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 - **AI configuration**: `CreativeRole` is stable identity metadata only. Mutable behavior profiles live in `LlmRoleConfiguration` keyed by `(workflow_id, role, model_name)` — the run's workflow selects the scope and `LLM_MODEL` selects the model within it — and `MediaModelConfiguration` keyed by `(workflow_id, block, backend, model)`, and `BlockConfiguration` keyed by `(workflow_id, block_name)` for non-LLM/non-media blocks that set `has_db_settings` (`background_remover`). `app/services/configuration/` resolves profiles: **missing rows only** are seeded from code defaults (`uses_code_defaults=True`) and emit a warning on every use until customized via `/settings/ai?workflow=<slug>` or `/api/configurations?workflow=<slug>` (omitted scope → the default workflow). Resolution (`resolve_llm`/`resolve_media`), the settings page GET, and pipeline runs **never overwrite existing rows** — the only mutations are the explicit Save/Reset paths. Secrets, URLs, timeouts, poll intervals, and filesystem paths stay env-only.
 - **LLM configuration change audit**: Every explicit LLM save/reset writes an `LlmConfigurationChange` row in the same transaction — `action` (`save_custom`/`reset_to_defaults`), `origin` (`service`/`web_settings`/`rest_api` — the web and API layers pass their own origin; the provider default is `service`), and JSON `before_snapshot`/`after_snapshot` of the mutable fields (`system_prompt`, `temperature`, `max_tokens`, `enable_thinking`, `uses_code_defaults`). An event is recorded even when values are identical. Newest-first listing via `list_llm_configuration_changes`; the settings page renders the 5 most recent per profile and `GET /api/configurations/llm/{role}/history?model_name=…` exposes them (404 for unknown role or missing exact model profile). There is no media audit table yet.
 - **AI execution audit**: Every attempted LLM call and image-generation request stores an *immutable snapshot* — copied prompt/model/parameters (`RoleExecution.system_prompt`, `MediaGenerationExecution.settings_snapshot`), not the mutable configuration FK, are the audit authority. The engine persists each record against the corresponding `JobStep`, including failed calls, and never updates configuration or role rows. Job detail (web `/jobs/{id}` and `GET /api/workflows/jobs/{id}`) exposes per-step `llm_executions` — the effective system prompt, model, config id/source, and parameters actually used.
-- **Media precedence**: explicit Prompt Architect `parameters` override the media profile's request defaults, which override code defaults. Seed is per-request, never a profile default. The ComfyUI backend receives its model/workflow settings via an injected `SdxlWorkflowConfig`; operational URL/poll/timeout/output remain env settings.
+- **Media settings authority**: the resolved media profile supplies every `GenerationRequest` setting — `parameters` emitted by the Prompt Architect are ignored (deduplicated job warning naming the ignored keys), and seed is always per-request/random, never a profile or LLM setting. The ComfyUI backend receives its model/workflow settings via an injected `SdxlWorkflowConfig`; `clip_skip` is applied to the base pass via a `CLIPSetLastLayer` node (omitted when ≤1); operational URL/poll/timeout/output remain env settings.
 - **Delivery archives**: `DeliveryArchive` (attempt number, status `pending`/`running`/`ready`/`failed`, source dir, settings snapshot, archive path/name, byte size, ZIP + manifest SHA-256) and `DeliveryArchiveEntry` (per-path type/size/sha256 plus immutable Markdown snapshots) audit every packaging attempt. Global customer settings (`customer_note`, `artist_attribution`, `license_markdown`, managed `signature_asset` filename) persist in the `settings` table under key `delivery.general_settings`, edited on `/settings/general`; signature uploads (PNG/JPEG, ≤5 MB, ≤20 MP) live under `IMAGE_OUTPUT_DIR/_delivery_assets/signatures/`.
 
 ## Database Migrations

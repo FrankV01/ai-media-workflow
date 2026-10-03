@@ -37,7 +37,7 @@ class MediaModelConfiguration(Base):
     is the base checkpoint for ComfyUI and the stable string 'placeholder'
     for the placeholder backend — the workflow's media_model_name (or the
     env selection) picks which one is active. settings_json holds typed
-    request defaults (width/height/cfg_scale/steps/sampler/scheduler/
+    request settings (width/height/cfg_scale/steps/sampler/scheduler/
     clip_skip) plus backend-specific workflow fields (refiner/upscale
     models and sampling).
     """

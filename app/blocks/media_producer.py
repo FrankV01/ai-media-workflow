@@ -8,7 +8,7 @@ placeholder for testing) and waits for the result.
 
 Responsibilities:
 1. Parse the structured JSON output from the Prompt Architect
-   (positive_prompt, negative_prompt, refiner prompts, parameters, variants)
+   (positive_prompt, negative_prompt, refiner prompts, variants)
 2. Resolve the (media_producer, backend, model) configuration profile from
    the database (seeded from code defaults on first use, warning until
    customized) and inject it into the backend and request defaults
@@ -19,8 +19,9 @@ Responsibilities:
    context["_media_executions"], including failures
 6. Collect output image paths and metadata
 
-Parameter precedence: explicit Prompt Architect `parameters` > media profile
-request defaults > code defaults (DEFAULT_PARAMS). Seed stays per-request.
+Parameter source: the resolved media profile supplies every request setting
+— `parameters` emitted by the Prompt Architect are ignored (with a job
+warning). Seed stays per-request (random).
 
 The block keeps the "employee memo hand-off" metaphor alive: the Media
 Producer receives a detailed production order (the structured prompt JSON)
@@ -58,8 +59,7 @@ from app.services.generation.sdxl_workflow import SdxlWorkflowConfig
 
 logger = logging.getLogger(__name__)
 
-# Code-default request parameters (used to seed new media profiles; the
-# Prompt Architect's explicit parameters still win per request)
+# Code-default request parameters (used to seed new media profiles)
 DEFAULT_PARAMS = {
     "width": 1024,
     "height": 1024,
@@ -133,12 +133,11 @@ def _build_requests(
 ) -> list[GenerationRequest]:
     """Build GenerationRequest(s) from parsed Prompt Architect output.
 
-    Explicit `parameters` in the parsed output win; everything else falls
-    back to the resolved media profile's request defaults (code defaults
-    when no profile is given).
+    Every request setting comes from the resolved media profile (code
+    defaults when no profile is given) — the profile is authoritative and
+    `parameters` in the parsed output are ignored.
     """
     defaults = profile or MediaProfileSettings(**DEFAULT_PARAMS)
-    params = parsed.get("parameters", {})
     extras = {"output_subdir": subdir} if subdir else {}
 
     # Main request
@@ -147,14 +146,13 @@ def _build_requests(
         negative_prompt=parsed.get("negative_prompt", ""),
         positive_refiner_prompt=parsed.get("positive_refiner_prompt", ""),
         negative_refiner_prompt=parsed.get("negative_refiner_prompt", ""),
-        width=params.get("width", defaults.width),
-        height=params.get("height", defaults.height),
-        cfg_scale=params.get("cfg_scale", defaults.cfg_scale),
-        steps=params.get("steps", defaults.steps),
-        sampler=params.get("sampler", defaults.sampler),
-        scheduler=params.get("scheduler", defaults.scheduler),
-        clip_skip=params.get("clip_skip", defaults.clip_skip),
-        seed=params.get("seed", -1),
+        width=defaults.width,
+        height=defaults.height,
+        cfg_scale=defaults.cfg_scale,
+        steps=defaults.steps,
+        sampler=defaults.sampler,
+        scheduler=defaults.scheduler,
+        clip_skip=defaults.clip_skip,
         variant_name="main",
         extras=extras,
     )
@@ -295,8 +293,23 @@ class MediaProducer(Block):
             context.get("_job_created_date"),
         )
 
-        # Build generation requests — Prompt Architect params override the
-        # profile's request defaults
+        # The media profile is authoritative — flag any parameters the
+        # Prompt Architect emitted so the ignore isn't silent
+        emitted_params = parsed.get("parameters")
+        if isinstance(emitted_params, dict) and emitted_params:
+            warning = (
+                "MediaProducer ignored Prompt Architect 'parameters' ("
+                + ", ".join(sorted(emitted_params))
+                + ") — request settings come from the media profile"
+            )
+            slug = context.get("_workflow_slug")
+            warning += f" (/settings/ai?workflow={slug})" if slug else " (/settings/ai)"
+            warnings = context.setdefault("_warnings", [])
+            if warning not in warnings:
+                warnings.append(warning)
+            logger.warning("%s", warning)
+
+        # Build generation requests — all settings come from the profile
         requests = _build_requests(parsed, subdir, resolved.settings)
 
         backend = self._make_backend(resolved.backend_name, resolved)

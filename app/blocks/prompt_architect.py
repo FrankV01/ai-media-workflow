@@ -11,10 +11,11 @@ prompt is merged over the schema — official key names always remain.
 
 Input:  context["brief"] — creative brief from Art Director
 Output: Structured JSON with positive/negative/refiner prompts (all four
-        required — the step fails if any is missing or blank), generation
-        parameters, and optional variants. Written as clean JSON to
-        context["prompt_architect_output"] and context["brief"];
-        parameters are also exposed as context["generation_params"].
+        required — the step fails if any is missing or blank) and optional
+        variants. Written as clean JSON to context["prompt_architect_output"]
+        and context["brief"]. Request generation settings are owned by the
+        media profile — any `parameters` the model emits are ignored by the
+        Media Producer (with a job warning).
 
 Suggested next: media_producer
 """
@@ -56,7 +57,6 @@ Guidelines:
 - Use generic visual descriptors — lighting, era, medium, technique, color, mood — \
   rather than naming specific artists, brands, people, or copyrighted works; \
   describe qualities generically when the brief references something specific.
-- When overriding generation parameters, keep width and height as multiples of 8.
 - Offer variants only when each is materially distinct in concept — a genuinely \
   different take, not a minor iteration of the main prompt.
 
@@ -73,15 +73,6 @@ PROMPT_ARCHITECT_RESPONSE_SCHEMA: dict[str, Any] = {
     "textures, lighting subtlety, color grading — used by a refiner/upscale pass>",
     "negative_refiner_prompt": "<refiner-specific exclusions: over-sharpening, "
     "over-saturation, plastic skin, noise>",
-    "parameters": {
-        "width": 1024,
-        "height": 1024,
-        "cfg_scale": 7.0,
-        "steps": 69,
-        "sampler": "dpmpp_2m",
-        "scheduler": "karras",
-        "clip_skip": 1,
-    },
     "variants": [
         {
             "name": "<short label>",
@@ -112,7 +103,7 @@ class PromptArchitect(RoleBlock):
         version="0.4.0",
         category="creative",
         inputs=["brief"],
-        outputs=["brief", "prompt_architect_output", "generation_params"],
+        outputs=["brief", "prompt_architect_output"],
     )
 
     role_name = "prompt_architect"
@@ -158,7 +149,6 @@ class PromptArchitect(RoleBlock):
         result["brief"] = clean
         result["output_deliverable"] = clean
         result["prompt_architect_output"] = clean
-        result["generation_params"] = parsed.get("parameters", {})
 
         logger.info(
             "PromptArchitect: validated output — positive_prompt=%d chars, %d variant(s)",

@@ -6,8 +6,12 @@ README.md, creative_process.md (rendered from the immutable execution audit
 records, so the creative process ships even without report blocks), optional
 LICENSE.md and signature image, and a machine-readable manifest.json.
 
-ZIPs live under IMAGE_OUTPUT_DIR/_delivery/<date>/<shoot-slug>/job<id>/ —
-outside the packaged source tree. Every attempt is recorded in
+ZIPs are published into the job's own output directory
+(<shoot-slug>-job<id>.zip, versioned -v2/-vN per attempt); the job's own
+archive family is excluded from packaging while unrelated ZIPs ship
+normally. Temporary builds stage under a hidden `.staging` directory inside
+IMAGE_OUTPUT_DIR/_delivery/ — the same root also still hosts legacy
+archives so older records remain downloadable. Every attempt is recorded in
 DeliveryArchive/DeliveryArchiveEntry (metadata, inventory, checksums, exact
 Markdown contents — never binaries). The temporary build is verified
 (CRC + payload SHA-256) then published atomically without overwriting;
@@ -39,7 +43,7 @@ from app.models.delivery import DeliveryArchive, DeliveryArchiveEntry, DeliveryA
 from app.models.job import Job, JobStatus, JobStep
 from app.models.media import MediaGenerationExecution
 from app.models.workflow import Workflow
-from app.pipeline.naming import output_subdir, slugify_photo_shoot_name
+from app.pipeline.naming import slugify_photo_shoot_name
 from app.services.general_settings import signature_path
 from app.services.open_folder import job_output_dir
 from app.services.workload_guard import workload_guard
@@ -80,13 +84,19 @@ class ArchiveRetryError(RuntimeError):
 
 
 def delivery_root() -> Path:
-    """Root directory for generated delivery archives (outside job outputs)."""
+    """Legacy archive root; still serves old artifacts and hosts `.staging`."""
     return Path(settings.image_output_dir) / _RESERVED_NAMESPACE
 
 
-def _delivery_dir(job: Job) -> Path:
-    created_date = job.created_at.date() if job.created_at else None
-    return delivery_root() / output_subdir(job.workflow_name, job.id, created_date)
+def _archive_name(job: Job, attempt: int) -> str:
+    stem = f"{slugify_photo_shoot_name(job.workflow_name)}-job{job.id}"
+    return f"{stem}.zip" if attempt == 1 else f"{stem}-v{attempt}.zip"
+
+
+def _own_archive_matcher(job: Job) -> re.Pattern[str]:
+    """Match only this job's own archive filenames: <stem>.zip, <stem>-vN.zip."""
+    stem = re.escape(f"{slugify_photo_shoot_name(job.workflow_name)}-job{job.id}")
+    return re.compile(rf"{stem}-v\d+\.zip|{stem}\.zip")
 
 
 def _output_root() -> Path:
@@ -135,12 +145,16 @@ def _check_entry_name(rel: str) -> None:
             raise DeliveryArchiveError(f"unsafe archive entry name: {rel}")
 
 
-def _inventory(source: Path) -> list[tuple[str, str, Path | None]]:
+def _inventory(
+    source: Path, own_zip: re.Pattern[str] | None = None
+) -> list[tuple[str, str, Path | None]]:
     """Walk `source`, returning (relative posix path, type, abs path) rows.
 
-    Directories — including empty ones — are preserved. Symlinks, special
-    files, credential/environment files, unsafe entry names, and a
-    pre-existing `_delivery` namespace all fail the attempt.
+    Directories — including empty ones — are preserved. Top-level regular
+    files matching `own_zip` (this job's previously published archives) are
+    skipped; unrelated ZIPs package normally. Symlinks, special files,
+    credential/environment files, unsafe entry names, and a pre-existing
+    `_delivery` namespace all fail the attempt.
     """
     if source.is_symlink():
         raise DeliveryArchiveError("symlinks are not deliverable")
@@ -163,6 +177,8 @@ def _inventory(source: Path) -> list[tuple[str, str, Path | None]]:
                 rows.append((rel + "/", "directory", None))
                 stack.append((entry, rel + "/"))
             elif entry.is_file():
+                if prefix == "" and own_zip is not None and own_zip.fullmatch(entry.name):
+                    continue
                 if prefix == "" and entry.name.lower() == _RESERVED_NAMESPACE:
                     raise DeliveryArchiveError(
                         f"source already contains the reserved '{_RESERVED_NAMESPACE}/' namespace"
@@ -248,7 +264,8 @@ def _readme(
     job: Job,
     workflow_name: str | None,
     delivery_settings: dict[str, Any],
-    files: list[str],
+    source_files: list[str],
+    generated_files: list[str],
     has_license: bool,
     signature_name: str | None,
 ) -> str:
@@ -281,9 +298,11 @@ def _readme(
     attribution = (delivery_settings.get("artist_attribution") or "").strip()
     if attribution:
         lines += ["## Attribution", "", attribution, ""]
-    if files:
+    if source_files or generated_files:
         lines += ["## Files", ""]
-        lines += [f"- {_md_link(name, '../' + name)}" for name in files]
+        lines += [f"- {_md_link(name, '../' + name)}" for name in source_files]
+        prefix = _RESERVED_NAMESPACE + "/"
+        lines += [f"- {_md_link(name, name.removeprefix(prefix))}" for name in generated_files]
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -465,7 +484,6 @@ def _build_archive(
     attempt: int,
     archive_id: int,
     source: Path,
-    destination_dir: Path,
     delivery_settings: dict[str, Any],
     process_md: str,
     expected: list[str],
@@ -474,14 +492,14 @@ def _build_archive(
     if not source.is_dir():
         raise DeliveryArchiveError(f"job output directory is missing: {source}")
 
-    inventory = _inventory(source)
+    own_zip = _own_archive_matcher(job)
+    inventory = _inventory(source, own_zip)
     if not any(row[1] == "file" for row in inventory):
         raise DeliveryArchiveError(f"job output directory is empty: {source}")
     _check_expected_outputs(expected, source)
 
-    slug = slugify_photo_shoot_name(job.workflow_name)
-    name = f"{slug}-job{job.id}.zip" if attempt == 1 else f"{slug}-job{job.id}-v{attempt}.zip"
-    final_path = destination_dir / name
+    name = _archive_name(job, attempt)
+    final_path = source / name
     if final_path.exists():
         raise DeliveryArchiveError(f"archive artifact already exists: {final_path}")
 
@@ -500,11 +518,21 @@ def _build_archive(
     workflow_name = workflow["name"] if workflow else None
     generated: dict[str, bytes] = {}
     file_entries = [rel for rel, kind, _ in inventory if kind == "file"]
+    generated_names = [
+        f"{_RESERVED_NAMESPACE}/README.md",
+        f"{_RESERVED_NAMESPACE}/creative_process.md",
+    ]
+    if license_md is not None:
+        generated_names.append(f"{_RESERVED_NAMESPACE}/LICENSE.md")
+    if signature_name is not None:
+        generated_names.append(f"{_RESERVED_NAMESPACE}/{signature_name}")
+    generated_names.append(f"{_RESERVED_NAMESPACE}/manifest.json")
     generated[f"{_RESERVED_NAMESPACE}/README.md"] = _readme(
         job,
         workflow_name,
         delivery_settings,
         file_entries,
+        generated_names,
         has_license=license_md is not None,
         signature_name=signature_name,
     ).encode("utf-8")
@@ -559,9 +587,9 @@ def _build_archive(
     manifest_bytes = manifest_text.encode("utf-8")
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
 
-    _require_contained(destination_dir, _output_root(), "delivery destination")
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=".delivery-", suffix=".zip", dir=destination_dir)
+    staging = _require_contained(delivery_root() / ".staging", _output_root(), "delivery staging")
+    staging.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".delivery-", suffix=".zip", dir=staging)
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
@@ -584,7 +612,7 @@ def _build_archive(
                 archive.writestr(rel, data)
             archive.writestr(manifest_name, manifest_bytes)
 
-        latest = [(rel, kind) for rel, kind, _ in _inventory(source)]
+        latest = [(rel, kind) for rel, kind, _ in _inventory(source, own_zip)]
         if latest != [(rel, kind) for rel, kind, _ in inventory]:
             raise DeliveryArchiveError("source tree changed while being packaged")
 
@@ -769,7 +797,6 @@ async def create_delivery_archive(job_id: int, *, job_step_id: int | None = None
         archive_id = record.id
 
     source = Path(record.source_dir)
-    destination_dir = _delivery_dir(job)
     final_path: Path | None = None
     try:
         async with app.database.async_session() as session:
@@ -791,7 +818,6 @@ async def create_delivery_archive(job_id: int, *, job_step_id: int | None = None
             attempt=attempt,
             archive_id=archive_id,
             source=source,
-            destination_dir=destination_dir,
             delivery_settings=delivery_settings,
             process_md=process_md,
             expected=expected,
@@ -865,16 +891,28 @@ async def get_archive(
 def archive_download_path(archive: DeliveryArchive) -> Path:
     """Resolve the on-disk artifact for a ready archive.
 
-    The path comes from the persisted server-side record, is contained under
-    the delivery root, and must exist — missing files are unavailable, not
-    downloadable as empty data.
+    Accepted locations: `<source_dir>/<archive_name>` (current layout, inside
+    the job output directory) or the legacy `delivery_root()` tree with the
+    same filename. Redirected roots, symlinked paths, and escapes are rejected;
+    a missing valid file is unavailable, not downloadable as empty data.
     """
     if archive.status != DeliveryArchiveStatus.READY or not archive.archive_path:
         raise DeliveryArchiveError("archive is not ready")
-    root = _require_contained(delivery_root(), _output_root(), "delivery root")
-    path = Path(archive.archive_path).resolve()
-    if not path.is_relative_to(root):
-        raise DeliveryArchiveError("archive path is outside the delivery root")
+    name = archive.archive_name or ""
+    if not name or Path(name).name != name or name in {".", ".."}:
+        raise DeliveryArchiveError("archive record has an unsafe name")
+    _check_entry_name(name)
+    raw = Path(archive.archive_path)
+    if raw.is_symlink():
+        raise DeliveryArchiveError("archive path is not deliverable")
+    path = raw.resolve()
+    output_root = _output_root()
+    source_dir = _require_contained(Path(archive.source_dir), output_root, "archive source")
+    expected = source_dir / name
+    if path != expected:
+        root = _require_contained(delivery_root(), output_root, "delivery root")
+        if path.name != name or not path.is_relative_to(root):
+            raise DeliveryArchiveError("archive path is outside the delivery root")
     if not path.is_file():
         raise FileNotFoundError(str(path))
     return path

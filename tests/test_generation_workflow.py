@@ -92,3 +92,30 @@ def test_refiner_denoise_must_be_valid_for_comfyui() -> None:
             upscale_4x_model="upscale_4x.pth",
             refiner_denoise=2.0,
         )
+
+
+def test_clip_skip_adds_last_layer_node(workflow_config) -> None:
+    request = GenerationRequest(positive_prompt="a rose", clip_skip=2)
+    workflow, _ = build_sdxl_workflow(request, "client-id", workflow_config)
+    nodes = workflow["prompt"]
+
+    last_layer = nodes["20"]
+    assert last_layer["class_type"] == "CLIPSetLastLayer"
+    assert last_layer["inputs"]["clip"] == ["1", 1]
+    assert last_layer["inputs"]["stop_at_clip_layer"] == -2
+    # Base-pass encoders consume the skipped CLIP
+    assert nodes["2"]["inputs"]["clip"] == ["20", 0]
+    assert nodes["3"]["inputs"]["clip"] == ["20", 0]
+    # Refiner encoders stay on the refiner checkpoint's own CLIP
+    assert nodes["8"]["inputs"]["clip"] == ["7", 1]
+    assert nodes["9"]["inputs"]["clip"] == ["7", 1]
+
+
+def test_clip_skip_one_keeps_default_graph(workflow_config) -> None:
+    request = GenerationRequest(positive_prompt="a rose", clip_skip=1)
+    workflow, _ = build_sdxl_workflow(request, "client-id", workflow_config)
+    nodes = workflow["prompt"]
+
+    assert all(n["class_type"] != "CLIPSetLastLayer" for n in nodes.values())
+    assert nodes["2"]["inputs"]["clip"] == ["1", 1]
+    assert nodes["3"]["inputs"]["clip"] == ["1", 1]
