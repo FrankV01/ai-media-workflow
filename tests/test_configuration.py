@@ -669,6 +669,57 @@ def test_settings_ai_page_renders(client):
     assert settings.llm_model in resp.text
 
 
+def test_settings_page_marks_active_and_inactive_llm_profiles(client):
+    save = client.post(
+        "/settings/ai/llm/save",
+        data={
+            "role_name": "art_director",
+            "model_name": "vendor/other-model",
+            "system_prompt": "p",
+            "temperature": "0.5",
+            "max_tokens": "100",
+        },
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
+    html = client.get("/settings/ai").text
+    assert 'data-profile-state="active"' in html
+    assert 'data-profile-state="inactive"' in html
+    assert "Not in effect" in html
+    assert "vendor/other-model" in html
+    assert "In effect — runs of" in html
+
+
+def test_settings_page_contract_note_only_for_json_roles(client):
+    html = client.get("/settings/ai").text
+    # prompt_architect, art_critic, social_media_specialist each render one active profile
+    assert html.count('data-note="output-contract"') == 3
+
+
+def test_settings_page_marks_placeholder_media_profile_as_test_run(client):
+    save = client.post(
+        "/settings/ai/media/save",
+        data={
+            "backend_name": "placeholder",
+            "model_name": "placeholder",
+            "width": "512",
+            "height": "512",
+            "cfg_scale": "7.0",
+            "steps": "10",
+            "sampler": "euler",
+            "scheduler": "normal",
+            "clip_skip": "1",
+        },
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
+    html = client.get("/settings/ai").text
+    expected = "active" if settings.generation_backend.lower() == "placeholder" else "test"
+    assert f'data-profile-state="{expected}"' in html
+    if expected == "test":
+        assert "Used by Test runs only" in html
+
+
 async def test_api_put_populates_role_metadata_on_empty_db(client, temp_config_db):
     """A custom profile created before any execution still upserts role metadata."""
     resp = client.put(

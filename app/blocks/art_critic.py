@@ -124,6 +124,7 @@ class ArtCritic(RoleBlock):
     )
     system_prompt = ART_CRITIC_SYSTEM_PROMPT
     suggested_next = None  # Routing handled by pipeline engine, not suggested_next
+    appends_output_contract = True
     default_temperature = 0.4  # Lower temp for more consistent evaluations
 
     async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:

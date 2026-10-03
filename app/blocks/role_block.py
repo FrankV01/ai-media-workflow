@@ -61,6 +61,7 @@ class RoleBlock(Block):
     system_prompt: str
     suggested_next: str | None = None
     output_format: str = "text"
+    appends_output_contract: bool = False
     default_temperature: float | None = None
 
     def __init__(self, provider: LlmConfigurationProvider | None = None) -> None:

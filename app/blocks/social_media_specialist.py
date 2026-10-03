@@ -145,6 +145,7 @@ class SocialMediaSpecialist(RoleBlock):
     )
     system_prompt = SOCIAL_MEDIA_SYSTEM_PROMPT
     suggested_next = None  # Terminal block for now
+    appends_output_contract = True
     default_temperature = 0.7
 
     async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:

@@ -123,6 +123,7 @@ class PromptArchitect(RoleBlock):
     )
     system_prompt = PROMPT_ARCHITECT_SYSTEM_PROMPT
     suggested_next = "media_producer"
+    appends_output_contract = True
     default_temperature = 0.6
 
     async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedLlmConfiguration:

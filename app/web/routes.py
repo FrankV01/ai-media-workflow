@@ -52,7 +52,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.blocks.media_producer import code_media_defaults, selected_media_model
+from app.blocks.media_producer import (
+    PLACEHOLDER_MODEL_NAME,
+    code_media_defaults,
+    selected_media_model,
+)
 from app.blocks.registry import get_block, list_blocks
 from app.config import settings
 from app.database import get_session
@@ -344,6 +348,9 @@ async def ai_settings_page(
             "backend_name": config.backend_name,
             "model_name": config.model_name,
             "uses_code_defaults": config.uses_code_defaults,
+            "is_active": config.backend_name == backend_name and config.model_name == media_model,
+            "is_test_active": config.backend_name == "placeholder"
+            and config.model_name == (wf.media_model_name or PLACEHOLDER_MODEL_NAME),
             "settings_dict": MediaProfileSettings.from_json(config.settings_json),
         }
         for config in media_rows
@@ -369,6 +376,7 @@ async def ai_settings_page(
                 "max_tokens": config.max_tokens,
                 "enable_thinking": config.enable_thinking,
                 "uses_code_defaults": config.uses_code_defaults,
+                "is_active": config.model_name == settings.llm_model,
                 "changes": [
                     {
                         "id": change.id,
@@ -400,6 +408,7 @@ async def ai_settings_page(
             "name": block.role_name,
             "title": block.role_title,
             "description": block.role_description,
+            "appends_output_contract": block.appends_output_contract,
             "profiles": profiles_by_role.get(block.role_name, []),
         }
         for block in role_blocks.values()
