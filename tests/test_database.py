@@ -40,7 +40,7 @@ from app.models.workflow import Workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "e2f5a1c9d7b4"
-HEAD_REVISION = "g8d5b2e4f6a1"
+HEAD_REVISION = "i6d9b3e7f4c1"
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -391,8 +391,9 @@ def _seed_workflows(path: Path) -> None:
 def test_workflow_migration_appends_archive_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every stored workflow gains a terminal delivery_archive; an existing
-    occurrence is not duplicated; other rows/settings are untouched."""
+    """Every stored workflow gains a terminal delivery_archive followed by
+    fourthwall_listing; an existing occurrence is not duplicated; other
+    rows/settings are untouched."""
     import json as _json
 
     path = tmp_path / "app.db"
@@ -403,14 +404,28 @@ def test_workflow_migration_appends_archive_once(
     _upgrade(path, "head", monkeypatch)
 
     main = _json.loads(_steps_json(path, 1))
-    assert main[-1] == "delivery_archive"
-    assert main[:-1] == [
+    assert main[-3:] == [
+        "delivery_archive",
+        "cloudflare_r2_uploader",
+        "fourthwall_listing",
+    ]
+    assert main[:-3] == [
         "art_director",
         "media_producer",
         {"on_good": [], "always": ["llm_report"]},
     ]
-    assert _json.loads(_steps_json(path, 2)) == ["echo", "delivery_archive"]
-    assert _json.loads(_steps_json(path, 3)) == ["echo", "delivery_archive"]
+    assert _json.loads(_steps_json(path, 2)) == [
+        "echo",
+        "delivery_archive",
+        "cloudflare_r2_uploader",
+        "fourthwall_listing",
+    ]
+    assert _json.loads(_steps_json(path, 3)) == [
+        "echo",
+        "delivery_archive",
+        "cloudflare_r2_uploader",
+        "fourthwall_listing",
+    ]
 
     with sqlite3.connect(path) as conn:
         backup = conn.execute(
@@ -420,6 +435,20 @@ def test_workflow_migration_appends_archive_once(
         assert backup is not None
         mapping = _json.loads(backup[0])
         assert set(mapping) == {"1", "2"}
+        listing_backup = conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            ("fourthwall_listing.workflow_migration_backup",),
+        ).fetchone()
+        assert listing_backup is not None
+        listing_mapping = _json.loads(listing_backup[0])
+        assert set(listing_mapping) == {"1", "2", "3"}
+        upload_backup = conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            ("cloudflare_r2_uploader.workflow_migration_backup",),
+        ).fetchone()
+        assert upload_backup is not None
+        upload_mapping = _json.loads(upload_backup[0])
+        assert set(upload_mapping) == {"1", "2", "3"}
         other = conn.execute("SELECT value FROM settings WHERE key = 'other'").fetchone()
         assert other[0] == "keep"
         job = conn.execute("SELECT workflow_name FROM jobs WHERE id = 1").fetchone()
@@ -427,6 +456,15 @@ def test_workflow_migration_appends_archive_once(
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "delivery_archives" in tables
         assert "delivery_archive_entries" in tables
+        assert "cloudflare_r2_uploads" in tables
+        listing_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(storefront_listings)")
+        }
+        assert {
+            "cloudflare_upload_id",
+            "link_document_name",
+            "link_document_sha256",
+        } <= listing_cols
 
 
 def test_workflow_migration_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -440,6 +478,40 @@ def test_workflow_migration_is_idempotent(tmp_path: Path, monkeypatch: pytest.Mo
     _upgrade(path, "head", monkeypatch)
     assert _steps_json(path, 1) == before
     assert _json.loads(before).count("delivery_archive") == 1
+    assert _json.loads(before).count("cloudflare_r2_uploader") == 1
+    assert _json.loads(before).count("fourthwall_listing") == 1
+
+
+def test_uploader_migration_skips_branch_only_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A workflow whose only fourthwall_listing lives inside a routing
+    branch does not gain the uploader — branch placement stays manual."""
+    import json as _json
+
+    path = tmp_path / "app.db"
+    _upgrade(path, "d1e4f6a8b3c5", monkeypatch)
+    branch_steps = _json.dumps(
+        ["echo", {"on_good": [], "always": ["fourthwall_listing"]}]
+    )
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO workflows "
+            "(id, name, slug, description, steps_json, is_enabled, is_default,"
+            " created_at, updated_at) VALUES "
+            "(9, 'Branched', 'br', '', ?, 1, 0,"
+            " '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+            (branch_steps,),
+        )
+    _upgrade(path, "head", monkeypatch)
+    steps = _json.loads(_steps_json(path, 9))
+    # f7c3 appended delivery_archive; h4f6 and i6d9 both left it alone
+    assert steps == [
+        "echo",
+        {"on_good": [], "always": ["fourthwall_listing"]},
+        "delivery_archive",
+    ]
+    assert "cloudflare_r2_uploader" not in steps
 
 
 def test_workflow_migration_fails_on_malformed_steps(
@@ -495,7 +567,125 @@ def test_workflow_downgrade_restores_only_untouched_rows(
             is None
         )
         assert (
+            conn.execute(
+                "SELECT 1 FROM settings "
+                "WHERE key = 'fourthwall_listing.workflow_migration_backup'"
+            ).fetchone()
+            is None
+        )
+        assert (
+            conn.execute(
+                "SELECT 1 FROM settings "
+                "WHERE key = 'cloudflare_r2_uploader.workflow_migration_backup'"
+            ).fetchone()
+            is None
+        )
+        assert (
             conn.execute("SELECT value FROM settings WHERE key = 'other'").fetchone()[0] == "keep"
+        )
+
+
+def test_storefront_enabled_flag_is_scrubbed_and_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The storefront settings row loses the retired `enabled` key on
+    upgrade (backup kept) and regains it verbatim on downgrade."""
+    import json as _json
+
+    path = tmp_path / "app.db"
+    _upgrade(path, "g8d5b2e4f6a1", monkeypatch)
+    stored = _json.dumps(
+        {"enabled": True, "price_usd": 9.99, "publish_on_create": False}
+    )
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value, description) VALUES (?, ?, '')",
+            ("storefronts.fourthwall", stored),
+        )
+
+    _upgrade(path, "head", monkeypatch)
+
+    with sqlite3.connect(path) as conn:
+        value = conn.execute(
+            "SELECT value FROM settings WHERE key = 'storefronts.fourthwall'"
+        ).fetchone()[0]
+        assert "enabled" not in _json.loads(value)
+        assert _json.loads(value)["price_usd"] == 9.99
+        backup = conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            ("storefronts.fourthwall.enabled_migration_backup",),
+        ).fetchone()
+        assert backup is not None
+        assert _json.loads(backup[0])["old"] == stored
+
+    monkeypatch.setattr(settings, "database_url", f"sqlite+aiosqlite:///{path}")
+    command.downgrade(_alembic_config(), "g8d5b2e4f6a1")
+
+    with sqlite3.connect(path) as conn:
+        assert (
+            conn.execute(
+                "SELECT value FROM settings WHERE key = 'storefronts.fourthwall'"
+            ).fetchone()[0]
+            == stored
+        )
+        assert (
+            conn.execute(
+                "SELECT 1 FROM settings "
+                "WHERE key = 'storefronts.fourthwall.enabled_migration_backup'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_storefront_size_limit_is_scrubbed_and_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The storefront settings row loses the retired `file_size_limit_mb`
+    key on upgrade (backup kept) and regains it verbatim on downgrade."""
+    import json as _json
+
+    path = tmp_path / "app.db"
+    _upgrade(path, "h4f6a8b0c2d4", monkeypatch)
+    stored = _json.dumps(
+        {"price_usd": 9.99, "file_size_limit_mb": 25, "publish_on_create": False}
+    )
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value, description) VALUES (?, ?, '')",
+            ("storefronts.fourthwall", stored),
+        )
+
+    _upgrade(path, "head", monkeypatch)
+
+    with sqlite3.connect(path) as conn:
+        value = conn.execute(
+            "SELECT value FROM settings WHERE key = 'storefronts.fourthwall'"
+        ).fetchone()[0]
+        assert "file_size_limit_mb" not in _json.loads(value)
+        assert _json.loads(value)["price_usd"] == 9.99
+        backup = conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            ("storefronts.fourthwall.r2_migration_backup",),
+        ).fetchone()
+        assert backup is not None
+        assert _json.loads(backup[0])["old"] == stored
+
+    monkeypatch.setattr(settings, "database_url", f"sqlite+aiosqlite:///{path}")
+    command.downgrade(_alembic_config(), "h4f6a8b0c2d4")
+
+    with sqlite3.connect(path) as conn:
+        assert (
+            conn.execute(
+                "SELECT value FROM settings WHERE key = 'storefronts.fourthwall'"
+            ).fetchone()[0]
+            == stored
+        )
+        assert (
+            conn.execute(
+                "SELECT 1 FROM settings "
+                "WHERE key = 'storefronts.fourthwall.r2_migration_backup'"
+            ).fetchone()
+            is None
         )
 
 

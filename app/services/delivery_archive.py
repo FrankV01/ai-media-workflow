@@ -888,6 +888,22 @@ async def get_archive(
     return archive
 
 
+async def latest_ready_archive(
+    session: AsyncSession, job_id: int
+) -> DeliveryArchive | None:
+    """Newest verified delivery archive for the job, or None."""
+    result = await session.execute(
+        select(DeliveryArchive)
+        .where(
+            DeliveryArchive.job_id == job_id,
+            DeliveryArchive.status == DeliveryArchiveStatus.READY,
+        )
+        .order_by(DeliveryArchive.attempt.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 def archive_download_path(archive: DeliveryArchive) -> Path:
     """Resolve the on-disk artifact for a ready archive.
 

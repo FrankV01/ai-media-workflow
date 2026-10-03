@@ -77,8 +77,12 @@ User prompt
   → Delivery Archive      (packages the complete job output — originals plus
                            generated docs — into the customer ZIP inside the
                            job output directory)
-  → FourthWall Listing    (optional — publishes the customer ZIP as a FourthWall
-                           digital product; not part of the shipped template)
+  → Cloudflare R2 Upload  (uploads the customer ZIP to Cloudflare R2 and emits
+                           its public URL — best-effort)
+  → FourthWall Listing    (publishes a FourthWall digital product whose
+                           downloadable file is a small link document pointing
+                           at the R2-hosted ZIP — best-effort; a listing
+                           failure never fails the job)
 ```
 
 Each block writes its report into the pipeline context as
@@ -89,8 +93,9 @@ routing dicts (see `app/pipeline/engine.py`). The chain above is the shipped
 `block name | routing dict` format), managed on `/workflows` or via
 `/api/workflow-definitions`, and the stored definitions decide the actual
 sequence. Art Critic and its routing are optional and workflow-dependent;
-Delivery Archive does not require the critic and never inspects the verdict —
-it is simply the last top-level step, so it runs after the resolved branch.
+Delivery Archive, the R2 upload, and the FourthWall listing do not require
+the critic and never inspect the verdict — they are simply the last
+top-level steps, so they run after the resolved branch.
 
 Only one pipeline runs at a time; additional submissions queue as `PENDING`
 until the running job finishes. The queue is global across workflows — a
@@ -187,7 +192,7 @@ include non-secret operational metadata and local paths, and user-supplied
 secrets embedded in prompts or files are not automatically redacted — keep
 them out of job content. There is no watermark: attribution is your artist
 attribution text plus the optional signature image.
-Archives can be published to FourthWall by the opt-in `fourthwall_listing`
+Archives can be published to FourthWall by the `fourthwall_listing`
 block (see "Storefront listings" below).
 
 Safety: an empty or missing source, a recorded-but-absent expected file
@@ -250,7 +255,7 @@ database row holds them. ZIPs and images stay on disk; only metadata and text
 land in SQLite, never binary blobs. A `ready` attempt also yields stable
 block outputs — `delivery_archive_id`, `delivery_archive_path`,
 `delivery_archive_sha256`, and `delivery_archive_status` (`"ready"`) — the
-keys the `fourthwall_listing` block consumes.
+keys the `cloudflare_r2_uploader` and `fourthwall_listing` blocks consume.
 
 The job detail page has a "Delivery archives" box with download links,
 attempt history, and errors. When a job failed at its final archive step
@@ -260,35 +265,71 @@ current output files — it never reruns naming, LLM, or media generation;
 earlier failed attempts remain in the history, and a successful retry
 completes the same job.
 
+### Cloudflare R2 uploads
+
+The `cloudflare_r2_uploader` block uploads the job's latest ready delivery
+archive to a Cloudflare R2 bucket and emits the public object URL
+(`cloudflare_r2_url`). Delivery ZIPs run 150 MB+ — far over FourthWall's
+digital-file limit — so the storefront hands buyers a link to the R2-hosted
+archive instead of the archive itself. It ships between `delivery_archive`
+and `fourthwall_listing` in the default workflow; workflow membership is
+the only enablement.
+
+Object keys are deterministic — `<key prefix><archive sha256[:16]>-<name>.zip`
+(e.g. `fourthwall/9f2b…-neon-shoot-job1.zip`) — so re-uploads of the same
+archive hit the same object and keys are not enumerable. The public URL is
+`<public base URL>/<object key>`; the base is the bucket's **r2.dev** public
+access URL (dev) or a custom domain (production) — enable either in the
+Cloudflare dashboard, then set it under **Settings → General → Store Fronts
+→ Cloudflare R2** along with the S3 endpoint, bucket (`ai-media`), and key
+prefix. The upload itself uses the S3 API via boto3;
+`CLOUDFLARE_R2_ACCESS_KEY_ID` / `CLOUDFLARE_R2_SECRET_ACCESS_KEY` stay in
+`.env` and never enter the database. Public links are unguessable by key
+but reshareable — a Cloudflare Worker minting short-lived URLs per request
+is the planned upgrade.
+
+Every attempt is audited in `cloudflare_r2_uploads` (bucket/key/URL, ETag,
+archive identity, status, error) and every `storefront_listings` row links
+back to the upload its document points at. The job detail page and
+`GET /api/workflows/jobs/{id}/uploads` show the history, and
+`POST /api/workflows/jobs/{id}/uploads/retry` (or the job page's **Retry
+upload** button) runs an upload-only retry under the workload guard —
+same semantics as archive/listing retry.
+
 ### Storefront listings (FourthWall)
 
-The opt-in `fourthwall_listing` block publishes the job's latest ready
-delivery archive as a FourthWall **digital** product — the customer ZIP
-becomes the buyer's downloadable file and the smallest image per generation
-variant (converted to JPEG, max 4 by default) becomes the storefront
-preview. It is not in the shipped workflow template; add it as a terminal
-step on `/workflows/{id}`.
+The `fourthwall_listing` block publishes the job's latest ready
+delivery archive as a FourthWall **digital** product. Because the ZIP is
+hosted on R2, the product's downloadable file is a small **link document**
+— a one-page PDF (default) or Markdown file carrying the public download
+URL, archive name, size, and SHA-256 — generated per listing by
+`app/services/link_document.py`. The smallest image per generation variant
+(converted to JPEG, max 4 by default) becomes the storefront preview. It is
+the final step of the shipped "Main" workflow; workflow membership is the
+only enablement — a workflow that omits the step never lists.
 
 The block is best-effort by design — the creative work and ZIP already
-exist when it runs, so disabled settings, missing credentials or archive,
+exist when it runs, so missing credentials, archive, R2 upload, or price,
 and API failures record a `storefront_listings` attempt row and a job
 warning instead of failing the run. One product is created per archive
-version: a `ready` listing for the latest archive skips cleanly.
+version: a `ready` listing for the latest archive skips cleanly. With no
+ready R2 upload the listing skips with a warning — run the uploader first.
 
 Global options live under **Settings → General → Store Fronts →
-FourthWall**: enable flag, USD price, "publish on create" (off by default —
+FourthWall**: USD price, "publish on create" (off by default —
 products are created hidden and published manually in the Fourthwall admin),
-ZIP size limit (25 MB matches FourthWall's free-plan cap), the description
-template (`$title`/`$description`/`$tags`/`$attribution`, seeded from the
-Social Media Specialist's marketplace post), and the preview cap. API
-credentials stay in `.env` — `FOURTHWALL_API_USER` /
+the link document format (PDF or Markdown), the description template
+(`$title`/`$description`/`$tags`/`$attribution`, seeded from the Social
+Media Specialist's marketplace post), and the preview cap. API credentials
+stay in `.env` — `FOURTHWALL_API_USER` /
 `FOURTHWALL_API_PASSWORD` are the Open API username/password pair from the
 Fourthwall admin ("For developers"), used as HTTP Basic auth; they are never
 stored in the database. PayHip is noted on the same page as manual-only —
 its API exposes no listing endpoints.
 
 Every attempt is audited in `storefront_listings` (payload snapshot,
-archive name/size/hash, product id, status, error). The job detail page and
+archive name/size/hash, linked `cloudflare_upload_id`, link-document
+name/hash, product id, status, error). The job detail page and
 `GET /api/workflows/jobs/{id}/listings` show the history, and
 `POST /api/workflows/jobs/{id}/listings/retry` (or the job page's **Retry
 listing** button) runs a listing-only retry under the workload guard
@@ -465,6 +506,8 @@ app/
                        status, checksums, file inventory, Markdown snapshots)
     storefront.py    → StorefrontListing (listing attempt audit: payload,
                        archive identity, product id, status, errors)
+    cloudflare.py    → CloudflareUpload (R2 upload attempt audit: object
+                       key/URL, ETag, archive identity, status, errors)
   blocks/            → workflow blocks
     base.py          → Abstract Block + BlockMeta
     registry.py      → auto-discovery & @register decorator
@@ -479,8 +522,9 @@ app/
                        social_media_report, media_producer_report, llm_report)
     background_remover.py → solid-background cutout block (settings in
                        block_configurations; writes <name>_cutout.png)
-    delivery_archive.py → final block: customer ZIP delivery + retry outputs
-    fourthwall_listing.py → opt-in terminal block: publish the ZIP as a
+    delivery_archive.py → customer ZIP delivery + retry outputs
+    cloudflare_r2_uploader.py → R2 upload block: host the ZIP for buyers
+    fourthwall_listing.py → final block: publish the archive as a
                        FourthWall digital product (best-effort)
     example_block.py → `echo` test block
   pipeline/
@@ -503,6 +547,10 @@ app/
                        download-path safety, archive-only retry
     fourthwall.py    → FourthWall Open API client (Basic auth, signed
                        uploads), listing creation + audit, listing retry
+    cloudflare_r2.py → R2 upload orchestration + audit + upload-only retry
+    cloudflare_r2_settings.py → global `cloudflare.r2` settings row
+    r2_storage.py    → R2Storage protocol + boto3 S3 adapter (multipart)
+    link_document.py → buyer download document builder (PDF / Markdown)
     storefront_settings.py → global `storefronts.fourthwall` settings row
     general_settings.py → global delivery settings + signature upload handling
   api/               → REST endpoints (/api/blocks, /api/workflows, /api/workflow-definitions, /api/configurations, /api/convert, /api/remove-background)
@@ -542,6 +590,17 @@ exact before/after `steps_json` is kept under the
 `block_names` API calls are untouched, and no past jobs are archived
 retroactively. Downgrading restores only rows still matching the
 migration-written JSON.
+
+The storefront revisions follow the same pattern: `g8d5b2e4f6a1` creates
+`storefront_listings`, `h4f6a8b0c2d4` appends `fourthwall_listing` once to
+every stored workflow that lacks it (same validate-first and
+exact-match downgrade restore) and scrubs the retired `enabled` key from
+the `storefronts.fourthwall` settings JSON, and `i6d9b3e7f4c1` creates
+`cloudflare_r2_uploads`, adds the listing↔upload correlation columns to
+`storefront_listings`, inserts `cloudflare_r2_uploader` before
+`fourthwall_listing` in stored workflows (skipping definitions without a
+top-level listing or already hosting the uploader), and scrubs the retired
+`file_size_limit_mb` key — same backup + exact-match downgrade restore.
 
 Back up the SQLite file before applying migrations with a consistent snapshot
 (the `sqlite3.Connection.backup` API), not a raw copy of a live database —

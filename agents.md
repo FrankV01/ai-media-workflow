@@ -21,7 +21,7 @@ For project overview and setup, see [`README.md`](README.md).
 6. **Workflows are first-class DB rows.** A `Workflow` (`app/models/workflow.py`) is a named pipeline definition: ordered steps in the engine's `list[str | dict]` format (block names + `on_good`/`on_bad`/`always` routing dicts), enable/disable flags, a single default, and an optional `media_model_name` override. `app/services/workflows.py` owns CRUD/validation/clone; the engine resolves the workflow before a run, uses its `steps_json` when no explicit `block_names` are given, and stamps `Job.workflow_id`. Every run executes inside a workflow "container" — its AI configuration profiles are scoped to that workflow (see Database). "Main" (slug `main`) is the seeded default workflow; disabling the default is rejected. New workflows are created blank or by cloning (clone copies steps + all scoped LLM/media profiles). Managed on the `/workflows` page (create/clone/enable/disable/set-default) and `/workflows/{id}` (validated JSON steps editor with rendered preview); the dashboard selector scopes runs and the job list, and `/settings/ai?workflow=<slug>` scopes that workflow's profiles.
 7. **Generation backends are pluggable.** `app/services/generation/` provides `ComfyUIBackend` (production; SDXL base → refiner → 2x/4x upscale workflow built in `sdxl_workflow.py`) and `PlaceholderBackend` (fast testing). Switch via `GENERATION_BACKEND` in `.env`, or per run via `context["_generation_backend"]`.
 8. **UI is server-rendered.** Jinja2 templates + HTMX. No JS build step. Tailwind via CDN.
-9. **Config via environment + database.** `pydantic-settings` reads `.env` for secrets, URLs, timeouts, and filesystem paths (see `.env.example`; defaults live in `app/config.py`). Mutable behavior is DB-backed: per-workflow AI profiles (`/settings/ai`) and global, unscoped delivery settings (customer note, attribution, license, signature reference) under the `delivery.general_settings` Setting row, plus global storefront listing options under the `storefronts.fourthwall` Setting row — both edited on `/settings/general`.
+9. **Config via environment + database.** `pydantic-settings` reads `.env` for secrets, URLs, timeouts, and filesystem paths (see `.env.example`; defaults live in `app/config.py`). Mutable behavior is DB-backed: per-workflow AI profiles (`/settings/ai`) and global, unscoped delivery settings (customer note, attribution, license, signature reference) under the `delivery.general_settings` Setting row, global storefront listing options under `storefronts.fourthwall`, and global Cloudflare R2 upload options under `cloudflare.r2` — all edited on `/settings/general`.
 10. **Startup health checks.** `app/main.py` verifies the LLM endpoint, ComfyUI (only when it's the configured backend), and output directory writability before accepting requests, and refuses to start otherwise. When launched via `python main.py` (auto-reload enabled), a startup failure exits the whole process with a non-zero status instead of leaving a hung reloader. `main.py` also honors `HOST`/`PORT` environment overrides.
 
 ## Current Pipeline
@@ -37,9 +37,11 @@ concept → Art Director → Prompt Architect → Media Producer → Media Repor
                                                                    to always)   Social Report →
                                                                                 LLM Report
                                                                                     │
-                                                                            Delivery Archive
+                                                                            Delivery Archive →
+                                                                            Cloudflare R2 Upload →
+                                                                            FourthWall Listing
                                                                              (final top-level
-                                                                              step — runs after
+                                                                              steps — run after
                                                                               the resolved branch)
 ```
 
@@ -48,12 +50,14 @@ This is the seeded "Main" workflow (its step list also lives in code as
 row and is the default for new workflows). The database — not code — decides what runs;
 edit steps on `/workflows/{id}` or via `PUT /api/workflow-definitions/{slug}`.
 There is no retry loop: a bad verdict has no blocks attached, so the run falls through
-to the `always` branch. `delivery_archive` is the last top-level step of the shipped
-template and of migrated stored definitions that lacked it — not a forced invariant:
-custom step lists may omit or reorder it. It has no dependency on `art_critic` and never reads `_verdict`.
-The opt-in `fourthwall_listing` block (Store Fronts) is not in the shipped
-template — add it as a terminal step on `/workflows/{id}` to publish the
-delivery ZIP as a FourthWall digital product.
+to the `always` branch. `delivery_archive`, `cloudflare_r2_uploader`, then
+`fourthwall_listing` are the last top-level
+steps of the shipped template and of migrated stored definitions that lacked
+them — not a forced invariant: custom step lists may omit or reorder them.
+None has a dependency on `art_critic` and none reads `_verdict`.
+`cloudflare_r2_uploader` hosts the delivery ZIP on Cloudflare R2 for buyers,
+and `fourthwall_listing` (Store Fronts) publishes it as a
+FourthWall digital product whose downloadable file is a small link document.
 
 ### Active Blocks
 
@@ -71,7 +75,8 @@ delivery ZIP as a FourthWall digital product.
 | `llm_report` | Block | Writes the effective LLM settings of every role call in the run (model, temperature, max_tokens, thinking, config source, full system prompt, token usage — from `_executions`) to llm_report.md | `llm_report_path`, `report_files` |
 | `background_remover` | Block | Cuts solid-color backgrounds out of `generated_images` (pure NumPy/Pillow chroma key — no AI model); settings profiled per workflow (`has_db_settings`) | `cutout_images`, `cutout_metadata`, `background_remover_output` |
 | `delivery_archive` | Block | Last step of the default template (and migrated definitions that lacked it) — builds the customer ZIP delivery of the whole job output (files, reports, README/license/signature, manifest); attempt metadata and inventories/checksums/Markdown snapshots live in `delivery_archives`/`delivery_archive_entries`, ZIPs written beside the job's output files (`IMAGE_OUTPUT_DIR/_delivery/` now only hosts the `.staging` build dir and legacy archives); archive-only retry via `/api/workflows/jobs/{id}/archives/retry` never reruns creative steps | `delivery_archive_id`, `delivery_archive_path`, `delivery_archive_sha256`, `delivery_archive_status` |
-| `fourthwall_listing` | Block | Opt-in terminal step (not in the shipped template) — publishes the latest ready delivery archive as a FourthWall digital product: creates the product from DB-sourced copy, uploads the customer ZIP, and attaches per-variant preview images. Best-effort: every outcome (disabled, missing credentials/archive/price, API failure) records a `StorefrontListing` attempt or skips quietly and lands in `_warnings` — it never fails the job. Listing-only retry via `/api/workflows/jobs/{id}/listings/retry` never reruns creative steps | `storefront_listing_id`, `fourthwall_product_id`, `storefront_listing_status`, `fourthwall_listing_output` |
+| `cloudflare_r2_uploader` | Block | Ships between `delivery_archive` and `fourthwall_listing` — uploads the latest ready delivery archive to Cloudflare R2 (boto3 S3 API, multipart-capable) so buyers can download it, and emits the public object URL. Object keys are deterministic (`<prefix><sha16>-<name>.zip`); idempotent per `(job_id, delivery_archive_id)`. Best-effort: skips/failures audit a `CloudflareUpload` row and warn, never fail the job. Upload-only retry via `/api/workflows/jobs/{id}/uploads/retry` | `cloudflare_upload_id`, `cloudflare_r2_url`, `cloudflare_r2_object_key`, `cloudflare_upload_status` |
+| `fourthwall_listing` | Block | Final step of the shipped template (and migrated definitions that lacked it) — publishes the latest ready delivery archive as a FourthWall digital product: creates the product from DB-sourced copy, uploads a small generated link document (PDF/Markdown, from `link_document.py`) pointing at the R2-hosted ZIP, and attaches per-variant preview images. Best-effort: every outcome (missing credentials/archive/upload/price, API failure) records a `StorefrontListing` attempt or skips quietly and lands in `_warnings` — it never fails the job. Listing-only retry via `/api/workflows/jobs/{id}/listings/retry` never reruns creative steps | `storefront_listing_id`, `fourthwall_product_id`, `storefront_listing_status`, `fourthwall_listing_output` |
 | `echo` | Block | Test/utility block (`example_block.py`) | `echo_result` |
 
 ### Context flow
@@ -203,20 +208,75 @@ stale invocations return without doing work. Each attempt snapshots the
 *current* global settings and files — it never reruns naming/LLM/media work
 and is not generic resume or crash recovery.
 
+### Cloudflare R2 upload block + R2 settings
+
+`cloudflare_r2_uploader` (`app/blocks/cloudflare_r2_uploader.py`; service
+`app/services/cloudflare_r2.py`) ships between `delivery_archive` and
+`fourthwall_listing` in the shipped template — workflow membership is its
+only enablement. It uploads the job's latest ready `DeliveryArchive` ZIP to
+Cloudflare R2 so buyers can download it; the ZIP is too large for
+FourthWall's digital-file limit, so the storefront links to the R2-hosted
+archive instead. The object key is deterministic —
+`<key_prefix><archive sha256[:16]>-<archive_name>` — so re-uploads land on
+the same object and keys aren't enumerable; the public URL is
+`<public_base_url>/<object_key>`.
+
+Storage goes through the `R2Storage` protocol
+(`app/services/r2_storage.py`) — `Boto3R2Storage` speaks the S3 API against
+the configured endpoint (`region_name="auto"`, SigV4) inside
+`asyncio.to_thread` so a 150 MB+ transfer never blocks the loop, and
+`upload_file` drives multipart automatically. Tests inject a fake
+implementation; no live R2 or moto needed.
+
+The block is **best-effort**: missing credentials, missing archive, missing
+`public_base_url`, or a storage failure returns
+`cloudflare_upload_status` `"skipped"`/`"failed"` plus a `_warnings` entry
+and never fails the step or job. Every attempt writes a `CloudflareUpload`
+row (RUNNING → READY/FAILED) snapshotting the R2 settings, archive identity,
+bucket/object-key/URL, ETag, and structured errors — credentials never land
+in `settings_json`. Idempotency is keyed on `(job_id,
+delivery_archive_id)`: a ready upload for the latest archive skips.
+`cloudflare.r2` Setting row (`/settings/general` → Store Fronts →
+Cloudflare R2) holds `endpoint_url` (the S3 API URL — upload only, never
+linked), `bucket`, `key_prefix`, and `public_base_url` (the bucket's r2.dev
+public access URL or a custom domain — required for buyer links; the S3
+endpoint alone can't serve them). `CLOUDFLARE_R2_ACCESS_KEY_ID` /
+`CLOUDFLARE_R2_SECRET_ACCESS_KEY` are env-only. Public links are
+unguessable but reshareable; a Cloudflare Worker minting per-request URLs
+is planned future work and needs a custom domain (r2.dev can't host
+workers).
+
+Upload-only retry (`POST /api/workflows/jobs/{id}/uploads/retry`, web
+`POST /jobs/{id}/uploads/retry` → `reserve_upload_retry`/`run_upload_retry`)
+mirrors listing retry exactly — atomic claim into RUNNING, appended pending
+`cloudflare_r2_uploader` step, `workload_guard` run, prior terminal status
+restored regardless of outcome.
+
 ### FourthWall listing block + Store Fronts settings
 
 `fourthwall_listing` (`app/blocks/fourthwall_listing.py`; service
-`app/services/fourthwall.py`) is an opt-in terminal block — not in the
-shipped workflow template — that publishes the job's latest ready
+`app/services/fourthwall.py`) is the shipped template's terminal block —
+workflow membership is its only enablement — that publishes the job's latest ready
 `DeliveryArchive` as a FourthWall **digital** product (`type: "digital"`,
 not the `type: "design"` print-on-demand flow): `POST /products`, then the
 product-scoped `digital-files/upload-url` → signed GCS `PUT` →
-`digital-files` confirm for the customer ZIP, then per-variant preview
+`digital-files` confirm for the **link document**, then per-variant preview
 images via `media/upload-url` → `PUT` → `/products/{id}/images`. The signed
 PUTs carry `x-goog-content-length-range: 0,<exact size>` and no auth header.
 API auth is HTTP Basic via `FOURTHWALL_API_USER`/`FOURTHWALL_API_PASSWORD`
-(env-only — never persisted). The product title is the shoot name; the
-description renders the `storefronts.fourthwall` `description_template`
+(env-only — never persisted).
+
+The downloadable file is a small generated document — a one-page PDF
+(default) or Markdown file carrying the public R2 URL, archive name, size,
+and SHA-256 — built by `build_link_document`
+(`app/services/link_document.py`, fpdf2 for PDF; pure function, no I/O).
+The service resolves the R2 URL from the ready `CloudflareUpload` covering
+the latest archive (context pass-through in-pipeline, DB lookup on retry);
+with no ready upload the listing skips with a warning. Its name/SHA-256 are
+recorded on the listing row alongside `cloudflare_upload_id`, so every
+listing correlates listing → upload → archive → job. The product title is
+the shoot name; the description renders the `storefronts.fourthwall`
+`description_template`
 (`$title`/`$description`/`$tags`/`$attribution`) seeded from the Social
 Media Specialist's marketplace-flavored post (platform matching
 `market|stock|licens|store|shop`), falling back to `art_director_output` —
@@ -226,19 +286,21 @@ description text. Previews are the smallest-pixel PNG per
 via `app/services/image_convert.py`, capped at `max_preview_images` (default
 4); cutouts are never used.
 
-The block is **best-effort**: a disabled storefront, missing credentials,
-missing archive, missing price, or any API failure returns
-`storefront_listing_status` `"skipped"`/`"failed"` plus a `_warnings` entry
-and never fails the step or job. Every attempt writes a `StorefrontListing`
-row (RUNNING → READY/FAILED) snapshotting the immutable listing payload,
-archive identity (name/size/SHA-256), and `settings_json`. Idempotency is
-keyed on `(job_id, delivery_archive_id)` — a ready listing for the latest
+The block is **best-effort**: missing credentials,
+missing archive, missing R2 upload, missing price, or any API failure
+returns `storefront_listing_status` `"skipped"`/`"failed"` plus a
+`_warnings` entry and never fails the step or job. Every attempt writes a
+`StorefrontListing` row (RUNNING → READY/FAILED) snapshotting the immutable
+listing payload, archive identity (name/size/SHA-256), `settings_json`, and
+the link-document/upload correlation fields. Idempotency is keyed on
+`(job_id, delivery_archive_id)` — a ready listing for the latest
 archive skips; a new archive version may list again. The global
 `storefronts.fourthwall` Setting row (`/settings/general` → Store Fronts →
-FourthWall) holds `enabled`, `price_usd`, `publish_on_create` (default off
+FourthWall) holds `price_usd`, `publish_on_create` (default off
 — products are created hidden and published manually in the Fourthwall
-admin), `file_size_limit_mb` (default 25), `description_template`, and
-`max_preview_images`. PayHip is documented as manual-only on the same page
+admin), `link_document_format` (`pdf` default / `markdown`),
+`description_template`, and `max_preview_images`. PayHip is documented as
+manual-only on the same page
 — its API exposes no listing endpoints.
 
 Listing-only retry (`POST /api/workflows/jobs/{id}/listings/retry`,
@@ -373,7 +435,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 ## Database
 
 - **ORM**: SQLAlchemy 2.0 async sessions. Use `Depends(get_session)` in routes; the engine opens its own session per run.
-- **Models in use**: `Workflow` (`name`, `slug`, `description`, `steps_json`, `media_model_name`, `is_enabled`, `is_default`); `Job` (`workflow_name` = photo shoot title, `workflow_id` = the workflow it ran under, `status`, `error`, `warnings`, `generated_assets`, `report_files`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); `Setting` (namespaced key/value rows — global delivery settings and migration backups); `DeliveryArchive`/`DeliveryArchiveEntry` (delivery audit); `StorefrontListing` (storefront listing attempt audit); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; the generic block-settings model `BlockConfiguration`; the mutation-audit model `LlmConfigurationChange`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
+- **Models in use**: `Workflow` (`name`, `slug`, `description`, `steps_json`, `media_model_name`, `is_enabled`, `is_default`); `Job` (`workflow_name` = photo shoot title, `workflow_id` = the workflow it ran under, `status`, `error`, `warnings`, `generated_assets`, `report_files`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); `Setting` (namespaced key/value rows — global delivery settings and migration backups); `DeliveryArchive`/`DeliveryArchiveEntry` (delivery audit); `StorefrontListing` (storefront listing attempt audit, with `cloudflare_upload_id` + link-document correlation); `CloudflareUpload` (R2 upload attempt audit); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; the generic block-settings model `BlockConfiguration`; the mutation-audit model `LlmConfigurationChange`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
 - **AI configuration**: `CreativeRole` is stable identity metadata only. Mutable behavior profiles live in `LlmRoleConfiguration` keyed by `(workflow_id, role, model_name)` — the run's workflow selects the scope and `LLM_MODEL` selects the model within it — and `MediaModelConfiguration` keyed by `(workflow_id, block, backend, model)`, and `BlockConfiguration` keyed by `(workflow_id, block_name)` for non-LLM/non-media blocks that set `has_db_settings` (`background_remover`). `app/services/configuration/` resolves profiles: **missing rows only** are seeded from code defaults (`uses_code_defaults=True`) and emit a warning on every use until customized via `/settings/ai?workflow=<slug>` or `/api/configurations?workflow=<slug>` (omitted scope → the default workflow). Resolution (`resolve_llm`/`resolve_media`), the settings page GET, and pipeline runs **never overwrite existing rows** — the only mutations are the explicit Save/Reset paths. Secrets, URLs, timeouts, poll intervals, and filesystem paths stay env-only.
 - **LLM configuration change audit**: Every explicit LLM save/reset writes an `LlmConfigurationChange` row in the same transaction — `action` (`save_custom`/`reset_to_defaults`), `origin` (`service`/`web_settings`/`rest_api` — the web and API layers pass their own origin; the provider default is `service`), and JSON `before_snapshot`/`after_snapshot` of the mutable fields (`system_prompt`, `temperature`, `max_tokens`, `enable_thinking`, `uses_code_defaults`). An event is recorded even when values are identical. Newest-first listing via `list_llm_configuration_changes`; the settings page renders the 5 most recent per profile and `GET /api/configurations/llm/{role}/history?model_name=…` exposes them (404 for unknown role or missing exact model profile). There is no media audit table yet.
 - **AI execution audit**: Every attempted LLM call and image-generation request stores an *immutable snapshot* — copied prompt/model/parameters (`RoleExecution.system_prompt`, `MediaGenerationExecution.settings_snapshot`), not the mutable configuration FK, are the audit authority. The engine persists each record against the corresponding `JobStep`, including failed calls, and never updates configuration or role rows. Job detail (web `/jobs/{id}` and `GET /api/workflows/jobs/{id}`) exposes per-step `llm_executions` — the effective system prompt, model, config id/source, and parameters actually used.
@@ -387,7 +449,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 - After pulling new code that adds model columns, **always run `alembic upgrade head`** before starting the server; SQLAlchemy will query columns that don't exist yet otherwise
 - Startup helpers auto-upgrade by default: `./start.sh` and `python main.py` run `alembic upgrade head` before the server starts (disable with `AI_MEDIA_AUTO_MIGRATE=0`). `init_db()` remains a safety check: it verifies the database is at the expected Alembic head and that every ORM table/column exists, and refuses to start otherwise — `alembic upgrade head` is required even for a brand-new empty database
 - `tests/test_database.py` covers this contract: rejection of unversioned/stale/falsely-stamped databases and recovery of the mixed schema left by the former create_all startup (`b7e2f4a1c9d6` added `workflows` + workflow-scoped config; migrations that create tables must skip when the table already exists because recovered DBs may have gotten it from create_all)
-- The current head `g8d5b2e4f6a1` adds `storefront_listings` (one row per FourthWall listing attempt — immutable payload, archive identity, product id, status, errors); its predecessor `f7c3a9e1b5d8` adds `delivery_archives`/`delivery_archive_entries` and appends `delivery_archive` once to the top level of every stored workflow `steps_json` that lacks it (a definition already containing the block anywhere is skipped untouched)
+- The current head `i6d9b3e7f4c1` creates `cloudflare_r2_uploads` (per-attempt R2 upload audit), adds `cloudflare_upload_id`/`link_document_name`/`link_document_sha256` to `storefront_listings`, inserts `cloudflare_r2_uploader` before `fourthwall_listing` in stored workflows containing the listing (skipping ones already hosting the uploader or with the listing only inside a routing branch), and scrubs the retired `file_size_limit_mb` key from `storefronts.fourthwall`; its predecessor `h4f6a8b0c2d4` appends `fourthwall_listing` once to the top level of every stored workflow `steps_json` that lacks it and scrubs the retired `enabled` key, `g8d5b2e4f6a1` adds `storefront_listings` (one row per FourthWall listing attempt — immutable payload, archive identity, product id, status, errors), and `f7c3a9e1b5d8` adds `delivery_archives`/`delivery_archive_entries` and appends `delivery_archive` once to stored workflows the same way (a definition already containing the block anywhere is skipped untouched)
 - The migration validates all definitions before any update and stores exact old/new JSON under the `delivery_archive.workflow_migration_backup` Setting key; its downgrade restores only rows still matching the migration-written JSON — destructive downgrades need explicit approval
 - **Deployment note (this checkout, 2026-10-03)**: the live `data/app.db` was upgraded `d1e4f6a8b3c5 → f7c3a9e1b5d8`; `alembic current` reports head and `init_db()` verified. A consistent backup sits at `data/app.db.backup-20261003T024959Z-before-delivery-archive` — it is untracked and NOT covered by `.gitignore`; never stage or commit DB backups. No commit/push or server restart was part of that deployment
 
@@ -395,7 +457,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 
 - Framework: pytest + pytest-asyncio (`asyncio_mode = "auto"`, so async tests need no marker)
 - Run: `pytest` from project root
-- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, structured errors, routing-bound `JobStep` ids/order/tail resequencing, and pending-step visibility before branch expansion — its session fixture calls `discover_blocks()` so the file also passes in isolation), `test_delivery_archive.py` (ZIP packaging/inventory/manifest-hash agreement, Markdown snapshots, expected-output enforcement, path/symlink/namespace safety, audit persistence, archive-only retry semantics, archive API surface), `test_general_settings.py` (delivery settings round-trip, signature validation limits and managed filenames, `/settings/general` page), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping), `test_background_removal.py` (chroma-key service: auto/override key color, tolerance, contiguous/global, erode/feather/despill; `/api/remove-background/` endpoint; `background_remover` block; `BlockConfiguration` seed/upsert/reset and workflow scoping), `test_fourthwall.py` (storefront settings round-trip/validation, `/settings/general` Store Fronts section, the full digital-product flow against an `httpx.MockTransport` fake — product payload, Basic auth, signed-upload headers, preview selection/conversion, size limit, skip/failure semantics, idempotency, listing-only retry, listings API)
+- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, structured errors, routing-bound `JobStep` ids/order/tail resequencing, and pending-step visibility before branch expansion — its session fixture calls `discover_blocks()` so the file also passes in isolation), `test_delivery_archive.py` (ZIP packaging/inventory/manifest-hash agreement, Markdown snapshots, expected-output enforcement, path/symlink/namespace safety, audit persistence, archive-only retry semantics, archive API surface), `test_general_settings.py` (delivery settings round-trip, signature validation limits and managed filenames, `/settings/general` page), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping), `test_background_removal.py` (chroma-key service: auto/override key color, tolerance, contiguous/global, erode/feather/despill; `/api/remove-background/` endpoint; `background_remover` block; `BlockConfiguration` seed/upsert/reset and workflow scoping), `test_fourthwall.py` (storefront settings round-trip/validation, `/settings/general` Store Fronts section, the full digital-product flow against an `httpx.MockTransport` fake — product payload, Basic auth, link-document upload (PDF + Markdown formats), upload correlation fields, signed-upload headers, preview selection/conversion, skip/failure semantics, idempotency, listing-only retry, listings API), `test_cloudflare_r2.py` (R2 settings round-trip/validation, `cloudflare.r2` settings section, key/URL derivation, the upload flow against an injected fake `R2Storage`, skip/failure/idempotency, upload-only retry, uploads API, and the PDF/Markdown link-document builder)
 - LLM calls are mocked by monkeypatching `app.blocks.role_block.AsyncOpenAI`; see `_fake_llm_client` in `test_blocks.py`
 - Tests that generate files monkeypatch `settings.image_output_dir` to `tmp_path` — never write into the real output dir
 - Narrow regression pass for archive/engine work: `pytest tests/test_delivery_archive.py tests/test_general_settings.py tests/test_pipeline.py tests/test_database.py`

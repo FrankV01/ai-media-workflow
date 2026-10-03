@@ -27,8 +27,10 @@ Form POSTs (redirect with a status query):
 - /settings/ai/block/save, /settings/ai/block/reset — generic block profiles
 - /settings/general/{save,signature,signature/clear} — delivery settings
 - /settings/general/storefronts/save             — storefront (FourthWall) settings
+- /settings/general/cloudflare/save              — Cloudflare R2 upload settings
 - /jobs/<id>/archives/retry                        — archive-only retry
 - /jobs/<id>/listings/retry                        — listing-only retry
+- /jobs/<id>/uploads/retry                         — R2-upload-only retry
 - /workflows/create, /workflows/<id>/{save,clone,enable,disable,set-default}
 
 HTMX partials (return HTML fragments, not full pages):
@@ -69,11 +71,24 @@ from app.blocks.media_producer import (
 from app.blocks.registry import get_block, list_blocks
 from app.config import settings
 from app.database import get_session
+from app.models.cloudflare import CloudflareUploadStatus
 from app.models.creative import RoleExecution
 from app.models.delivery import DeliveryArchiveStatus
 from app.models.job import Job
 from app.models.workflow import Workflow
 from app.pipeline.engine import run_pipeline
+from app.services.cloudflare_r2 import (
+    UploadRetryError,
+    list_uploads,
+    reserve_upload_retry,
+    schedule_upload_retry,
+    upload_retryable,
+)
+from app.services.cloudflare_r2_settings import (
+    R2SettingsError,
+    get_r2_settings,
+    save_r2_settings,
+)
 from app.services.configuration.base import (
     LLM_CHANGE_ORIGIN_WEB_SETTINGS,
     MediaProfileSettings,
@@ -154,6 +169,7 @@ _BLOCK_TITLES = {
     "llm_report": "LLM Report",
     "background_remover": "Background Remover",
     "delivery_archive": "Delivery Archive",
+    "cloudflare_r2_uploader": "Cloudflare R2 Upload",
     "fourthwall_listing": "FourthWall Listing",
     "echo": "Echo",
 }
@@ -307,6 +323,26 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         for listing in await list_listings(session, job_raw.id)
     ]
 
+    uploads = [
+        {
+            "id": upload.id,
+            "attempt": upload.attempt,
+            "status": upload.status.value,
+            "ready": upload.status == CloudflareUploadStatus.READY,
+            "archive_name": upload.archive_name,
+            "byte_size": upload.archive_byte_size,
+            "object_key": upload.object_key,
+            "object_url": upload.object_url,
+            "created_at": (
+                upload.created_at.strftime("%b %d, %Y %H:%M:%S")
+                if upload.created_at
+                else "—"
+            ),
+            "error": upload.error,
+        }
+        for upload in await list_uploads(session, job_raw.id)
+    ]
+
     job = {
         "id": job_raw.id,
         "workflow_name": job_raw.workflow_name,
@@ -332,6 +368,9 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         "listings": listings,
         "listing_retryable": await listing_retryable(session, job_raw.id),
         "listing_error": request.query_params.get("listing_error"),
+        "uploads": uploads,
+        "upload_retryable": await upload_retryable(session, job_raw.id),
+        "upload_error": request.query_params.get("upload_error"),
         "folder_path": str(job_output_dir(job_raw)),
         "steps": [
             {
@@ -1175,17 +1214,20 @@ async def _general_settings_context(
     errors: list[str] | None = None,
     values: dict | None = None,
     storefront_values: dict | None = None,
+    r2_values: dict | None = None,
     status: str | None = None,
 ) -> dict:
     """Template context for /settings/general (saved values win over form replay)."""
     delivery = await get_delivery_settings(session)
     storefront = await get_storefront_settings(session)
+    r2 = await get_r2_settings(session)
     has_signature = signature_path(delivery.signature_asset) is not None
     return {
         "delivery": values if values is not None else delivery.to_dict(),
         "storefront": (
             storefront_values if storefront_values is not None else storefront.to_dict()
         ),
+        "r2": r2_values if r2_values is not None else r2.to_dict(),
         "has_signature": has_signature,
         "errors": errors or [],
         "status": status,
@@ -1303,24 +1345,21 @@ async def general_settings_signature_preview(session: AsyncSession = Depends(get
 @router.post("/settings/general/storefronts/save")
 async def storefront_settings_save(
     request: Request,
-    enabled: str | None = Form(None),
     price_usd: str = Form(""),
     publish_on_create: str | None = Form(None),
-    file_size_limit_mb: str = Form("25"),
+    link_document_format: str = Form("pdf"),
     description_template: str = Form(""),
     max_preview_images: str = Form("4"),
     session: AsyncSession = Depends(get_session),
 ):
     """Save the global storefront (FourthWall) settings."""
-    enabled_flag = enabled == "on"
     publish_flag = publish_on_create == "on"
     try:
         await save_storefront_settings(
             session,
-            enabled=enabled_flag,
             price_usd=price_usd.strip() or None,
             publish_on_create=publish_flag,
-            file_size_limit_mb=file_size_limit_mb.strip() or "25",
+            link_document_format=link_document_format,
             description_template=description_template,
             max_preview_images=max_preview_images.strip() or "4",
         )
@@ -1329,10 +1368,9 @@ async def storefront_settings_save(
             session,
             errors=exc.errors,
             storefront_values={
-                "enabled": enabled_flag,
                 "price_usd": price_usd,
                 "publish_on_create": publish_flag,
-                "file_size_limit_mb": file_size_limit_mb,
+                "link_document_format": link_document_format,
                 "description_template": description_template,
                 "max_preview_images": max_preview_images,
             },
@@ -1342,6 +1380,42 @@ async def storefront_settings_save(
         )
     await session.commit()
     return RedirectResponse("/settings/general?status=storefront", status_code=303)
+
+
+@router.post("/settings/general/cloudflare/save")
+async def cloudflare_r2_settings_save(
+    request: Request,
+    r2_endpoint_url: str = Form(""),
+    r2_bucket: str = Form(""),
+    r2_key_prefix: str = Form(""),
+    r2_public_base_url: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Save the global Cloudflare R2 upload settings."""
+    try:
+        await save_r2_settings(
+            session,
+            endpoint_url=r2_endpoint_url,
+            bucket=r2_bucket,
+            key_prefix=r2_key_prefix,
+            public_base_url=r2_public_base_url,
+        )
+    except R2SettingsError as exc:
+        context = await _general_settings_context(
+            session,
+            errors=exc.errors,
+            r2_values={
+                "endpoint_url": r2_endpoint_url,
+                "bucket": r2_bucket,
+                "key_prefix": r2_key_prefix,
+                "public_base_url": r2_public_base_url,
+            },
+        )
+        return templates.TemplateResponse(
+            request, "general_settings.html", context, status_code=422
+        )
+    await session.commit()
+    return RedirectResponse("/settings/general?status=cloudflare", status_code=303)
 
 
 @router.post("/jobs/{job_id}/archives/retry")
@@ -1365,4 +1439,16 @@ async def web_retry_job_listing(job_id: int, session: AsyncSession = Depends(get
         url = f"/jobs/{job_id}?{urlencode({'listing_error': str(exc)})}"
         return RedirectResponse(url, status_code=303)
     schedule_listing_retry(job_id, step_id)
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/jobs/{job_id}/uploads/retry")
+async def web_retry_job_upload(job_id: int, session: AsyncSession = Depends(get_session)):
+    """Reserve and schedule an upload-only retry, then return to the job page."""
+    try:
+        step_id = await reserve_upload_retry(session, job_id)
+    except UploadRetryError as exc:
+        url = f"/jobs/{job_id}?{urlencode({'upload_error': str(exc)})}"
+        return RedirectResponse(url, status_code=303)
+    schedule_upload_retry(job_id, step_id)
     return RedirectResponse(f"/jobs/{job_id}", status_code=303)

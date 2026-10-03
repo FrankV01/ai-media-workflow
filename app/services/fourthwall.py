@@ -1,9 +1,13 @@
 """app.services.fourthwall — FourthWall storefront listing service
 
-Publishes a job's verified delivery archive as a FourthWall digital product:
+Publishes a job's verified delivery archive as a FourthWall digital product.
+The archive ZIP itself is too large for FourthWall's digital-file limit, so
+it is hosted on Cloudflare R2 by the `cloudflare_r2_uploader` block; the
+product's downloadable file is a small link document (PDF or Markdown) that
+hands buyers the public R2 URL:
 
 1. POST /products                       — type "digital", name/description/price
-2. digital-files upload-url → PUT bytes → confirm   (the customer download)
+2. digital-files upload-url → PUT bytes → confirm   (the link document)
 3. media upload-url → PUT bytes → /products/{id}/images  (preview thumbnails)
 
 Requests authenticate with HTTP Basic auth using the Open API
@@ -15,7 +19,7 @@ the exact byte count declared when the URL was requested.
 The block is best-effort: this service never raises for listing outcomes.
 It records a StorefrontListing row per attempt (RUNNING → READY | FAILED)
 and returns a result dict whose `storefront_listing_status` is "ready",
-"failed", or "skipped" (disabled, unconfigured, nothing to list, or
+"failed", or "skipped" (unconfigured, nothing to list, or
 already listed). Only infrastructure-level surprises (missing job) raise.
 
 Retry mirrors the archive-only retry flow: reserve → schedule → run under
@@ -27,6 +31,7 @@ the job's terminal status is preserved regardless of the outcome.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -42,12 +47,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.database
 from app.config import settings
-from app.models.delivery import DeliveryArchive, DeliveryArchiveStatus
+from app.models.delivery import DeliveryArchive
 from app.models.job import Job, JobStatus, JobStep
 from app.models.storefront import StorefrontListing, StorefrontListingStatus
-from app.services.delivery_archive import archive_download_path
+from app.services.cloudflare_r2 import latest_ready_upload
+from app.services.delivery_archive import latest_ready_archive
 from app.services.general_settings import get_delivery_settings
 from app.services.image_convert import ImageConversionError, convert_png_bytes
+from app.services.link_document import build_link_document
 from app.services.storefront_settings import get_storefront_settings
 from app.services.workload_guard import workload_guard
 
@@ -164,7 +171,7 @@ class FourthwallClient:
         return str(product_id)
 
     async def attach_digital_file(
-        self, product_id: str, *, file_name: str, data: bytes
+        self, product_id: str, *, file_name: str, data: bytes, content_type: str
     ) -> dict[str, Any]:
         """Upload the downloadable file buyers receive; returns confirm payload."""
         grant = await self._api(
@@ -172,7 +179,7 @@ class FourthwallClient:
             f"/products/{product_id}/digital-files/upload-url",
             json={
                 "fileName": file_name,
-                "contentType": "application/zip",
+                "contentType": content_type,
                 "size": len(data),
             },
         )
@@ -180,7 +187,7 @@ class FourthwallClient:
         file_url = (grant or {}).get("fileUrl")
         if not upload_url or not file_url:
             raise FourthwallError("FourthWall did not grant a digital-file upload URL")
-        await self._storage_put(upload_url, data, "application/zip")
+        await self._storage_put(upload_url, data, content_type)
         confirmed = await self._api(
             "POST",
             f"/products/{product_id}/digital-files",
@@ -312,20 +319,6 @@ def _select_preview_paths(outputs: dict[str, Any], limit: int) -> list[Path]:
     return selected[:limit]
 
 
-async def _latest_ready_archive(session: AsyncSession, job_id: int) -> DeliveryArchive | None:
-    """Newest verified delivery archive for the job, or None."""
-    result = await session.execute(
-        select(DeliveryArchive)
-        .where(
-            DeliveryArchive.job_id == job_id,
-            DeliveryArchive.status == DeliveryArchiveStatus.READY,
-        )
-        .order_by(DeliveryArchive.attempt.desc())
-        .limit(1)
-    )
-    return result.scalar_one_or_none()
-
-
 async def _ready_listing_for(
     session: AsyncSession, archive_id: int
 ) -> StorefrontListing | None:
@@ -407,13 +400,14 @@ async def create_storefront_listing(
         )
         storefront = await get_storefront_settings(session)
         delivery = await get_delivery_settings(session)
-        archive = await _latest_ready_archive(session, job_id)
+        archive = await latest_ready_archive(session, job_id)
         existing = (
             await _ready_listing_for(session, archive.id) if archive is not None else None
         )
+        upload = (
+            await latest_ready_upload(session, archive.id) if archive is not None else None
+        )
 
-    if not storefront.enabled:
-        return _result("skipped", note="FourthWall listing is disabled (settings → Store Fronts).")
     credentials = configured_credentials()
     if credentials is None:
         note = (
@@ -432,6 +426,12 @@ async def create_storefront_listing(
         return _result(
             "skipped", listing_id=existing.id, product_id=existing.product_id, note=note
         )
+    if upload is None or not upload.object_url:
+        note = (
+            "FourthWall listing skipped: no ready Cloudflare R2 upload for the "
+            "latest archive — run cloudflare_r2_uploader first"
+        )
+        return _result("skipped", note=note, warning=note)
     price = storefront.price_usd
     if price is None or price <= 0:
         note = "FourthWall listing skipped: no price configured (settings → Store Fronts)"
@@ -471,6 +471,7 @@ async def create_storefront_listing(
             workflow_id=workflow_id,
             job_step_id=job_step_id,
             delivery_archive_id=archive.id,
+            cloudflare_upload_id=upload.id,
             attempt=attempt,
             status=StorefrontListingStatus.RUNNING,
             started_at=datetime.now(UTC),
@@ -489,19 +490,21 @@ async def create_storefront_listing(
 
     product_id: str | None = None
     try:
-        limit_bytes = storefront.file_size_limit_mb * 1024 * 1024
-        if archive.byte_size is not None and archive.byte_size > limit_bytes:
-            raise FourthwallError(
-                f"archive is {archive.byte_size // (1024 * 1024)} MB — over the "
-                f"{storefront.file_size_limit_mb} MB storefront limit"
-            )
-        archive_path = await asyncio.to_thread(archive_download_path, archive)
-        archive_bytes = await asyncio.to_thread(archive_path.read_bytes)
-        if len(archive_bytes) > limit_bytes:
-            raise FourthwallError(
-                f"archive file is {len(archive_bytes) // (1024 * 1024)} MB — over the "
-                f"{storefront.file_size_limit_mb} MB storefront limit"
-            )
+        document = build_link_document(
+            storefront.link_document_format,
+            title=job_name,
+            url=upload.object_url,
+            archive_name=archive.archive_name or "delivery.zip",
+            byte_size=archive.byte_size,
+            sha256=archive.sha256,
+        )
+        document_sha256 = hashlib.sha256(document.data).hexdigest()
+        async with app.database.async_session() as session:
+            record = await session.get(StorefrontListing, listing_id)
+            if record is not None:
+                record.link_document_name = document.filename
+                record.link_document_sha256 = document_sha256
+                await session.commit()
 
         previews: list[dict[str, Any]] = []
         preview_notes: list[str] = []
@@ -518,8 +521,9 @@ async def create_storefront_listing(
             )
             file_detail = await client.attach_digital_file(
                 product_id,
-                file_name=archive.archive_name or archive_path.name,
-                data=archive_bytes,
+                file_name=document.filename,
+                data=document.data,
+                content_type=document.content_type,
             )
             for path in _select_preview_paths(outputs, storefront.max_preview_images):
                 try:
@@ -545,6 +549,14 @@ async def create_storefront_listing(
 
         detail = {
             "file_url": file_detail.get("file_url"),
+            "cloudflare_upload_id": upload.id,
+            "link_document": {
+                "name": document.filename,
+                "content_type": document.content_type,
+                "size": len(document.data),
+                "sha256": document_sha256,
+                "url": upload.object_url,
+            },
             "preview_count": len(previews),
             "preview_notes": preview_notes,
             "skipped_previews": len(preview_notes),
@@ -558,7 +570,8 @@ async def create_storefront_listing(
             await session.commit()
         note = (
             f"Published FourthWall product {product_id} "
-            f"({archive.archive_name}, {len(previews)} preview image(s), "
+            f"({document.filename} → {upload.object_url}, "
+            f"{len(previews)} preview image(s), "
             f"${price:.2f}, {'published' if storefront.publish_on_create else 'hidden'})"
         )
         return _result("ready", listing_id=listing_id, product_id=product_id, note=note)
@@ -617,7 +630,7 @@ async def listing_retryable(session: AsyncSession, job_id: int) -> bool:
             )
         ).scalars()
     )
-    archive = await _latest_ready_archive(session, job_id)
+    archive = await latest_ready_archive(session, job_id)
     listings = await list_listings(session, job_id)
     return listing_retry_ineligibility(job, steps, archive, listings) is None
 
@@ -639,7 +652,7 @@ async def reserve_listing_retry(session: AsyncSession, job_id: int) -> int:
             )
         ).scalars()
     )
-    archive = await _latest_ready_archive(session, job_id)
+    archive = await latest_ready_archive(session, job_id)
     listings = await list_listings(session, job_id)
     ineligible = listing_retry_ineligibility(job, steps, archive, listings)
     if ineligible is not None:

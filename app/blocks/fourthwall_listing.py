@@ -1,8 +1,11 @@
 """app.blocks.fourthwall_listing — FourthWall storefront listing block
 
-Optional terminal step: publishes the job's verified delivery archive as a
-FourthWall digital product (customer ZIP download + per-variant preview
-images) using marketing copy assembled from earlier pipeline outputs.
+Terminal step of the shipped workflow: publishes the job's verified
+delivery archive as a FourthWall digital product. The ZIP is hosted on
+Cloudflare R2 by `cloudflare_r2_uploader`; the product's downloadable file
+is a small link document (PDF or Markdown) carrying the public R2 URL,
+plus per-variant preview images. Workflow membership is the only
+enablement — a workflow that omits this step never lists.
 
 Best-effort by design — the creative work and the delivery archive already
 exist by the time this runs, so listing failures are recorded on a
@@ -29,9 +32,9 @@ class FourthwallListing(Block):
         name="fourthwall_listing",
         description=(
             "Creates a FourthWall digital product for the job's delivery "
-            "archive — uploads the customer ZIP and attaches preview images"
+            "archive — uploads the R2 link document and attaches preview images"
         ),
-        version="0.1.0",
+        version="0.2.0",
         category="production",
         inputs=["_job_id", "_job_step_id"],
         outputs=[

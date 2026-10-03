@@ -55,6 +55,10 @@ class StorefrontListing(Base):
     delivery_archive_id: Mapped[int | None] = mapped_column(
         ForeignKey("delivery_archives.id"), nullable=True, index=True
     )
+    # The R2 upload hosting the archive the link document points at
+    cloudflare_upload_id: Mapped[int | None] = mapped_column(
+        ForeignKey("cloudflare_r2_uploads.id"), nullable=True, index=True
+    )
     storefront: Mapped[str] = mapped_column(String(50), default="fourthwall")
     attempt: Mapped[int] = mapped_column(Integer)
     status: Mapped[StorefrontListingStatus] = mapped_column(
@@ -82,10 +86,15 @@ class StorefrontListing(Base):
     product_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     detail_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Identity of the link document uploaded as the digital file
+    link_document_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    link_document_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
+from app.models.cloudflare import CloudflareUpload  # noqa: E402, F401
 from app.models.delivery import DeliveryArchive  # noqa: E402, F401
 from app.models.job import JobStep  # noqa: E402, F401
 from app.models.workflow import Workflow  # noqa: E402, F401

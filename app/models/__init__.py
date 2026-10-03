@@ -11,4 +11,5 @@ Generic per-workflow block profiles: BlockConfiguration (app/models/block.py)
 Configuration: Setting (app/models/setting.py)
 Delivery audit: DeliveryArchive, DeliveryArchiveEntry (app/models/delivery.py)
 Storefront audit: StorefrontListing (app/models/storefront.py)
+Cloud upload audit: CloudflareUpload (app/models/cloudflare.py)
 """

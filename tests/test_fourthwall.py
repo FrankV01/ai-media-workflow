@@ -24,6 +24,7 @@ import app.database
 import app.services.fourthwall as fw
 import app.services.storefront_settings as ss
 from app.config import settings
+from app.models.cloudflare import CloudflareUpload, CloudflareUploadStatus
 from app.models.delivery import DeliveryArchive, DeliveryArchiveStatus
 from app.models.job import Job, JobStatus, JobStep
 from app.models.setting import Setting
@@ -45,9 +46,10 @@ def credentials(monkeypatch):
 
 
 @pytest.fixture
-async def enabled(output_dir, credentials):
+async def listable(output_dir, credentials):
+    """Credentials + a configured price — everything a listing needs."""
     async with app.database.async_session() as session:
-        await ss.save_storefront_settings(session, enabled=True, price_usd=12.50)
+        await ss.save_storefront_settings(session, price_usd=12.50)
         await session.commit()
 
 
@@ -86,9 +88,10 @@ async def _seed_job(
     name: str = "Neon Shoot",
     with_archive: bool = True,
     with_steps: bool = True,
+    with_upload: bool = True,
     status: JobStatus = JobStatus.COMPLETED,
 ) -> tuple[Job, Path, DeliveryArchive | None]:
-    """Job row + output dir + step-output snapshots + a ready archive."""
+    """Job row + output dir + step snapshots + ready archive + R2 upload."""
     async with app.database.async_session() as session:
         job = Job(
             workflow_name=name,
@@ -168,6 +171,26 @@ async def _seed_job(
                 sha256=hashlib.sha256(zip_path.read_bytes()).hexdigest(),
             )
             session.add(archive)
+            await session.flush()
+            if with_upload:
+                session.add(
+                    CloudflareUpload(
+                        job_id=job.id,
+                        delivery_archive_id=archive.id,
+                        attempt=1,
+                        status=CloudflareUploadStatus.READY,
+                        settings_json="{}",
+                        archive_name=archive.archive_name,
+                        archive_byte_size=archive.byte_size,
+                        archive_sha256=archive.sha256,
+                        bucket="ai-media",
+                        object_key=f"fourthwall/{archive.sha256[:16]}-{archive.archive_name}",
+                        object_url=(
+                            f"https://pub-abc.r2.dev/"
+                            f"fourthwall/{archive.sha256[:16]}-{archive.archive_name}"
+                        ),
+                    )
+                )
         await session.commit()
         return job, source, archive
 
@@ -226,9 +249,9 @@ def _client(log: list[httpx.Request], **kwargs) -> fw.FourthwallClient:
 async def test_storefront_settings_defaults(output_dir):
     async with app.database.async_session() as session:
         storefront = await ss.get_storefront_settings(session)
-    assert storefront.enabled is False
     assert storefront.price_usd is None
     assert storefront.publish_on_create is False
+    assert storefront.link_document_format == "pdf"
     assert storefront.max_preview_images == 4
     assert "$description" in storefront.description_template
 
@@ -237,20 +260,18 @@ async def test_storefront_settings_roundtrip(output_dir):
     async with app.database.async_session() as session:
         await ss.save_storefront_settings(
             session,
-            enabled=True,
             price_usd=9.99,
             publish_on_create=True,
-            file_size_limit_mb=1024,
+            link_document_format="markdown",
             description_template="$title — $tags",
             max_preview_images=2,
         )
         await session.commit()
     async with app.database.async_session() as session:
         storefront = await ss.get_storefront_settings(session)
-    assert storefront.enabled is True
     assert storefront.price_usd == 9.99
     assert storefront.publish_on_create is True
-    assert storefront.file_size_limit_mb == 1024
+    assert storefront.link_document_format == "markdown"
     assert storefront.description_template == "$title — $tags"
     assert storefront.max_preview_images == 2
 
@@ -258,11 +279,10 @@ async def test_storefront_settings_roundtrip(output_dir):
 @pytest.mark.parametrize(
     "kwargs, match",
     [
-        ({"enabled": True, "price_usd": None}, "price_usd"),
-        ({"enabled": True, "price_usd": "0"}, "price_usd"),
+        ({"price_usd": "0"}, "price_usd"),
         ({"price_usd": "-5"}, "price_usd"),
-        ({"file_size_limit_mb": "0"}, "file_size_limit_mb"),
-        ({"file_size_limit_mb": "abc"}, "file_size_limit_mb"),
+        ({"link_document_format": "epub"}, "link_document_format"),
+        ({"link_document_format": 123}, "link_document_format"),
         ({"max_preview_images": "99"}, "max_preview_images"),
         ({"description_template": "   "}, "description_template"),
         ({"description_template": "x" * (ss.MAX_TEMPLATE_CHARS + 1)}, "description_template"),
@@ -287,9 +307,11 @@ async def test_settings_page_shows_storefronts(output_dir):
     assert page.status_code == 200
     assert "Store Fronts" in page.text
     assert "FourthWall" in page.text
+    assert "Cloudflare R2" in page.text
     assert "PayHip" in page.text
     assert "cannot be automated" in page.text
     assert 'name="description_template"' in page.text
+    assert 'name="link_document_format"' in page.text
 
 
 async def test_storefronts_save_via_web(output_dir):
@@ -297,9 +319,8 @@ async def test_storefronts_save_via_web(output_dir):
         response = await client.post(
             "/settings/general/storefronts/save",
             data={
-                "enabled": "on",
                 "price_usd": "7.50",
-                "file_size_limit_mb": "100",
+                "link_document_format": "markdown",
                 "description_template": "$description ($tags)",
                 "max_preview_images": "3",
             },
@@ -308,10 +329,9 @@ async def test_storefronts_save_via_web(output_dir):
     assert response.status_code == 303
     async with app.database.async_session() as session:
         storefront = await ss.get_storefront_settings(session)
-    assert storefront.enabled is True
     assert storefront.price_usd == 7.5
     assert storefront.publish_on_create is False
-    assert storefront.file_size_limit_mb == 100
+    assert storefront.link_document_format == "markdown"
     assert storefront.max_preview_images == 3
 
 
@@ -320,8 +340,7 @@ async def test_storefronts_save_validation_replays_form(output_dir):
         response = await client.post(
             "/settings/general/storefronts/save",
             data={
-                "enabled": "on",
-                "price_usd": "",
+                "price_usd": "abc",
                 "description_template": "keep $title",
             },
         )
@@ -333,19 +352,12 @@ async def test_storefronts_save_validation_replays_form(output_dir):
 # ── Listing flow ──────────────────────────────────────────────────────────
 
 
-async def test_listing_skipped_when_disabled(output_dir):
-    job, _, _ = await _seed_job(output_dir)
-    result = await fw.create_storefront_listing(job.id)
-    assert result["storefront_listing_status"] == "skipped"
-    assert "disabled" in result["fourthwall_listing_output"]
-    assert result["_warning"] is None
-    assert await _listing(job.id) is None
-
-
-async def test_listing_skipped_without_credentials(output_dir):
+async def test_listing_skipped_without_credentials(output_dir, monkeypatch):
+    monkeypatch.setattr(settings, "fourthwall_api_user", "")
+    monkeypatch.setattr(settings, "fourthwall_api_password", "")
     job, _, _ = await _seed_job(output_dir)
     async with app.database.async_session() as session:
-        await ss.save_storefront_settings(session, enabled=True, price_usd=5.0)
+        await ss.save_storefront_settings(session, price_usd=5.0)
         await session.commit()
     result = await fw.create_storefront_listing(job.id)
     assert result["storefront_listing_status"] == "skipped"
@@ -353,7 +365,7 @@ async def test_listing_skipped_without_credentials(output_dir):
     assert await _listing(job.id) is None
 
 
-async def test_listing_skipped_without_archive(output_dir, enabled):
+async def test_listing_skipped_without_archive(output_dir, listable):
     job, _, _ = await _seed_job(output_dir, with_archive=False)
     result = await fw.create_storefront_listing(job.id)
     assert result["storefront_listing_status"] == "skipped"
@@ -367,7 +379,7 @@ async def test_listing_skipped_without_price(output_dir, credentials):
         session.add(
             Setting(
                 key=ss.STOREFRONT_SETTINGS_KEY,
-                value=json.dumps({"enabled": True, "price_usd": None}),
+                value=json.dumps({"price_usd": None}),
             )
         )
         await session.commit()
@@ -377,7 +389,7 @@ async def test_listing_skipped_without_price(output_dir, credentials):
     assert await _listing(job.id) is None
 
 
-async def test_listing_happy_path(output_dir, enabled):
+async def test_listing_happy_path(output_dir, listable):
     async with app.database.async_session() as session:
         await gs.save_delivery_settings(session, artist_attribution="© Studio Z")
         await session.commit()
@@ -401,6 +413,10 @@ async def test_listing_happy_path(output_dir, enabled):
     assert listing.name == "Neon Shoot"
     assert listing.price_usd == 12.5
     assert listing.archive_name == archive.archive_name
+    # Correlated to the seeded R2 upload + the generated link document
+    assert listing.cloudflare_upload_id is not None
+    assert listing.link_document_name == "neon-shoot-download.pdf"
+    assert listing.link_document_sha256 is not None
     # Marketplace post + tags + attribution rendered through the template
     assert "A neon-drenched artwork pack." in listing.description
     assert "neon, cyber" in listing.description
@@ -408,6 +424,9 @@ async def test_listing_happy_path(output_dir, enabled):
     detail = json.loads(listing.detail_json)
     assert detail["file_url"] == "fw-file-1"
     assert detail["preview_count"] == 1
+    assert detail["cloudflare_upload_id"] == listing.cloudflare_upload_id
+    assert detail["link_document"]["name"] == "neon-shoot-download.pdf"
+    assert detail["link_document"]["url"].startswith("https://pub-abc.r2.dev/")
 
     by_key = {f"{r.method} {r.url.path}": r for r in log}
     create = json.loads(by_key["POST /products"].content)
@@ -416,22 +435,23 @@ async def test_listing_happy_path(output_dir, enabled):
     assert create["price"] == 12.5
     assert create["publishOnCreate"] is False
 
+    # The digital file is the PDF link document — NOT the delivery ZIP
     grant_key = "POST /products/prod-1/digital-files/upload-url"
     grant = json.loads(by_key[grant_key].content)
-    assert grant["fileName"] == archive.archive_name
-    assert grant["contentType"] == "application/zip"
-    assert grant["size"] == archive.byte_size
+    assert grant["fileName"] == "neon-shoot-download.pdf"
+    assert grant["contentType"] == "application/pdf"
+    assert grant["size"] < 64 * 1024
 
     # Signed storage PUT carries the exact signed conditions, no auth
     puts = [r for r in log if r.method == "PUT"]
-    zip_put = next(r for r in puts if "fw-signed-zip" in str(r.url))
-    assert zip_put.headers["x-goog-content-length-range"] == f"0,{archive.byte_size}"
-    assert zip_put.headers["Content-Type"] == "application/zip"
-    assert "authorization" not in {k.lower() for k in zip_put.headers}
-    assert zip_put.content == Path(archive.archive_path).read_bytes()
+    doc_put = next(r for r in puts if "fw-signed-zip" in str(r.url))
+    assert doc_put.headers["x-goog-content-length-range"] == f"0,{len(doc_put.content)}"
+    assert doc_put.headers["Content-Type"] == "application/pdf"
+    assert "authorization" not in {k.lower() for k in doc_put.headers}
+    assert doc_put.content.startswith(b"%PDF")  # the generated link document
 
     confirm = json.loads(by_key["POST /products/prod-1/digital-files"].content)
-    assert confirm == {"fileUrl": "fw-file-1", "fileName": archive.archive_name}
+    assert confirm == {"fileUrl": "fw-file-1", "fileName": "neon-shoot-download.pdf"}
 
     # The smallest variant image was converted to JPEG and attached
     media_grant = json.loads(by_key["POST /media/upload-url"].content)
@@ -443,7 +463,29 @@ async def test_listing_happy_path(output_dir, enabled):
     assert attach["images"] == [{"url": "fw-media-1", "width": 8, "height": 8}]
 
 
-async def test_listing_api_failure_is_best_effort(output_dir, enabled):
+async def test_listing_markdown_link_document(output_dir, listable):
+    job, _, _ = await _seed_job(output_dir)
+    async with app.database.async_session() as session:
+        await ss.save_storefront_settings(
+            session, price_usd=5.0, link_document_format="markdown"
+        )
+        await session.commit()
+    log: list[httpx.Request] = []
+    async with _client(log) as client:
+        result = await fw.create_storefront_listing(job.id, client=client)
+    assert result["storefront_listing_status"] == "ready"
+    grant = json.loads(
+        next(
+            r for r in log if r.url.path.endswith("/digital-files/upload-url")
+        ).content
+    )
+    assert grant["fileName"] == "neon-shoot-download.md"
+    assert grant["contentType"] == "text/markdown"
+    listing = await _listing(job.id)
+    assert listing.link_document_name == "neon-shoot-download.md"
+
+
+async def test_listing_api_failure_is_best_effort(output_dir, listable):
     job, _, _ = await _seed_job(output_dir)
     log: list[httpx.Request] = []
 
@@ -460,21 +502,17 @@ async def test_listing_api_failure_is_best_effort(output_dir, enabled):
     assert job_row.status == JobStatus.COMPLETED
 
 
-async def test_listing_oversized_archive_fails(output_dir, enabled):
-    job, _, archive = await _seed_job(output_dir)
-    async with app.database.async_session() as session:
-        await ss.save_storefront_settings(session, enabled=True, price_usd=5.0)
-        row = await session.get(DeliveryArchive, archive.id)
-        row.byte_size = 26 * 1024 * 1024
-        await session.commit()
+async def test_listing_skipped_without_upload(output_dir, listable):
+    """A ready archive with no R2 upload → skipped, not failed."""
+    job, _, _ = await _seed_job(output_dir, with_upload=False)
     async with _client([]) as client:
         result = await fw.create_storefront_listing(job.id, client=client)
-    assert result["storefront_listing_status"] == "failed"
-    assert "25 MB" in result["_warning"]
-    assert await _listing(job.id) is not None
+    assert result["storefront_listing_status"] == "skipped"
+    assert "cloudflare_r2_uploader" in result["_warning"]
+    assert await _listing(job.id) is None
 
 
-async def test_listing_is_idempotent(output_dir, enabled):
+async def test_listing_is_idempotent(output_dir, listable):
     job, _, _ = await _seed_job(output_dir)
     async with _client([]) as client:
         first = await fw.create_storefront_listing(job.id, client=client)
@@ -491,12 +529,13 @@ async def test_listing_is_idempotent(output_dir, enabled):
     assert len(count) == 1
 
 
-async def test_listing_no_images_still_attaches_zip(output_dir, enabled):
+async def test_listing_no_images_still_attaches_document(output_dir, listable):
     job, _, _ = await _seed_job(output_dir, with_steps=False)
     log: list[httpx.Request] = []
     async with _client(log) as client:
         result = await fw.create_storefront_listing(job.id, client=client)
     assert result["storefront_listing_status"] == "ready"
+    assert any(r.url.path.endswith("/digital-files") for r in log)
     assert not any(r.url.path == "/media/upload-url" for r in log)
     assert not any(r.url.path.endswith("/images") for r in log)
 
@@ -536,7 +575,7 @@ async def test_block_run_surfaces_warning(output_dir, monkeypatch):
 # ── Retry ─────────────────────────────────────────────────────────────────
 
 
-async def test_listing_retry_reserve_and_run(output_dir, enabled, monkeypatch):
+async def test_listing_retry_reserve_and_run(output_dir, listable, monkeypatch):
     job, _, _ = await _seed_job(output_dir)
     async with app.database.async_session() as session:
         step_id = await fw.reserve_listing_retry(session, job.id)
@@ -561,7 +600,7 @@ async def test_listing_retry_reserve_and_run(output_dir, enabled, monkeypatch):
     assert json.loads(step.output)["fourthwall_product_id"] == "prod-9"
 
 
-async def test_listing_retry_restores_failed_job(output_dir, enabled, monkeypatch):
+async def test_listing_retry_restores_failed_job(output_dir, listable, monkeypatch):
     job, _, _ = await _seed_job(output_dir, status=JobStatus.FAILED)
     async with app.database.async_session() as session:
         step_id = await fw.reserve_listing_retry(session, job.id)
@@ -578,7 +617,7 @@ async def test_listing_retry_restores_failed_job(output_dir, enabled, monkeypatc
     assert step.status == JobStatus.FAILED
 
 
-async def test_listing_retry_ineligible_cases(output_dir, enabled):
+async def test_listing_retry_ineligible_cases(output_dir, listable):
     async with app.database.async_session() as session:
         job = Job(
             workflow_name="No Archive",
@@ -606,7 +645,7 @@ async def test_listing_retry_ineligible_cases(output_dir, enabled):
             await fw.reserve_listing_retry(session, job2.id)
 
 
-async def test_listing_retry_api(output_dir, enabled, monkeypatch):
+async def test_listing_retry_api(output_dir, listable, monkeypatch):
     job, _, _ = await _seed_job(output_dir)
     scheduled: list[tuple[int, int]] = []
     monkeypatch.setattr(
@@ -620,14 +659,14 @@ async def test_listing_retry_api(output_dir, enabled, monkeypatch):
     assert len(scheduled) == 1 and scheduled[0][0] == job.id
 
 
-async def test_listing_retry_api_ineligible(output_dir, enabled):
+async def test_listing_retry_api_ineligible(output_dir, listable):
     job, _, _ = await _seed_job(output_dir, with_archive=False)
     async with _web_client() as client:
         response = await client.post(f"/api/workflows/jobs/{job.id}/listings/retry")
     assert response.status_code == 409
 
 
-async def test_listings_list_api(output_dir, enabled):
+async def test_listings_list_api(output_dir, listable):
     job, _, _ = await _seed_job(output_dir)
     async with _client([]) as client:
         await fw.create_storefront_listing(job.id, client=client)
@@ -638,10 +677,12 @@ async def test_listings_list_api(output_dir, enabled):
     rows = response.json()
     assert rows[0]["product_id"] == "prod-1"
     assert rows[0]["status"] == "ready"
+    assert rows[0]["cloudflare_upload_id"] is not None
+    assert rows[0]["link_document_name"] == "neon-shoot-download.pdf"
     assert job_response.json()["listings"][0]["product_id"] == "prod-1"
 
 
-async def test_job_detail_page_shows_listing(output_dir, enabled):
+async def test_job_detail_page_shows_listing(output_dir, listable):
     job, _, _ = await _seed_job(output_dir)
     async with _client([]) as client:
         await fw.create_storefront_listing(job.id, client=client)
@@ -649,5 +690,6 @@ async def test_job_detail_page_shows_listing(output_dir, enabled):
         page = await client.get(f"/jobs/{job.id}")
     assert page.status_code == 200
     assert "Storefront listings" in page.text
+    assert "Cloudflare R2 uploads" in page.text
     assert "prod-1" in page.text
     assert "$12.50" in page.text

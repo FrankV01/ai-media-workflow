@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import all models so Base.metadata is fully populated
 import app.models.block  # noqa: F401
+import app.models.cloudflare  # noqa: F401
 import app.models.creative  # noqa: F401
 import app.models.delivery  # noqa: F401
 import app.models.job  # noqa: F401

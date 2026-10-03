@@ -15,6 +15,7 @@
         {% elif status == 'signature' %}Signature uploaded.
         {% elif status == 'cleared' %}Signature cleared.
         {% elif status == 'storefront' %}Storefront settings saved.
+        {% elif status == 'cloudflare' %}Cloudflare R2 settings saved.
         {% else %}{{ status }}{% endif %}
     </div>
     {% endif %}
@@ -108,24 +109,22 @@
           class="bg-gray-900 rounded-lg border border-gray-800 p-5 space-y-4 mb-6">
         <h2 class="text-lg font-semibold">FourthWall</h2>
         <p class="text-xs text-gray-500">
-            Publishes the job's delivery archive as a digital product: the
-            customer ZIP becomes the downloadable file and the smallest
-            per-variant renderings become preview images. API credentials are
+            Publishes the job's delivery archive as a digital product. The ZIP
+            itself is hosted on Cloudflare R2 (configured below) — the product's
+            downloadable file is a small download document carrying the R2
+            link, and the smallest per-variant renderings become preview
+            images. The listing runs when
+            <code class="font-mono text-xs">fourthwall_listing</code> is a step
+            in the workflow (edit steps on the workflow page). API credentials are
             read from <code class="font-mono">FOURTHWALL_API_USER</code> /
             <code class="font-mono">FOURTHWALL_API_PASSWORD</code> in
             <code class="font-mono">.env</code> — they are never stored in the
             database.
         </p>
-        <label class="flex items-center gap-2 text-sm text-gray-300">
-            <input name="enabled" type="checkbox" {% if storefront.enabled %}checked{% endif %}
-                   class="rounded border-gray-600 bg-gray-800">
-            Enable FourthWall listings (the <code class="font-mono text-xs">fourthwall_listing</code>
-            block runs when enabled; it skips quietly when disabled)
-        </label>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
                 <label class="text-xs text-gray-500 block mb-1">
-                    Price (USD) <span class="text-gray-600">(required when enabled)</span>
+                    Price (USD) <span class="text-gray-600">(required — the listing skips without one)</span>
                 </label>
                 <input name="price_usd" type="number" step="0.01" min="0"
                        value="{{ storefront.price_usd if storefront.price_usd is not none else '' }}"
@@ -133,12 +132,18 @@
             </div>
             <div>
                 <label class="text-xs text-gray-500 block mb-1">
-                    File size limit (MB)
-                    <span class="text-gray-600">(25 MB free plan / 1 GB paid)</span>
+                    Download document format
+                    <span class="text-gray-600">(the file buyers receive)</span>
                 </label>
-                <input name="file_size_limit_mb" type="number" step="1" min="1" max="1024"
-                       value="{{ storefront.file_size_limit_mb }}"
-                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                <select name="link_document_format"
+                        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                    <option value="pdf" {% if storefront.link_document_format != 'markdown' %}selected{% endif %}>
+                        PDF — clickable link (recommended)
+                    </option>
+                    <option value="markdown" {% if storefront.link_document_format == 'markdown' %}selected{% endif %}>
+                        Markdown — plain text
+                    </option>
+                </select>
             </div>
             <div>
                 <label class="text-xs text-gray-500 block mb-1">Max preview images</label>
@@ -181,6 +186,67 @@
         </div>
         <button type="submit" class="px-4 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">
             Save storefront settings
+        </button>
+    </form>
+
+    <form method="post" action="/settings/general/cloudflare/save"
+          class="bg-gray-900 rounded-lg border border-gray-800 p-5 space-y-4 mb-6">
+        <h2 class="text-lg font-semibold">Cloudflare R2</h2>
+        <p class="text-xs text-gray-500">
+            Hosts the delivery ZIP buyers download — the archive is too large
+            for FourthWall's digital-file limit, so
+            <code class="font-mono text-xs">cloudflare_r2_uploader</code>
+            puts it in this bucket and the product links to its public URL.
+            The S3 API credentials are read from
+            <code class="font-mono">CLOUDFLARE_R2_ACCESS_KEY_ID</code> /
+            <code class="font-mono">CLOUDFLARE_R2_SECRET_ACCESS_KEY</code> in
+            <code class="font-mono">.env</code> — they are never stored in the
+            database.
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">
+                    S3 endpoint URL
+                    <span class="text-gray-600">(R2 API, upload only — never linked)</span>
+                </label>
+                <input name="r2_endpoint_url" type="url" spellcheck="false"
+                       value="{{ r2.endpoint_url }}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">Bucket</label>
+                <input name="r2_bucket" type="text" spellcheck="false"
+                       value="{{ r2.bucket }}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">
+                    Object key prefix
+                    <span class="text-gray-600">(folder inside the bucket)</span>
+                </label>
+                <input name="r2_key_prefix" type="text" spellcheck="false"
+                       value="{{ r2.key_prefix }}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">
+                    Public base URL
+                    <span class="text-gray-600">(r2.dev dev URL or custom domain — required for links)</span>
+                </label>
+                <input name="r2_public_base_url" type="url" spellcheck="false"
+                       placeholder="https://pub-abc123.r2.dev"
+                       value="{{ r2.public_base_url }}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+            </div>
+        </div>
+        <p class="text-[11px] text-gray-600 -mt-2">
+            Enable the bucket's r2.dev public access or attach a custom domain
+            in the Cloudflare dashboard, then paste its URL above — the S3
+            endpoint alone cannot serve buyer links. Public links are
+            unguessable by key but reshareable.
+        </p>
+        <button type="submit" class="px-4 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">
+            Save Cloudflare R2 settings
         </button>
     </form>
 

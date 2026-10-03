@@ -52,6 +52,8 @@ DEFAULT_WORKFLOW_STEPS: list[str | dict] = [
         "always": ["social_media_specialist", "social_media_report", "llm_report"],
     },
     "delivery_archive",
+    "cloudflare_r2_uploader",
+    "fourthwall_listing",
 ]
 
 _ROUTING_KEYS = ("on_good", "on_bad", "always")

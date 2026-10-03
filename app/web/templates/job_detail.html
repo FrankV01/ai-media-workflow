@@ -155,6 +155,55 @@
         {% endif %}
     </div>
 
+    {% if job.upload_error %}
+    <div class="mt-4 p-3 rounded bg-red-900/30 border border-red-800/50">
+        <p class="text-sm text-red-300 font-medium">Upload retry unavailable</p>
+        <p class="text-xs text-red-400/80 mt-1">{{ job.upload_error }}</p>
+    </div>
+    {% endif %}
+
+    <div class="mt-4 p-3 rounded bg-gray-800/60 border border-gray-700/50">
+        <div class="flex items-center justify-between">
+            <p class="text-sm text-gray-300 font-medium">Cloudflare R2 uploads</p>
+            {% if job.upload_retryable %}
+            <form method="post" action="/jobs/{{ job.id }}/uploads/retry">
+                <button type="submit"
+                        class="text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+                    Retry upload
+                </button>
+            </form>
+            {% endif %}
+        </div>
+        {% if job.uploads %}
+        <ul class="mt-2 space-y-2">
+            {% for upload in job.uploads %}
+            <li class="text-xs text-gray-400">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-mono">attempt {{ upload.attempt }}</span>
+                    <span class="px-1.5 py-0.5 rounded
+                        {% if upload.status == 'ready' %}bg-emerald-900/40 text-emerald-300
+                        {% elif upload.status == 'running' %}bg-blue-900/40 text-blue-300
+                        {% elif upload.status == 'failed' %}bg-red-900/40 text-red-300
+                        {% else %}bg-gray-700 text-gray-400{% endif %}">{{ upload.status }}</span>
+                    <span>{{ upload.created_at }}</span>
+                    {% if upload.ready and upload.object_url %}
+                    <a href="{{ upload.object_url }}"
+                       class="text-indigo-400 hover:text-indigo-300 break-all">
+                        {{ upload.object_key }}{% if upload.byte_size %} ({{ upload.byte_size // 1024 }} KB){% endif %}
+                    </a>
+                    {% endif %}
+                </div>
+                {% if upload.error %}
+                <p class="text-red-400/80 mt-0.5">{{ upload.error }}</p>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-xs text-gray-600 mt-1">No Cloudflare R2 uploads yet.</p>
+        {% endif %}
+    </div>
+
     {% if job.listing_error %}
     <div class="mt-4 p-3 rounded bg-red-900/30 border border-red-800/50">
         <p class="text-sm text-red-300 font-medium">Listing retry unavailable</p>

@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
+from app.models.cloudflare import CloudflareUpload
 from app.models.creative import RoleExecution
 from app.models.delivery import DeliveryArchive, DeliveryArchiveStatus
 from app.models.job import Job
@@ -29,6 +30,12 @@ from app.models.storefront import StorefrontListing
 from app.models.workflow import Workflow
 from app.pipeline.engine import run_pipeline
 from app.pipeline.naming import PhotoShootNameError, resolve_photo_shoot_name
+from app.services.cloudflare_r2 import (
+    UploadRetryError,
+    list_uploads,
+    reserve_upload_retry,
+    schedule_upload_retry,
+)
 from app.services.delivery_archive import (
     ArchiveRetryError,
     DeliveryArchiveError,
@@ -172,6 +179,7 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
     listings = [
         _listing_metadata(listing) for listing in await list_listings(session, job_id)
     ]
+    uploads = [_upload_metadata(u) for u in await list_uploads(session, job_id)]
 
     return {
         "id": job.id,
@@ -187,6 +195,7 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
         "report_files": json.loads(job.report_files) if job.report_files else [],
         "archives": archives,
         "listings": listings,
+        "uploads": uploads,
         "steps": [
             {
                 "block_name": s.block_name,
@@ -324,6 +333,7 @@ def _listing_metadata(listing: StorefrontListing) -> dict[str, Any]:
         "storefront": listing.storefront,
         "job_step_id": listing.job_step_id,
         "delivery_archive_id": listing.delivery_archive_id,
+        "cloudflare_upload_id": listing.cloudflare_upload_id,
         "created_at": listing.created_at.isoformat() if listing.created_at else None,
         "started_at": listing.started_at.isoformat() if listing.started_at else None,
         "finished_at": listing.finished_at.isoformat() if listing.finished_at else None,
@@ -333,6 +343,8 @@ def _listing_metadata(listing: StorefrontListing) -> dict[str, Any]:
         "archive_name": listing.archive_name,
         "archive_byte_size": listing.archive_byte_size,
         "product_id": listing.product_id,
+        "link_document_name": listing.link_document_name,
+        "link_document_sha256": listing.link_document_sha256,
         "error": listing.error,
         "error_type": listing.error_type,
     }
@@ -357,4 +369,47 @@ async def retry_job_listing(job_id: int, session: AsyncSession = Depends(get_ses
     except ListingRetryError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     schedule_listing_retry(job_id, step_id)
+    return {"job_id": job_id, "status": "retrying"}
+
+
+def _upload_metadata(upload: CloudflareUpload) -> dict[str, Any]:
+    """Upload attempt metadata for list/job responses."""
+    return {
+        "id": upload.id,
+        "attempt": upload.attempt,
+        "status": upload.status.value,
+        "job_step_id": upload.job_step_id,
+        "delivery_archive_id": upload.delivery_archive_id,
+        "created_at": upload.created_at.isoformat() if upload.created_at else None,
+        "started_at": upload.started_at.isoformat() if upload.started_at else None,
+        "finished_at": upload.finished_at.isoformat() if upload.finished_at else None,
+        "archive_name": upload.archive_name,
+        "archive_byte_size": upload.archive_byte_size,
+        "archive_sha256": upload.archive_sha256,
+        "bucket": upload.bucket,
+        "object_key": upload.object_key,
+        "object_url": upload.object_url,
+        "etag": upload.etag,
+        "error": upload.error,
+        "error_type": upload.error_type,
+    }
+
+
+@router.get("/jobs/{job_id}/uploads")
+async def list_job_uploads(job_id: int, session: AsyncSession = Depends(get_session)):
+    """Cloudflare R2 upload attempt history for a job (metadata only)."""
+    job = await session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    return [_upload_metadata(upload) for upload in await list_uploads(session, job_id)]
+
+
+@router.post("/jobs/{job_id}/uploads/retry", status_code=202)
+async def retry_job_upload(job_id: int, session: AsyncSession = Depends(get_session)):
+    """Reserve and schedule an upload-only retry (no LLM/generation reruns)."""
+    try:
+        step_id = await reserve_upload_retry(session, job_id)
+    except UploadRetryError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    schedule_upload_retry(job_id, step_id)
     return {"job_id": job_id, "status": "retrying"}

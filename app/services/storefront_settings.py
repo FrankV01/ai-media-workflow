@@ -1,7 +1,7 @@
 """app.services.storefront_settings — Global storefront listing settings
 
-One global StorefrontSettings record (enable flag, USD price, publish flag,
-file-size limit, description template, preview count) stored as JSON under
+One global StorefrontSettings record (USD price, publish flag, link
+document format, description template, preview count) stored as JSON under
 the namespaced Setting key "storefronts.fourthwall". These settings are
 global-only — no workflow or per-run overrides — and each listing attempt
 snapshots them immutably.
@@ -51,10 +51,9 @@ class StorefrontSettingsError(ValueError):
 class StorefrontSettings:
     """Global, DB-backed storefront (FourthWall) listing settings."""
 
-    enabled: bool = False
     price_usd: float | None = None
     publish_on_create: bool = False
-    file_size_limit_mb: int = 25
+    link_document_format: str = "pdf"
     description_template: str = DEFAULT_DESCRIPTION_TEMPLATE
     max_preview_images: int = 4
 
@@ -65,10 +64,9 @@ class StorefrontSettings:
     def from_dict(cls, data: dict[str, Any]) -> StorefrontSettings:
         price = data.get("price_usd")
         return cls(
-            enabled=bool(data.get("enabled", False)),
             price_usd=float(price) if price is not None else None,
             publish_on_create=bool(data.get("publish_on_create", False)),
-            file_size_limit_mb=int(data.get("file_size_limit_mb") or 25),
+            link_document_format=str(data.get("link_document_format") or "pdf"),
             description_template=str(
                 data.get("description_template") or DEFAULT_DESCRIPTION_TEMPLATE
             ),
@@ -77,16 +75,13 @@ class StorefrontSettings:
 
 
 def _validate(
-    enabled: Any,
     price_usd: Any,
     publish_on_create: Any,
-    file_size_limit_mb: Any,
+    link_document_format: Any,
     description_template: Any,
     max_preview_images: Any,
 ) -> list[str]:
     errors: list[str] = []
-    if not isinstance(enabled, bool):
-        errors.append("enabled must be a boolean")
     if not isinstance(publish_on_create, bool):
         errors.append("publish_on_create must be a boolean")
     if price_usd == "":
@@ -97,18 +92,12 @@ def _validate(
         except (TypeError, ValueError):
             errors.append("price_usd must be a number")
         else:
-            if price < 0:
-                errors.append("price_usd must be zero or positive")
-            if enabled and price <= 0:
-                errors.append("price_usd is required (must be positive) when enabled")
-    elif enabled:
-        errors.append("price_usd is required when the storefront is enabled")
-    try:
-        limit = int(file_size_limit_mb)
-        if not (1 <= limit <= 1024):
-            errors.append("file_size_limit_mb must be between 1 and 1024")
-    except (TypeError, ValueError):
-        errors.append("file_size_limit_mb must be an integer")
+            if price <= 0:
+                errors.append("price_usd must be positive")
+    if not isinstance(link_document_format, str) or (
+        link_document_format.strip().lower() not in ("pdf", "markdown")
+    ):
+        errors.append("link_document_format must be 'pdf' or 'markdown'")
     try:
         count = int(max_preview_images)
         if not (0 <= count <= 20):
@@ -155,19 +144,17 @@ async def get_storefront_settings(session: AsyncSession) -> StorefrontSettings:
 async def save_storefront_settings(
     session: AsyncSession,
     *,
-    enabled: Any = False,
     price_usd: Any = None,
     publish_on_create: Any = False,
-    file_size_limit_mb: Any = 25,
+    link_document_format: Any = "pdf",
     description_template: Any = DEFAULT_DESCRIPTION_TEMPLATE,
     max_preview_images: Any = 4,
 ) -> StorefrontSettings:
     """Validate and persist the global storefront settings."""
     errors = _validate(
-        enabled,
         price_usd,
         publish_on_create,
-        file_size_limit_mb,
+        link_document_format,
         description_template,
         max_preview_images,
     )
@@ -175,10 +162,9 @@ async def save_storefront_settings(
         raise StorefrontSettingsError(errors)
 
     record = StorefrontSettings(
-        enabled=bool(enabled),
         price_usd=float(price_usd) if price_usd is not None and price_usd != "" else None,
         publish_on_create=bool(publish_on_create),
-        file_size_limit_mb=int(file_size_limit_mb),
+        link_document_format=str(link_document_format).strip().lower(),
         description_template=str(description_template),
         max_preview_images=int(max_preview_images),
     )

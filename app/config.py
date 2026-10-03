@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     fourthwall_base_url: str = "https://api.fourthwall.com/open-api/v1.0"
     fourthwall_timeout: float = 300.0  # max wait per API/upload request
 
+    # Cloudflare R2 delivery hosting (env-only: the S3 API credentials are
+    # secrets and never enter the database). Endpoint, bucket, key prefix,
+    # and the public base URL are DB-backed settings edited on
+    # /settings/general → Store Fronts → Cloudflare R2.
+    cloudflare_r2_access_key_id: str = ""
+    cloudflare_r2_secret_access_key: str = ""
+
     @field_validator("image_output_dir")
     @classmethod
     def require_absolute_image_output_dir(cls, value: Path) -> Path:
