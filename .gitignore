@@ -16,6 +16,7 @@ build/
 
 # Data (keep structure, ignore contents)
 data/*.db
+data/app.db.backup-*
 data/media/
 data/output/
 
