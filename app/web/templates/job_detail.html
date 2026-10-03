@@ -102,6 +102,58 @@
         </ul>
     </div>
     {% endif %}
+
+    {% if job.archive_error %}
+    <div class="mt-4 p-3 rounded bg-red-900/30 border border-red-800/50">
+        <p class="text-sm text-red-300 font-medium">Archive retry unavailable</p>
+        <p class="text-xs text-red-400/80 mt-1">{{ job.archive_error }}</p>
+    </div>
+    {% endif %}
+
+    <div class="mt-4 p-3 rounded bg-gray-800/60 border border-gray-700/50">
+        <div class="flex items-center justify-between">
+            <p class="text-sm text-gray-300 font-medium">Delivery archives</p>
+            {% if job.archive_retryable %}
+            <form method="post" action="/jobs/{{ job.id }}/archives/retry">
+                <button type="submit"
+                        class="text-xs px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+                    Retry archive
+                </button>
+            </form>
+            {% endif %}
+        </div>
+        {% if job.archives %}
+        <ul class="mt-2 space-y-2">
+            {% for archive in job.archives %}
+            <li class="text-xs text-gray-400">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-mono">attempt {{ archive.attempt }}</span>
+                    <span class="px-1.5 py-0.5 rounded
+                        {% if archive.status == 'ready' %}bg-emerald-900/40 text-emerald-300
+                        {% elif archive.status == 'running' %}bg-blue-900/40 text-blue-300
+                        {% elif archive.status == 'failed' %}bg-red-900/40 text-red-300
+                        {% else %}bg-gray-700 text-gray-400{% endif %}">{{ archive.status }}</span>
+                    <span>{{ archive.created_at }}</span>
+                    {% if archive.ready %}
+                    <a href="/api/workflows/jobs/{{ job.id }}/archives/{{ archive.id }}/download"
+                       class="text-indigo-400 hover:text-indigo-300">
+                        {{ archive.archive_name }} ({{ (archive.byte_size or 0) // 1024 }} KB)
+                    </a>
+                    {% endif %}
+                </div>
+                {% if archive.sha256 %}
+                <code class="font-mono text-[10px] text-gray-500">sha256: {{ archive.sha256 }}</code>
+                {% endif %}
+                {% if archive.error %}
+                <p class="text-red-400/80 mt-0.5">{{ archive.error }}</p>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-xs text-gray-600 mt-1">No delivery archives yet.</p>
+        {% endif %}
+    </div>
 </div>
 
 <!-- Steps -->

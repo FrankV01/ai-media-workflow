@@ -11,6 +11,7 @@ the real data/app.db is never touched.
 """
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -39,7 +40,7 @@ from app.models.workflow import Workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "e2f5a1c9d7b4"
-HEAD_REVISION = "d1e4f6a8b3c5"
+HEAD_REVISION = "f7c3a9e1b5d8"
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -350,6 +351,152 @@ def test_upgrade_database_brings_old_schema_to_head(
 
     assert _current_revisions(path) == {HEAD_REVISION}
     assert "llm_configuration_changes" in _table_names(path)
+
+
+def _steps_json(path: Path, workflow_id: int) -> str:
+    with sqlite3.connect(path) as conn:
+        return conn.execute(
+            "SELECT steps_json FROM workflows WHERE id = ?", (workflow_id,)
+        ).fetchone()[0]
+
+
+def _seed_workflows(path: Path) -> None:
+    """Three workflows covering enabled/disabled/custom + one job + settings."""
+    main_steps = json.dumps(
+        [
+            "art_director",
+            "media_producer",
+            {"on_good": [], "always": ["llm_report"]},
+        ]
+    )
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            "DELETE FROM workflows;"
+            "INSERT INTO workflows "
+            "(id, name, slug, description, steps_json, is_enabled, is_default, "
+            " created_at, updated_at) VALUES "
+            "(1, 'Main', 'main', '', '" + main_steps + "', 1, 1, "
+            " '2026-01-01 00:00:00', '2026-01-01 00:00:00'),"
+            "(2, 'Off', 'off', '', '[\"echo\"]', 0, 0, "
+            " '2026-01-01 00:00:00', '2026-01-01 00:00:00'),"
+            "(3, 'Archived', 'arch', '', '[\"echo\", \"delivery_archive\"]', 1, 0,"
+            " '2026-01-01 00:00:00', '2026-01-01 00:00:00');"
+            "INSERT INTO jobs (id, workflow_name, workflow_id, status, created_at)"
+            " VALUES (1, 'keep', 1, 'COMPLETED', '2026-01-01 00:00:00');"
+            "INSERT INTO settings (id, key, value, description)"
+            " VALUES (1, 'other', 'keep', '');"
+        )
+
+
+def test_workflow_migration_appends_archive_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every stored workflow gains a terminal delivery_archive; an existing
+    occurrence is not duplicated; other rows/settings are untouched."""
+    import json as _json
+
+    path = tmp_path / "app.db"
+    _upgrade(path, PREVIOUS_REVISION, monkeypatch)
+    _upgrade(path, "d1e4f6a8b3c5", monkeypatch)
+    _seed_workflows(path)
+
+    _upgrade(path, "head", monkeypatch)
+
+    main = _json.loads(_steps_json(path, 1))
+    assert main[-1] == "delivery_archive"
+    assert main[:-1] == [
+        "art_director",
+        "media_producer",
+        {"on_good": [], "always": ["llm_report"]},
+    ]
+    assert _json.loads(_steps_json(path, 2)) == ["echo", "delivery_archive"]
+    assert _json.loads(_steps_json(path, 3)) == ["echo", "delivery_archive"]
+
+    with sqlite3.connect(path) as conn:
+        backup = conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            ("delivery_archive.workflow_migration_backup",),
+        ).fetchone()
+        assert backup is not None
+        mapping = _json.loads(backup[0])
+        assert set(mapping) == {"1", "2"}
+        other = conn.execute("SELECT value FROM settings WHERE key = 'other'").fetchone()
+        assert other[0] == "keep"
+        job = conn.execute("SELECT workflow_name FROM jobs WHERE id = 1").fetchone()
+        assert job[0] == "keep"
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "delivery_archives" in tables
+        assert "delivery_archive_entries" in tables
+
+
+def test_workflow_migration_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json as _json
+
+    path = tmp_path / "app.db"
+    _upgrade(path, "d1e4f6a8b3c5", monkeypatch)
+    _seed_workflows(path)
+    _upgrade(path, "head", monkeypatch)
+    before = _steps_json(path, 1)
+    _upgrade(path, "head", monkeypatch)
+    assert _steps_json(path, 1) == before
+    assert _json.loads(before).count("delivery_archive") == 1
+
+
+def test_workflow_migration_fails_on_malformed_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed definition aborts with the workflow id — never replaced."""
+    path = tmp_path / "app.db"
+    _upgrade(path, "d1e4f6a8b3c5", monkeypatch)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO workflows "
+            "(id, name, slug, description, steps_json, is_enabled, is_default,"
+            " created_at, updated_at) VALUES "
+            "(7, 'Bad', 'bad', '', 'not json', 1, 0,"
+            " '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+        )
+
+    with pytest.raises(Exception, match="workflow 7"):
+        _upgrade(path, "head", monkeypatch)
+    assert _steps_json(path, 7) == "not json"
+
+
+def test_workflow_downgrade_restores_only_untouched_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Downgrade restores exact pre-migration steps unless the user edited
+    the row afterwards; only the backup setting is removed."""
+    import json as _json
+
+    path = tmp_path / "app.db"
+    _upgrade(path, "d1e4f6a8b3c5", monkeypatch)
+    _seed_workflows(path)
+    _upgrade(path, "head", monkeypatch)
+
+    edited = _json.dumps(["echo", "delivery_archive", "echo"])
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE workflows SET steps_json = ? WHERE id = 2", (edited,))
+
+    monkeypatch.setattr(settings, "database_url", f"sqlite+aiosqlite:///{path}")
+    command.downgrade(_alembic_config(), "d1e4f6a8b3c5")
+
+    assert _json.loads(_steps_json(path, 1)) == [
+        "art_director",
+        "media_producer",
+        {"on_good": [], "always": ["llm_report"]},
+    ]
+    assert _json.loads(_steps_json(path, 2)) == _json.loads(edited)
+    with sqlite3.connect(path) as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM settings WHERE key = 'delivery_archive.workflow_migration_backup'"
+            ).fetchone()
+            is None
+        )
+        assert (
+            conn.execute("SELECT value FROM settings WHERE key = 'other'").fetchone()[0] == "keep"
+        )
 
 
 def test_upgrade_database_is_idempotent(

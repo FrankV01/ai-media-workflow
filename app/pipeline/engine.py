@@ -14,7 +14,8 @@ Additional submissions queue (PENDING) until the running pipeline finishes.
 This prevents concurrent LLM / ComfyUI calls that would overwhelm the host.
 
 The engine exposes context["_job_id"] (the current job's id),
-context["_job_created_date"] (its UTC creation date), and
+context["_job_created_date"] (its UTC creation date),
+context["_job_step_id"] (the executing step's id), and
 context["_workflow_id"] / context["_workflow_slug"] /
 context["_workflow_media_model"] (the workflow the run executes under —
 scoping AI configuration profiles and overriding the media model when set)
@@ -333,23 +334,21 @@ async def _execute_pipeline(
         # Pre-create PENDING steps for all known blocks so they appear in status
         # queries immediately.  Routing dicts are skipped — those blocks are
         # created when the branch is resolved at runtime.
-        order = 0
-        pending: list[str | dict] = list(block_names)
-        step_lookup: dict[int, JobStep] = {}  # order → step (for pre-created steps)
-
-        for item in pending:
+        queue: list[JobStep | dict] = []
+        next_order = 0
+        for item in block_names:
             if isinstance(item, str):
                 step = JobStep(
                     job_id=job_id,
                     block_name=item,
-                    order=order,
+                    order=next_order,
                     status=JobStatus.PENDING,
                 )
                 session.add(step)
-                step_lookup[order] = step
-                order += 1
-
-        next_order = order  # track next available order for dynamically-added steps
+                next_order += 1
+                queue.append(step)
+            else:
+                queue.append(item)
         await session.commit()
 
         # Preserve the original user brief so re-routed blocks can access it
@@ -357,10 +356,10 @@ async def _execute_pipeline(
             context["_original_brief"] = context["brief"]
 
         # Process blocks: linearly until a routing dict, then resolve the branch
-        order = 0
+        executed = 0
 
-        while pending:
-            item = pending.pop(0)
+        while queue:
+            item = queue.pop(0)
 
             # Routing dict — resolve based on current verdict and prepend to pending
             if isinstance(item, dict):
@@ -375,34 +374,29 @@ async def _execute_pipeline(
                 if "_original_brief" in context:
                     context["brief"] = context["_original_brief"]
                 # Create PENDING steps for newly-resolved blocks
-                for bname in branch_blocks:
+                branch_steps: list[JobStep] = []
+                for offset, bname in enumerate(branch_blocks):
                     step = JobStep(
                         job_id=job_id,
                         block_name=bname,
-                        order=next_order,
+                        order=executed + offset,
                         status=JobStatus.PENDING,
                     )
                     session.add(step)
-                    step_lookup[next_order] = step
-                    next_order += 1
-                if branch_blocks:
+                    branch_steps.append(step)
+                for queued in queue:
+                    if isinstance(queued, JobStep):
+                        queued.order += len(branch_steps)
+                if branch_steps:
                     await session.commit()
-                pending = branch_blocks + pending
+                queue = branch_steps + queue
                 continue
 
             # Normal block execution — use existing pre-created step or the one
             # just created by routing resolution above
-            name = item
-            step = step_lookup.get(order)
-            if step is None:
-                # Shouldn't happen, but guard against it
-                step = JobStep(
-                    job_id=job_id,
-                    block_name=name,
-                    order=order,
-                    status=JobStatus.PENDING,
-                )
-                session.add(step)
+            step = item
+            name = step.block_name
+            context["_job_step_id"] = step.id
 
             step.status = JobStatus.RUNNING
             step.started_at = datetime.now(UTC)
@@ -454,7 +448,7 @@ async def _execute_pipeline(
                 )
                 _persist_job_warnings(job, context)
                 await session.commit()
-                order += 1
+                executed += 1
 
             if job.status == JobStatus.FAILED:
                 break

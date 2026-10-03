@@ -8,20 +8,19 @@ Imports all models so autogenerate can detect schema changes.
 import asyncio
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from alembic import context
-
-from app.config import settings
-from app.database import Base
-
 # Import all models so Base.metadata is fully populated
 import app.models.block  # noqa: F401
-import app.models.job  # noqa: F401
-import app.models.setting  # noqa: F401
 import app.models.creative  # noqa: F401
+import app.models.delivery  # noqa: F401
+import app.models.job  # noqa: F401
 import app.models.media  # noqa: F401
+import app.models.setting  # noqa: F401
+from app.config import settings
+from app.database import Base
 
 # Alembic Config object
 config = context.config

@@ -21,7 +21,7 @@ For project overview and setup, see [`README.md`](README.md).
 6. **Workflows are first-class DB rows.** A `Workflow` (`app/models/workflow.py`) is a named pipeline definition: ordered steps in the engine's `list[str | dict]` format (block names + `on_good`/`on_bad`/`always` routing dicts), enable/disable flags, a single default, and an optional `media_model_name` override. `app/services/workflows.py` owns CRUD/validation/clone; the engine resolves the workflow before a run, uses its `steps_json` when no explicit `block_names` are given, and stamps `Job.workflow_id`. Every run executes inside a workflow "container" — its AI configuration profiles are scoped to that workflow (see Database). "Main" (slug `main`) is the seeded default workflow; disabling the default is rejected. New workflows are created blank or by cloning (clone copies steps + all scoped LLM/media profiles). Managed on the `/workflows` page (create/clone/enable/disable/set-default) and `/workflows/{id}` (validated JSON steps editor with rendered preview); the dashboard selector scopes runs and the job list, and `/settings/ai?workflow=<slug>` scopes that workflow's profiles.
 7. **Generation backends are pluggable.** `app/services/generation/` provides `ComfyUIBackend` (production; SDXL base → refiner → 2x/4x upscale workflow built in `sdxl_workflow.py`) and `PlaceholderBackend` (fast testing). Switch via `GENERATION_BACKEND` in `.env`, or per run via `context["_generation_backend"]`.
 8. **UI is server-rendered.** Jinja2 templates + HTMX. No JS build step. Tailwind via CDN.
-9. **Config via environment.** `pydantic-settings` reads `.env`. See `.env.example` for all settings; defaults live in `app/config.py`.
+9. **Config via environment + database.** `pydantic-settings` reads `.env` for secrets, URLs, timeouts, and filesystem paths (see `.env.example`; defaults live in `app/config.py`). Mutable behavior is DB-backed: per-workflow AI profiles (`/settings/ai`) and global, unscoped delivery settings (customer note, attribution, license, signature reference) under the `delivery.general_settings` Setting row, edited on `/settings/general`.
 10. **Startup health checks.** `app/main.py` verifies the LLM endpoint, ComfyUI (only when it's the configured backend), and output directory writability before accepting requests, and refuses to start otherwise. When launched via `python main.py` (auto-reload enabled), a startup failure exits the whole process with a non-zero status instead of leaving a hung reloader. `main.py` also honors `HOST`/`PORT` environment overrides.
 
 ## Current Pipeline
@@ -36,6 +36,11 @@ concept → Art Director → Prompt Architect → Media Producer → Media Repor
                                                                    continues    Specialist →
                                                                    to always)   Social Report →
                                                                                 LLM Report
+                                                                                    │
+                                                                            Delivery Archive
+                                                                             (final top-level
+                                                                              step — runs after
+                                                                              the resolved branch)
 ```
 
 This is the seeded "Main" workflow (its step list also lives in code as
@@ -43,7 +48,9 @@ This is the seeded "Main" workflow (its step list also lives in code as
 row and is the default for new workflows). The database — not code — decides what runs;
 edit steps on `/workflows/{id}` or via `PUT /api/workflow-definitions/{slug}`.
 There is no retry loop: a bad verdict has no blocks attached, so the run falls through
-to the `always` branch.
+to the `always` branch. `delivery_archive` is the last top-level step of the shipped
+template and of migrated stored definitions that lacked it — not a forced invariant:
+custom step lists may omit or reorder it. It has no dependency on `art_critic` and never reads `_verdict`.
 
 ### Active Blocks
 
@@ -60,6 +67,7 @@ to the `always` branch.
 | `media_producer_report` | Block | Writes the resolved generation settings (media profile + per-request params from `_media_executions`) to media_producer_report.md | `media_producer_report_path`, `report_files` |
 | `llm_report` | Block | Writes the effective LLM settings of every role call in the run (model, temperature, max_tokens, thinking, config source, full system prompt, token usage — from `_executions`) to llm_report.md | `llm_report_path`, `report_files` |
 | `background_remover` | Block | Cuts solid-color backgrounds out of `generated_images` (pure NumPy/Pillow chroma key — no AI model); settings profiled per workflow (`has_db_settings`) | `cutout_images`, `cutout_metadata`, `background_remover_output` |
+| `delivery_archive` | Block | Last step of the default template (and migrated definitions that lacked it) — builds the customer ZIP delivery of the whole job output (files, reports, README/license/signature, manifest); attempt metadata and inventories/checksums/Markdown snapshots live in `delivery_archives`/`delivery_archive_entries`, binaries on disk under `IMAGE_OUTPUT_DIR/_delivery/`; archive-only retry via `/api/workflows/jobs/{id}/archives/retry` never reruns creative steps | `delivery_archive_id`, `delivery_archive_path`, `delivery_archive_sha256`, `delivery_archive_status` |
 | `echo` | Block | Test/utility block (`example_block.py`) | `echo_result` |
 
 ### Context flow
@@ -78,6 +86,7 @@ Special context keys:
 - `_verdict` — set by Art Critic (`"good"` or `"bad"`), read by routing dicts
 - `_original_brief` — captured by the engine at pipeline start; restored to `brief` whenever a routing dict is resolved
 - `_job_id` — current job id, set by the engine
+- `_job_step_id` — id of the `JobStep` row the executing block is bound to, set by the engine before each `run` (audit writes — e.g. `RoleExecution.job_step_id` — attach to it). The engine's work queue binds each block to its actual `JobStep`; when a routing dict resolves, the branch's new pending rows are inserted before the already-pre-created trailing steps (which are resequenced), so every audit record lands on the right step
 - `_job_created_date` — job creation date in UTC (`YYYY-MM-DD`), set by the engine and used to group output files
 - `_generation_backend` — per-run backend override (`"placeholder"`), used by the UI's test-run button and accepted via the API's `context` field
 - `_workflow_id` / `_workflow_slug` — the workflow the run executes under; set by the engine and read by RoleBlock/MediaProducer when resolving configuration profiles
@@ -131,6 +140,55 @@ The job detail page's Reports box has "Open folder" (POST
 `/partials/jobs/{id}/open-folder`, which runs `open`/`explorer`/`xdg-open` on the
 server-derived job dir via `app/services/open_folder.py` — only meaningful when
 browser and server share a machine) and "Copy path" buttons.
+
+### Delivery archive block + General Settings
+
+`delivery_archive` (`app/blocks/delivery_archive.py`; service
+`app/services/delivery_archive.py`) packages the whole derived job output dir
+into a customer ZIP published under `IMAGE_OUTPUT_DIR/_delivery/<date>/<slug>/job<id>/`
+(name `<slug>-job<id>.zip`, `-v2`/`-vN` on repeats; date = job UTC creation date).
+Nothing is written into the source tree — the generated docs live only inside
+the ZIP's reserved `_delivery/` namespace (README.md with note/attribution and
+relative links, creative_process.md, manifest.json, optional LICENSE.md and
+signature image). Expected outputs are the union of
+`Job.generated_assets`/`report_files` and the
+`generated_images`/`cutout_images`/`report_files` recorded in *completed*
+`JobStep.output` snapshots — a recorded-but-missing file fails the attempt.
+Creative provenance comes from the saved `RoleExecution`/`Message` audit rows
+(immutable effective prompts/settings), never recomputed from mutable
+profiles. Build is streamed ZIP64 off the event loop and verified (CRC +
+SHA-256 per member) before publish: the temporary ZIP lives in the
+destination directory and is published via a no-overwrite **hard link**, so
+the destination filesystem must support hard links (APFS here); original
+source files are only read, never linked or moved. The
+manifest deliberately omits its own digest and the ZIP digest (stored on the
+`DeliveryArchive` row) to avoid circularity. Unsafe entry names, `_delivery`
+namespace collisions, symlinked/redirected source or destination paths,
+invalid UTF-8 Markdown, missing recorded outputs, and mid-build source
+mutation all record a `failed` attempt; empty Markdown files are snapshotted
+as `""`.
+
+Global customer settings resolve via `app/services/general_settings.py` from
+the `delivery.general_settings` Setting row (`/settings/general`;
+note/attribution ≤20k chars, license ≤100k; signature PNG/JPEG ≤5 MB/≤20 MP,
+validated by full Pillow decode and stored under
+`IMAGE_OUTPUT_DIR/_delivery_assets/signatures/` with server-managed
+filenames — cleared/replaced references keep prior files on disk).
+
+Archive-only retry (`POST /api/workflows/jobs/{id}/archives/retry` →
+`reserve_archive_retry`/`run_archive_retry`) is eligible only for a terminal
+FAILED job whose last step is a FAILED `delivery_archive`, with no
+PENDING/RUNNING rows and every earlier non-archive step COMPLETED — prior
+failed archive attempts are retry history, not disqualifiers.
+`reserve_archive_retry` claims the job atomically (`UPDATE … WHERE status =
+FAILED`) and commits the new pending archive `JobStep` in the same
+transaction, before the background task acquires `workload_guard` — a
+concurrent reservation loses the conditional update and is rejected with
+`ArchiveRetryError` (409). `run_archive_retry` runs under `workload_guard`
+and atomically claims the reserved step pending→running, so duplicate or
+stale invocations return without doing work. Each attempt snapshots the
+*current* global settings and files — it never reruns naming/LLM/media work
+and is not generic resume or crash recovery.
 
 ### PNG→JPEG converter tool
 
@@ -254,12 +312,12 @@ time, and `brief` is reset to `_original_brief` before they run.
 ## Database
 
 - **ORM**: SQLAlchemy 2.0 async sessions. Use `Depends(get_session)` in routes; the engine opens its own session per run.
-- **Models in use**: `Workflow` (`name`, `slug`, `description`, `steps_json`, `media_model_name`, `is_enabled`, `is_default`); `Job` (`workflow_name` = photo shoot title, `workflow_id` = the workflow it ran under, `status`, `error`, `warnings`, `generated_assets`, `report_files`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; the generic block-settings model `BlockConfiguration`; the mutation-audit model `LlmConfigurationChange`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
+- **Models in use**: `Workflow` (`name`, `slug`, `description`, `steps_json`, `media_model_name`, `is_enabled`, `is_default`); `Job` (`workflow_name` = photo shoot title, `workflow_id` = the workflow it ran under, `status`, `error`, `warnings`, `generated_assets`, `report_files`); `JobStep` (`block_name`, `order`, `status`, input/output snapshots, structured error details, timings); `Setting` (namespaced key/value rows — global delivery settings and migration backups); `DeliveryArchive`/`DeliveryArchiveEntry` (delivery audit); the AI configuration models `LlmRoleConfiguration` and `MediaModelConfiguration`; the generic block-settings model `BlockConfiguration`; the mutation-audit model `LlmConfigurationChange`; and the normalized AI audit models `CreativeRole`, `RoleExecution`, `Message`, and `MediaGenerationExecution`.
 - **AI configuration**: `CreativeRole` is stable identity metadata only. Mutable behavior profiles live in `LlmRoleConfiguration` keyed by `(workflow_id, role, model_name)` — the run's workflow selects the scope and `LLM_MODEL` selects the model within it — and `MediaModelConfiguration` keyed by `(workflow_id, block, backend, model)`, and `BlockConfiguration` keyed by `(workflow_id, block_name)` for non-LLM/non-media blocks that set `has_db_settings` (`background_remover`). `app/services/configuration/` resolves profiles: **missing rows only** are seeded from code defaults (`uses_code_defaults=True`) and emit a warning on every use until customized via `/settings/ai?workflow=<slug>` or `/api/configurations?workflow=<slug>` (omitted scope → the default workflow). Resolution (`resolve_llm`/`resolve_media`), the settings page GET, and pipeline runs **never overwrite existing rows** — the only mutations are the explicit Save/Reset paths. Secrets, URLs, timeouts, poll intervals, and filesystem paths stay env-only.
 - **LLM configuration change audit**: Every explicit LLM save/reset writes an `LlmConfigurationChange` row in the same transaction — `action` (`save_custom`/`reset_to_defaults`), `origin` (`service`/`web_settings`/`rest_api` — the web and API layers pass their own origin; the provider default is `service`), and JSON `before_snapshot`/`after_snapshot` of the mutable fields (`system_prompt`, `temperature`, `max_tokens`, `enable_thinking`, `uses_code_defaults`). An event is recorded even when values are identical. Newest-first listing via `list_llm_configuration_changes`; the settings page renders the 5 most recent per profile and `GET /api/configurations/llm/{role}/history?model_name=…` exposes them (404 for unknown role or missing exact model profile). There is no media audit table yet.
 - **AI execution audit**: Every attempted LLM call and image-generation request stores an *immutable snapshot* — copied prompt/model/parameters (`RoleExecution.system_prompt`, `MediaGenerationExecution.settings_snapshot`), not the mutable configuration FK, are the audit authority. The engine persists each record against the corresponding `JobStep`, including failed calls, and never updates configuration or role rows. Job detail (web `/jobs/{id}` and `GET /api/workflows/jobs/{id}`) exposes per-step `llm_executions` — the effective system prompt, model, config id/source, and parameters actually used.
 - **Media precedence**: explicit Prompt Architect `parameters` override the media profile's request defaults, which override code defaults. Seed is per-request, never a profile default. The ComfyUI backend receives its model/workflow settings via an injected `SdxlWorkflowConfig`; operational URL/poll/timeout/output remain env settings.
-- **Models not yet used**: `Setting` (`app/models/setting.py`).
+- **Delivery archives**: `DeliveryArchive` (attempt number, status `pending`/`running`/`ready`/`failed`, source dir, settings snapshot, archive path/name, byte size, ZIP + manifest SHA-256) and `DeliveryArchiveEntry` (per-path type/size/sha256 plus immutable Markdown snapshots) audit every packaging attempt. Global customer settings (`customer_note`, `artist_attribution`, `license_markdown`, managed `signature_asset` filename) persist in the `settings` table under key `delivery.general_settings`, edited on `/settings/general`; signature uploads (PNG/JPEG, ≤5 MB, ≤20 MP) live under `IMAGE_OUTPUT_DIR/_delivery_assets/signatures/`.
 
 ## Database Migrations
 
@@ -267,15 +325,19 @@ time, and `brief` is reset to `_original_brief` before they run.
 - Apply pending migrations: `alembic upgrade head` (run from project root)
 - After pulling new code that adds model columns, **always run `alembic upgrade head`** before starting the server; SQLAlchemy will query columns that don't exist yet otherwise
 - Startup helpers auto-upgrade by default: `./start.sh` and `python main.py` run `alembic upgrade head` before the server starts (disable with `AI_MEDIA_AUTO_MIGRATE=0`). `init_db()` remains a safety check: it verifies the database is at the expected Alembic head and that every ORM table/column exists, and refuses to start otherwise — `alembic upgrade head` is required even for a brand-new empty database
-- `tests/test_database.py` covers this contract: rejection of unversioned/stale/falsely-stamped databases and recovery of the mixed schema left by the former create_all startup (the current head `b7e2f4a1c9d6` adds `workflows` + workflow-scoped config; migrations that create tables must skip when the table already exists because recovered DBs may have gotten it from create_all)
+- `tests/test_database.py` covers this contract: rejection of unversioned/stale/falsely-stamped databases and recovery of the mixed schema left by the former create_all startup (`b7e2f4a1c9d6` added `workflows` + workflow-scoped config; migrations that create tables must skip when the table already exists because recovered DBs may have gotten it from create_all)
+- The current head `f7c3a9e1b5d8` adds `delivery_archives`/`delivery_archive_entries` and appends `delivery_archive` once to the top level of every stored workflow `steps_json` that lacks it (a definition already containing the block anywhere is skipped untouched)
+- The migration validates all definitions before any update and stores exact old/new JSON under the `delivery_archive.workflow_migration_backup` Setting key; its downgrade restores only rows still matching the migration-written JSON — destructive downgrades need explicit approval
+- **Deployment note (this checkout, 2026-10-03)**: the live `data/app.db` was upgraded `d1e4f6a8b3c5 → f7c3a9e1b5d8`; `alembic current` reports head and `init_db()` verified. A consistent backup sits at `data/app.db.backup-20261003T024959Z-before-delivery-archive` — it is untracked and NOT covered by `.gitignore`; never stage or commit DB backups. No commit/push or server restart was part of that deployment
 
 ## Testing
 
 - Framework: pytest + pytest-asyncio (`asyncio_mode = "auto"`, so async tests need no marker)
 - Run: `pytest` from project root
-- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, and structured errors), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping), `test_background_removal.py` (chroma-key service: auto/override key color, tolerance, contiguous/global, erode/feather/despill; `/api/remove-background/` endpoint; `background_remover` block; `BlockConfiguration` seed/upsert/reset and workflow scoping)
+- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, structured errors, routing-bound `JobStep` ids/order/tail resequencing, and pending-step visibility before branch expansion — its session fixture calls `discover_blocks()` so the file also passes in isolation), `test_delivery_archive.py` (ZIP packaging/inventory/manifest-hash agreement, Markdown snapshots, expected-output enforcement, path/symlink/namespace safety, audit persistence, archive-only retry semantics, archive API surface), `test_general_settings.py` (delivery settings round-trip, signature validation limits and managed filenames, `/settings/general` page), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping), `test_background_removal.py` (chroma-key service: auto/override key color, tolerance, contiguous/global, erode/feather/despill; `/api/remove-background/` endpoint; `background_remover` block; `BlockConfiguration` seed/upsert/reset and workflow scoping)
 - LLM calls are mocked by monkeypatching `app.blocks.role_block.AsyncOpenAI`; see `_fake_llm_client` in `test_blocks.py`
 - Tests that generate files monkeypatch `settings.image_output_dir` to `tmp_path` — never write into the real output dir
+- Narrow regression pass for archive/engine work: `pytest tests/test_delivery_archive.py tests/test_general_settings.py tests/test_pipeline.py tests/test_database.py`
 
 ## Guiding Questions
 

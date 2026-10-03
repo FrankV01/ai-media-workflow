@@ -20,7 +20,7 @@ import app.models.job  # noqa: F401
 import app.models.media  # noqa: F401
 import app.pipeline.engine as engine_module
 from app.blocks.base import Block, BlockMeta
-from app.blocks.registry import register
+from app.blocks.registry import discover_blocks, register
 from app.blocks.role_block import RoleBlock
 from app.database import Base
 from app.models.creative import CreativeRole, Message, RoleExecution
@@ -86,6 +86,7 @@ async def session_factory(tmp_path, monkeypatch):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
+    discover_blocks()
     monkeypatch.setattr(engine_module, "async_session", factory)
     # Configuration providers built lazily inside blocks share this DB
     monkeypatch.setattr(app.database, "async_session", factory)
@@ -260,6 +261,176 @@ async def test_pipeline_persists_failed_llm_execution(session_factory, monkeypat
     assert execution.error == "LLM unavailable"
     assert execution.output_deliverable is None
     assert [message.role.value for message in messages] == ["system", "user"]
+
+
+@register
+class VerdictBlock(Block):
+    """Sets context['_verdict'] from context['_test_verdict'] for routing tests."""
+
+    meta = BlockMeta(
+        name="test_verdict_block",
+        description="Sets _verdict — engine routing tests only",
+        category="test",
+        outputs=["_verdict"],
+    )
+
+    async def run(self, context):
+        return {"_verdict": context.get("_test_verdict")}
+
+
+class _StepBoundMarker(Block):
+    """Echoes which JobStep row the engine bound it to."""
+
+    async def run(self, context):
+        return {"seen_job_step_id": context.get("_job_step_id")}
+
+
+@register
+class BranchMarkerBlock(_StepBoundMarker):
+    meta = BlockMeta(name="test_branch_marker", category="test", outputs=["seen_job_step_id"])
+
+
+@register
+class AlwaysMarkerBlock(_StepBoundMarker):
+    meta = BlockMeta(name="test_always_marker", category="test", outputs=["seen_job_step_id"])
+
+
+@register
+class TailMarkerBlock(_StepBoundMarker):
+    meta = BlockMeta(name="test_tail_marker", category="test", outputs=["seen_job_step_id"])
+
+
+@register
+class SecondBranchMarkerBlock(_StepBoundMarker):
+    meta = BlockMeta(
+        name="test_second_branch_marker", category="test", outputs=["seen_job_step_id"]
+    )
+
+
+async def _job_steps(factory, job_id: int) -> list[JobStep]:
+    async with factory() as session:
+        result = await session.execute(
+            select(JobStep).where(JobStep.job_id == job_id).order_by(JobStep.order)
+        )
+        return list(result.scalars().all())
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected_names"),
+    [
+        (
+            "good",
+            [
+                "test_verdict_block",
+                "test_branch_marker",
+                "test_always_marker",
+                "test_tail_marker",
+            ],
+        ),
+        ("bad", ["test_verdict_block", "test_always_marker", "test_tail_marker"]),
+        (None, ["test_verdict_block", "test_always_marker", "test_tail_marker"]),
+    ],
+)
+async def test_routing_binds_branch_steps_to_own_rows(session_factory, verdict, expected_names):
+    """Branch blocks expanded mid-run execute on their own JobStep rows,
+    ahead of the pre-created trailing step — in execution order."""
+    context = {"brief": "c", "photo_shoot_name": "Route Shoot"}
+    if verdict is not None:
+        context["_test_verdict"] = verdict
+    job_id = await engine_module.run_pipeline(
+        workflow_name=None,
+        block_names=[
+            "test_verdict_block",
+            {
+                "on_good": ["test_branch_marker"],
+                "on_bad": [],
+                "always": ["test_always_marker"],
+            },
+            "test_tail_marker",
+        ],
+        context=context,
+    )
+
+    steps = await _job_steps(session_factory, job_id)
+    assert [s.block_name for s in steps] == expected_names
+    assert [s.order for s in steps] == list(range(len(expected_names)))
+    for step in steps:
+        assert step.status == JobStatus.COMPLETED
+        if step.block_name == "test_verdict_block":
+            continue
+        assert json.loads(step.output)["seen_job_step_id"] == step.id
+
+
+async def test_routing_multi_block_branch_resequences_later_steps(session_factory):
+    """A multi-block branch inserts in order; later pending rows shift behind it."""
+    job_id = await engine_module.run_pipeline(
+        workflow_name=None,
+        block_names=[
+            "test_verdict_block",
+            {
+                "on_good": ["test_branch_marker", "test_second_branch_marker"],
+                "always": [],
+            },
+            "test_always_marker",
+            "test_tail_marker",
+        ],
+        context={
+            "brief": "c",
+            "photo_shoot_name": "Route Shoot",
+            "_test_verdict": "good",
+        },
+    )
+
+    steps = await _job_steps(session_factory, job_id)
+    assert [s.block_name for s in steps] == [
+        "test_verdict_block",
+        "test_branch_marker",
+        "test_second_branch_marker",
+        "test_always_marker",
+        "test_tail_marker",
+    ]
+    assert [s.order for s in steps] == [0, 1, 2, 3, 4]
+    for step in steps[1:]:
+        assert json.loads(step.output)["seen_job_step_id"] == step.id
+
+
+async def test_precreated_pending_steps_visible_before_branch_expansion(session_factory):
+    """Top-level steps after a routing dict are pre-created PENDING and keep
+    that visibility while earlier blocks run."""
+
+    @register
+    class CapturingBlock(_StepBoundMarker):
+        meta = BlockMeta(
+            name="test_capturing_marker", category="test", outputs=["seen_job_step_id"]
+        )
+
+        async def run(self, context):
+            async with app.database.async_session() as session:
+                rows = (
+                    (await session.execute(select(JobStep).order_by(JobStep.order))).scalars().all()
+                )
+            statuses = {row.block_name: row.status for row in rows}
+            assert statuses["test_capturing_marker"] == JobStatus.RUNNING
+            assert statuses["test_tail_marker"] == JobStatus.PENDING
+            return {"_verdict": "good", "seen_job_step_id": context.get("_job_step_id")}
+
+    job_id = await engine_module.run_pipeline(
+        workflow_name=None,
+        block_names=[
+            "test_capturing_marker",
+            {"always": ["test_always_marker"]},
+            "test_tail_marker",
+        ],
+        context={"brief": "c", "photo_shoot_name": "Route Shoot"},
+    )
+
+    steps = await _job_steps(session_factory, job_id)
+    assert [s.block_name for s in steps] == [
+        "test_capturing_marker",
+        "test_always_marker",
+        "test_tail_marker",
+    ]
+    assert all(s.status == JobStatus.COMPLETED for s in steps)
 
 
 @register

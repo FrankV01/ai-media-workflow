@@ -16,11 +16,15 @@ Full pages:
 - /settings/ai   — AI configuration scoped to ?workflow=<slug> (default
                    workflow when omitted): LLM role profiles (with audited
                    change history) + media model profiles
+- /settings/general — global customer delivery settings: note, attribution,
+                   license Markdown, and signature image upload/preview
 
 Form POSTs (redirect with a status query):
 - /settings/ai/llm/save, /settings/ai/llm/reset     — audited LLM mutations
 - /settings/ai/media/save, /settings/ai/media/reset — media profile mutations
 - /settings/ai/block/save, /settings/ai/block/reset — generic block profiles
+- /settings/general/{save,signature,signature/clear} — delivery settings
+- /jobs/<id>/archives/retry                        — archive-only retry
 - /workflows/create, /workflows/<id>/{save,clone,enable,disable,set-default}
 
 HTMX partials (return HTML fragments, not full pages):
@@ -39,13 +43,14 @@ The default pipeline definition lives in app/services/workflows.py
 database — not code — is the authority for which steps run.
 """
 
+import asyncio
 import json
 from dataclasses import replace
 from datetime import datetime
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -61,6 +66,7 @@ from app.blocks.registry import get_block, list_blocks
 from app.config import settings
 from app.database import get_session
 from app.models.creative import RoleExecution
+from app.models.delivery import DeliveryArchiveStatus
 from app.models.job import Job
 from app.models.workflow import Workflow
 from app.pipeline.engine import run_pipeline
@@ -79,6 +85,23 @@ from app.services.configuration.schemas import (
     LlmResetInput,
     MediaProfileInput,
     MediaResetInput,
+)
+from app.services.delivery_archive import (
+    ArchiveRetryError,
+    archive_retry_ineligibility,
+    list_archives,
+    reserve_archive_retry,
+    schedule_archive_retry,
+)
+from app.services.general_settings import (
+    MAX_SIGNATURE_BYTES,
+    DeliverySettingsError,
+    SignatureValidationError,
+    discard_signature,
+    get_delivery_settings,
+    save_delivery_settings,
+    save_signature_file,
+    signature_path,
 )
 from app.services.open_folder import (
     OpenerUnavailableError,
@@ -114,6 +137,7 @@ _BLOCK_TITLES = {
     "social_media_report": "Social Report",
     "llm_report": "LLM Report",
     "background_remover": "Background Remover",
+    "delivery_archive": "Delivery Archive",
     "echo": "Echo",
 }
 
@@ -232,6 +256,21 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         for execution in exec_result.scalars().all():
             executions_by_step.setdefault(execution.job_step_id, []).append(execution)
 
+    archives = [
+        {
+            "id": a.id,
+            "attempt": a.attempt,
+            "status": a.status.value,
+            "ready": a.status == DeliveryArchiveStatus.READY,
+            "archive_name": a.archive_name,
+            "byte_size": a.byte_size,
+            "sha256": a.sha256,
+            "created_at": (a.created_at.strftime("%b %d, %Y %H:%M:%S") if a.created_at else "—"),
+            "error": a.error,
+        }
+        for a in await list_archives(session, job_raw.id)
+    ]
+
     job = {
         "id": job_raw.id,
         "workflow_name": job_raw.workflow_name,
@@ -251,6 +290,9 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         "error": job_raw.error,
         "warnings": json.loads(job_raw.warnings) if job_raw.warnings else [],
         "report_files": json.loads(job_raw.report_files) if job_raw.report_files else [],
+        "archives": archives,
+        "archive_retryable": archive_retry_ineligibility(job_raw, sorted_steps) is None,
+        "archive_error": request.query_params.get("archive_error"),
         "folder_path": str(job_output_dir(job_raw)),
         "steps": [
             {
@@ -1086,3 +1128,141 @@ async def partial_run_test_pipeline(
         "partials/pipeline_queued.html",
         {"job_id": job_id, "error": None},
     )
+
+
+async def _general_settings_context(
+    session: AsyncSession,
+    *,
+    errors: list[str] | None = None,
+    values: dict | None = None,
+    status: str | None = None,
+) -> dict:
+    """Template context for /settings/general (saved values win over form replay)."""
+    delivery = await get_delivery_settings(session)
+    has_signature = signature_path(delivery.signature_asset) is not None
+    return {
+        "delivery": values if values is not None else delivery.to_dict(),
+        "has_signature": has_signature,
+        "errors": errors or [],
+        "status": status,
+        "signature_url": "/settings/general/signature" if has_signature else None,
+    }
+
+
+@router.get("/settings/general")
+async def general_settings_page(request: Request, session: AsyncSession = Depends(get_session)):
+    """Render the global delivery settings page (never overwrites saved data)."""
+    context = await _general_settings_context(
+        session,
+        status=request.query_params.get("status"),
+    )
+    return templates.TemplateResponse(request, "general_settings.html", context)
+
+
+@router.post("/settings/general/save")
+async def general_settings_save(
+    request: Request,
+    customer_note: str = Form(""),
+    artist_attribution: str = Form(""),
+    license_markdown: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Save the global delivery settings (signature reference untouched)."""
+    current = await get_delivery_settings(session)
+    try:
+        await save_delivery_settings(
+            session,
+            customer_note=customer_note,
+            artist_attribution=artist_attribution,
+            license_markdown=license_markdown,
+            signature_asset=current.signature_asset,
+        )
+    except DeliverySettingsError as exc:
+        context = await _general_settings_context(
+            session,
+            errors=exc.errors,
+            values={
+                "customer_note": customer_note,
+                "artist_attribution": artist_attribution,
+                "license_markdown": license_markdown,
+                "signature_asset": current.signature_asset,
+            },
+        )
+        return templates.TemplateResponse(
+            request, "general_settings.html", context, status_code=422
+        )
+    await session.commit()
+    return RedirectResponse("/settings/general?status=saved", status_code=303)
+
+
+@router.post("/settings/general/signature")
+async def general_settings_signature(
+    request: Request,
+    signature: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Upload/replace the signature image (previous files are preserved)."""
+    data = await signature.read(MAX_SIGNATURE_BYTES + 1)
+    current = await get_delivery_settings(session)
+    filename: str | None = None
+    try:
+        filename = await asyncio.to_thread(save_signature_file, data, signature.filename)
+        await save_delivery_settings(
+            session,
+            customer_note=current.customer_note,
+            artist_attribution=current.artist_attribution,
+            license_markdown=current.license_markdown,
+            signature_asset=filename,
+        )
+        await session.commit()
+    except (SignatureValidationError, DeliverySettingsError) as exc:
+        if filename is not None:
+            await asyncio.to_thread(discard_signature, filename)
+        errors = exc.errors if isinstance(exc, DeliverySettingsError) else [str(exc)]
+        context = await _general_settings_context(session, errors=errors)
+        return templates.TemplateResponse(
+            request, "general_settings.html", context, status_code=422
+        )
+    except Exception:
+        if filename is not None:
+            await asyncio.to_thread(discard_signature, filename)
+        raise
+    return RedirectResponse("/settings/general?status=signature", status_code=303)
+
+
+@router.post("/settings/general/signature/clear")
+async def general_settings_signature_clear(session: AsyncSession = Depends(get_session)):
+    """Clear the signature reference (the file stays on disk)."""
+    current = await get_delivery_settings(session)
+    await save_delivery_settings(
+        session,
+        customer_note=current.customer_note,
+        artist_attribution=current.artist_attribution,
+        license_markdown=current.license_markdown,
+        signature_asset=None,
+    )
+    await session.commit()
+    return RedirectResponse("/settings/general?status=cleared", status_code=303)
+
+
+@router.get("/settings/general/signature")
+async def general_settings_signature_preview(session: AsyncSession = Depends(get_session)):
+    """Serve the current signature image for the settings page preview."""
+    current = await get_delivery_settings(session)
+    path = signature_path(current.signature_asset)
+    if path is None:
+        raise HTTPException(404, "No signature uploaded")
+    media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return FileResponse(path, media_type=media_type)
+
+
+@router.post("/jobs/{job_id}/archives/retry")
+async def web_retry_job_archive(job_id: int, session: AsyncSession = Depends(get_session)):
+    """Reserve and schedule an archive-only retry, then return to the job page."""
+    try:
+        step_id = await reserve_archive_retry(session, job_id)
+    except ArchiveRetryError as exc:
+        url = f"/jobs/{job_id}?{urlencode({'archive_error': str(exc)})}"
+        return RedirectResponse(url, status_code=303)
+    schedule_archive_retry(job_id, step_id)
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)

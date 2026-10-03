@@ -73,15 +73,21 @@ User prompt
                  → Social Report (writes social_media_specialist.md)
                  → LLM Report (writes llm_report.md — the effective LLM settings of every
                                role call: model, temperature, max_tokens, thinking, system prompt)
+  → Delivery Archive      (packages the complete job output — originals plus
+                           generated docs — into the customer ZIP under
+                           IMAGE_OUTPUT_DIR/_delivery/)
 ```
 
 Each block writes its report into the pipeline context as
 `{role_name}_output`, so downstream blocks can reference any prior report.
 The Art Critic's verdict drives conditional branching via the engine's
-routing dicts (see `app/pipeline/engine.py`). The chain above is the seeded
-"Main" workflow — workflows are database rows (`steps_json` in the same
+routing dicts (see `app/pipeline/engine.py`). The chain above is the shipped
+"Main" template — workflows are database rows (`steps_json` in the same
 `block name | routing dict` format), managed on `/workflows` or via
-`/api/workflow-definitions`.
+`/api/workflow-definitions`, and the stored definitions decide the actual
+sequence. Art Critic and its routing are optional and workflow-dependent;
+Delivery Archive does not require the critic and never inspects the verdict —
+it is simply the last top-level step, so it runs after the resolved branch.
 
 Only one pipeline runs at a time; additional submissions queue as `PENDING`
 until the running job finishes. The queue is global across workflows — a
@@ -144,6 +150,102 @@ an absolute path, and can be overridden via the environment.
 `scripts/convert_pngs_to_jpegs.py` writes to `IMAGE_OUTPUT_DIR` when
 `--output-dir` is omitted; an explicit `--output-dir` overrides it.
 
+### Delivery archives and General Settings
+
+`delivery_archive` packages a job's *entire* output directory into a
+customer-facing ZIP — the artwork and the process behind it. Originals stay
+untouched: the ZIP preserves every file's relative path (and empty
+directories) exactly as produced. Generated delivery documents live under a
+reserved `_delivery/` directory inside the ZIP — they are archive additions,
+never written into the original source directory:
+
+```
+<shoot-slug>-job<id>.zip
+  aimw_main_refined_1x_00001_.png     ← originals, same relative paths
+  media_producer_report.md
+  …
+  _delivery/
+    README.md            ← navigation + your customer note and attribution
+    creative_process.md  ← ordered role executions and messages actually sent,
+                           with the effective model/settings snapshots
+    LICENSE.md           ← your license text, when configured
+    signature.png|.jpg   ← your uploaded signature image, when configured
+    manifest.json        ← file inventory, sizes, SHA-256 hashes, workflow identity
+```
+
+The archive intentionally includes internal prompts, the ordered model
+conversation and outputs, generation settings, and every report/rendering/
+cutout — sharing the creative process is the point. The archiver does not
+dump `.env` or application credential settings; existing process reports may
+include non-secret operational metadata and local paths, and user-supplied
+secrets embedded in prompts or files are not automatically redacted — keep
+them out of job content. There is no watermark: attribution is your artist
+attribution text plus the optional signature image.
+Archives are not uploaded anywhere yet — a future uploader block will consume
+each attempt's readiness, path, id, and checksum.
+
+Safety: an empty or missing source, a recorded-but-absent expected file
+(images, cutouts, or report paths recorded by earlier steps), a `_delivery`
+name collision in the source, unsafe/traversal entry names, symlinks, known
+credential-style filenames (`.env` and friends), or non-UTF-8 Markdown fail
+the attempt rather than silently skipping content.
+
+ZIPs land in a sibling namespace outside the per-job source tree (so they are
+never recursively packaged), versioned per attempt — `-v2`, `-v3`, … —
+including failed attempts:
+
+```
+IMAGE_OUTPUT_DIR/
+  _delivery/
+    <yyyy-mm-dd>/                      ← job UTC creation date
+      <shoot-slug>/
+        job<id>/
+          <shoot-slug>-job<id>.zip
+  _delivery_assets/
+    signatures/                        ← uploaded signature images
+```
+
+Publication is atomic: the ZIP is built and verified as a temporary file in
+the destination directory, then published via a hard link that never
+overwrites — so the destination filesystem must support hard links (the
+current SanDisk output volume is APFS). Original job files are only read,
+never linked or moved.
+
+Customer-facing text and signature are global settings (no per-workflow or
+per-run overrides) stored in the database under the `delivery.general_settings`
+Setting row, edited on **`/settings/general`** — separate from the
+per-workflow `/settings/ai` profiles:
+
+| Field | Limit | Notes |
+|---|---|---|
+| Customer note | 20,000 chars | your text, shown in `_delivery/README.md` |
+| Artist attribution | 20,000 chars | shown in `_delivery/README.md` |
+| License text | 100,000 chars | becomes `_delivery/LICENSE.md` — your text, not AI-generated |
+| Signature image | PNG/JPEG, ≤5 MB, ≤20 MP | stored under `_delivery_assets/signatures/` with a server-managed filename |
+
+All fields are optional. Upload, replace, or clear the signature at any time —
+clearing/replacing only updates the reference; previous asset files are kept
+(there is no automated retention or deletion).
+
+Every attempt is audited in SQLite (`delivery_archives` +
+`delivery_archive_entries`): status, timings, error, the effective settings
+snapshot, source/archive paths, byte size, and ZIP + manifest SHA-256, plus a
+per-path inventory (type/size/hash and the exact Markdown text, including
+empty files). The manifest omits its own digest and the ZIP digest — the
+database row holds them. ZIPs and images stay on disk; only metadata and text
+land in SQLite, never binary blobs. A `ready` attempt also yields stable
+block outputs — `delivery_archive_id`, `delivery_archive_path`,
+`delivery_archive_sha256`, and `delivery_archive_status` (`"ready"`) — the
+keys a future uploader block consumes.
+
+The job detail page has a "Delivery archives" box with download links,
+attempt history, and errors. When a job failed at its final archive step
+with every earlier non-archive step completed and no unfinished steps, a
+**Retry archive** action rebuilds the ZIP using the *current* settings and
+current output files — it never reruns naming, LLM, or media generation;
+earlier failed attempts remain in the history, and a successful retry
+completes the same job.
+
 The `/convert` page is a standalone drag-and-drop PNG→JPEG tool (no pipeline
 involved): drop one or more PNGs and conversion starts immediately — no
 submit button. Files are converted in memory to sRGB JPEG at quality 85 with
@@ -192,11 +294,15 @@ each prompt variant produces three files.
   Images are grouped under `IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/`,
   where the date is the job's UTC creation date.
 - **Persistence** — SQLite via SQLAlchemy async. Jobs, steps, input/output
-  snapshots, and generated asset paths are all stored.
+  snapshots, generated asset paths, and delivery archive audit
+  (`DeliveryArchive`/`DeliveryArchiveEntry`: attempt status, checksums, file
+  inventory, Markdown snapshots) are all stored.
 - **Web UI** — Jinja2 + HTMX, Tailwind CDN. No JS build step. Dashboard at
-  `/`, job detail at `/jobs/{id}`, workflow management at `/workflows`, AI
-  configuration at `/settings/ai` (per-workflow), run buttons for the real
-  and placeholder backends.
+  `/`, job detail at `/jobs/{id}` (including the Delivery archives box with
+  download and eligible Retry archive actions), workflow management at
+  `/workflows`, AI configuration at `/settings/ai` (per-workflow), global
+  delivery settings at `/settings/general`, run buttons for the real and
+  placeholder backends.
 - **Config** — split between env and DB. Environment (`.env` via
   pydantic-settings, see `.env.example`) owns secrets, URLs, timeouts, poll
   intervals, filesystem paths, and *selects which profile is active*
@@ -220,7 +326,11 @@ each prompt variant produces three files.
   exact values used, so editing a profile never rewrites execution history;
   the effective system prompt, model, and parameters of each step are
   shown under "LLM executions" on the job detail page (`/jobs/{id}`) and
-  in `GET /api/workflows/jobs/{id}`.
+  in `GET /api/workflows/jobs/{id}`. Global (unscoped) customer delivery
+  settings — note, attribution, license, signature reference — live in the
+  `settings` table under `delivery.general_settings` and are edited on
+  `/settings/general`; they are not `/settings/ai` profiles and have no
+  per-workflow or per-run override.
 
 ### Troubleshooting configuration
 
@@ -244,7 +354,7 @@ each prompt variant produces three files.
 | `GET` | `/api/blocks/{name}` | Single block detail |
 | `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, optional `workflow` (slug), `block_names`, `context`. Step precedence: explicit `block_names` > the workflow's stored steps > the default workflow's. Set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI |
 | `GET` | `/api/workflows/jobs` | Recent jobs (`?workflow=<slug>` filters) |
-| `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings |
+| `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings, and delivery archive attempt metadata |
 | `GET` | `/api/workflow-definitions/` | List workflow definitions |
 | `POST` | `/api/workflow-definitions/` | Create a workflow (`name`, `description`, `steps`, `media_model_name`) |
 | `GET` | `/api/workflow-definitions/{slug}` | Workflow detail (steps decoded) |
@@ -253,6 +363,10 @@ each prompt variant produces three files.
 | `POST` | `/api/workflow-definitions/{slug}/enable` | Re-enable a disabled workflow |
 | `POST` | `/api/workflow-definitions/{slug}/disable` | Disable (409 for the default workflow) |
 | `POST` | `/api/workflow-definitions/{slug}/set-default` | Make it the default (force-enables it) |
+| `GET` | `/api/workflows/jobs/{id}/archives` | List a job's delivery archive attempts (metadata: status, `archive_path`, `archive_name`, `byte_size`, `sha256`, `download_url`) |
+| `GET` | `/api/workflows/jobs/{id}/archives/{archive_id}` | Archive detail — full manifest and per-entry Markdown snapshots |
+| `GET` | `/api/workflows/jobs/{id}/archives/{archive_id}/download` | Download a ready ZIP (`404` unknown job/archive or missing file, `409` not ready or unsafe path) |
+| `POST` | `/api/workflows/jobs/{id}/archives/retry` | Archive-only retry (`202` reserved/retrying — never reruns naming/LLM/media; `409` ineligible or a retry already reserved; `404` unknown job) |
 | `GET` | `/api/configurations/llm` | List LLM role profiles |
 | `PUT` | `/api/configurations/llm/{role}` | Save a custom LLM profile (`model_name` in body; audited) |
 | `POST` | `/api/configurations/llm/{role}/reset` | Restore code defaults (`model_name` in body; audited) |
@@ -296,7 +410,10 @@ app/
                        profile), MediaGenerationExecution (per-request audit snapshot)
     block.py         → BlockConfiguration (per-workflow/block generic settings
                        profile for non-LLM/non-media blocks)
-    setting.py       → Setting (key/value; not yet used)
+    setting.py       → Setting (namespaced key/value; global delivery
+                       settings + migration backups)
+    delivery.py      → DeliveryArchive + DeliveryArchiveEntry (attempt audit:
+                       status, checksums, file inventory, Markdown snapshots)
   blocks/            → workflow blocks
     base.py          → Abstract Block + BlockMeta
     registry.py      → auto-discovery & @register decorator
@@ -311,6 +428,7 @@ app/
                        social_media_report, media_producer_report, llm_report)
     background_remover.py → solid-background cutout block (settings in
                        block_configurations; writes <name>_cutout.png)
+    delivery_archive.py → final block: customer ZIP delivery + retry outputs
     example_block.py → `echo` test block
   pipeline/
     engine.py        → sequential execution + conditional routing + job titling
@@ -328,10 +446,16 @@ app/
     image_convert.py → shared in-memory PNG→JPEG service (sRGB, white alpha fill)
     background_removal.py → shared in-memory solid-background removal service
                        (NumPy chroma keying; API page + block call it)
+    delivery_archive.py → ZIP build/verify/publish, audit persistence,
+                       download-path safety, archive-only retry
+    general_settings.py → global delivery settings + signature upload handling
   api/               → REST endpoints (/api/blocks, /api/workflows, /api/workflow-definitions, /api/configurations, /api/convert, /api/remove-background)
   web/               → routes.py (pages + HTMX partials), templates/, static/
 tests/               → pytest suite
-data/                → SQLite DB, media, default image output (gitignored)
+data/                → SQLite DB (gitignored) + local backups (keep out of
+                       Git — backup filenames aren't universally covered by
+                       the current ignore rules); generated images and
+                       delivery ZIPs live under IMAGE_OUTPUT_DIR
 ```
 
 ## Common Tasks
@@ -344,5 +468,27 @@ data/                → SQLite DB, media, default image output (gitignored)
 | Lint + format | `ruff check --fix app tests && ruff format app tests` |
 | Install deps | `pip install -e ".[dev]"` |
 | API docs | `http://127.0.0.1:8000/docs` |
+
+### Database migrations
+
+`alembic upgrade head` applies pending revisions — `./start.sh` and
+`python main.py` run it automatically unless `AI_MEDIA_AUTO_MIGRATE=0`, and
+`init_db()` performs a read-only schema-vs-ORM check at startup.
+`alembic current` shows the applied revision.
+
+The delivery-archive revision `f7c3a9e1b5d8` follows `d1e4f6a8b3c5`: it
+creates the archive audit tables and appends `delivery_archive` once to the
+top level of each stored workflow definition that doesn't already contain it
+(enabled or disabled; every definition is validated before any update and the
+exact before/after `steps_json` is kept under the
+`delivery_archive.workflow_migration_backup` Setting key). The shipped
+`DEFAULT_WORKFLOW_STEPS` template already includes the block; explicit
+`block_names` API calls are untouched, and no past jobs are archived
+retroactively. Downgrading restores only rows still matching the
+migration-written JSON.
+
+Back up the SQLite file before applying migrations with a consistent snapshot
+(the `sqlite3.Connection.backup` API), not a raw copy of a live database —
+startup does not create backups automatically.
 
 For detailed AI-agent coding guidelines, see [`agents.md`](agents.md).

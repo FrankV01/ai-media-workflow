@@ -51,6 +51,7 @@ DEFAULT_WORKFLOW_STEPS: list[str | dict] = [
         "on_bad": [],
         "always": ["social_media_specialist", "social_media_report", "llm_report"],
     },
+    "delivery_archive",
 ]
 
 _ROUTING_KEYS = ("on_good", "on_bad", "always")
