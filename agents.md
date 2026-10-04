@@ -76,7 +76,7 @@ FourthWall digital product whose downloadable file is a small link document.
 | `background_remover` | Block | Cuts solid-color backgrounds out of `generated_images` (pure NumPy/Pillow chroma key — no AI model); settings profiled per workflow (`has_db_settings`) | `cutout_images`, `cutout_metadata`, `background_remover_output` |
 | `delivery_archive` | Block | Last step of the default template (and migrated definitions that lacked it) — builds the customer ZIP delivery of the whole job output (files, reports, README/license/signature, manifest); attempt metadata and inventories/checksums/Markdown snapshots live in `delivery_archives`/`delivery_archive_entries`, ZIPs written beside the job's output files (`IMAGE_OUTPUT_DIR/_delivery/` now only hosts the `.staging` build dir and legacy archives); archive-only retry via `/api/workflows/jobs/{id}/archives/retry` never reruns creative steps | `delivery_archive_id`, `delivery_archive_path`, `delivery_archive_sha256`, `delivery_archive_status` |
 | `cloudflare_r2_uploader` | Block | Ships between `delivery_archive` and `fourthwall_listing` — uploads the latest ready delivery archive to Cloudflare R2 (boto3 S3 API, multipart-capable) so buyers can download it, and emits the public object URL. Object keys are deterministic (`<prefix><sha16>-<name>.zip`); idempotent per `(job_id, delivery_archive_id)`. Best-effort: skips/failures audit a `CloudflareUpload` row and warn, never fail the job. Upload-only retry via `/api/workflows/jobs/{id}/uploads/retry` | `cloudflare_upload_id`, `cloudflare_r2_url`, `cloudflare_r2_object_key`, `cloudflare_upload_status` |
-| `fourthwall_listing` | Block | Final step of the shipped template (and migrated definitions that lacked it) — publishes the latest ready delivery archive as a FourthWall digital product: creates the product from DB-sourced copy, uploads a small generated link document (PDF/Markdown, from `link_document.py`) pointing at the R2-hosted ZIP, and attaches per-variant preview images. Best-effort: every outcome (missing credentials/archive/upload/price, API failure) records a `StorefrontListing` attempt or skips quietly and lands in `_warnings` — it never fails the job. Listing-only retry via `/api/workflows/jobs/{id}/listings/retry` never reruns creative steps | `storefront_listing_id`, `fourthwall_product_id`, `storefront_listing_status`, `fourthwall_listing_output` |
+| `fourthwall_listing` | Block | Final step of the shipped template (and migrated definitions that lacked it) — publishes the latest ready delivery archive as a FourthWall digital product: summarizes the Art Director brief with an LLM (hardcoded prompt) to produce a product description under FourthWall's 4,000-character limit, creates the product from DB-sourced copy, uploads a small generated link document (PDF/Markdown, from `link_document.py`) pointing at the R2-hosted ZIP, and attaches per-variant preview images. Best-effort: LLM failures fall back to truncation; missing credentials/archive/upload/price and API failures record a `StorefrontListing` attempt or skip quietly and land in `_warnings` — it never fails the job. Listing-only retry via `/api/workflows/jobs/{id}/listings/retry` never reruns creative steps | `storefront_listing_id`, `fourthwall_product_id`, `storefront_listing_status`, `fourthwall_listing_output` |
 | `echo` | Block | Test/utility block (`example_block.py`) | `echo_result` |
 
 ### Context flow
@@ -277,11 +277,21 @@ recorded on the listing row alongside `cloudflare_upload_id`, so every
 listing correlates listing → upload → archive → job. The product title is
 the shoot name; the description renders the `storefronts.fourthwall`
 `description_template`
-(`$title`/`$description`/`$tags`/`$attribution`) seeded from the Social
-Media Specialist's marketplace-flavored post (platform matching
-`market|stock|licens|store|shop`), falling back to `art_director_output` —
+(`$title`/`$description`/`$tags`/`$attribution`) — `$description` is now
+produced by an internal LLM summarizer (`app/services/fourthwall_description.py`)
+that condenses `art_director_output` (the Art Director's creative brief) into
+a buyer-facing blurb. The hardcoded prompt asks for the overall mood and
+direction rather than a literal recitation of technical details, and the result
+is capped so the final HTML (template + tags + attribution + disclaimer) fits
+within FourthWall's 4,000-character product-description limit. If the LLM call
+fails or returns empty text, the block falls back to truncating the brief. `$tags`
+from the Social Media Specialist's marketplace-flavored post (platform
+matching `market|stock|licens|store|shop`, whose tags are search keywords
+rather than social hashtags) —
 there is no tags field on digital products, so tags are rendered into the
-description text. Previews are the smallest-pixel PNG per
+description text. The composed copy is Markdown (the role outputs write
+Markdown) and is converted to HTML via `mistune` before submission —
+FourthWall renders descriptions as HTML; raw HTML in the brief is escaped. Previews are the smallest-pixel PNG per
 `generation_metadata` variant (header-only probe), converted to sRGB JPEG
 via `app/services/image_convert.py`, capped at `max_preview_images` (default
 4); cutouts are never used.
@@ -301,7 +311,7 @@ FourthWall) holds `price_usd`, `publish_on_create` (default off
 admin), `link_document_format` (`pdf` default / `markdown`),
 `description_template`, `max_preview_images`, and `disclaimer` (default-on
 AI-generated notice appended after the rendered description on every
-product — save it empty to disable). The product category Fourthwall maps
+product, separated by `<br><br>` breaks — save it empty to disable). The product category Fourthwall maps
 to a sales-tax code is dashboard-only — the API can't set it, so the ready
 note and the listings UI remind to assign it per product. PayHip is
 documented as
@@ -318,10 +328,17 @@ terminal status (COMPLETED or FAILED) regardless of outcome. Eligibility:
 job terminal, no unfinished steps, a ready archive exists, and the latest
 archive has no READY listing yet.
 
-### PNG→JPEG converter tool
+### Converter tools (`/convert`)
 
-`/convert` is a standalone drop-zone page (not part of any workflow) that posts
-uploads to `POST /api/convert/png-to-jpeg` (multipart field `files`, 1–20 PNGs,
+`/convert` is a standalone tabbed page (not part of any workflow) hosting two
+converter tools; `app/web/static/convert_tabs.js` provides the generic tab
+switching (URL-hash persistence — `#png-jpeg` default, `#markup` — and
+arrow-key navigation). The tool panels live in
+`app/web/templates/partials/convert_png_jpeg_panel.html` and
+`convert_markup_panel.html`.
+
+**PNG → JPEG tab** — the original drop-zone: posts uploads to
+`POST /api/convert/png-to-jpeg` (multipart field `files`, 1–20 PNGs,
 ≤25 MB each, ≤100 MP decoded). Conversion is fully in memory via
 `app/services/image_convert.py` — EXIF transpose, embedded ICC → sRGB, alpha
 flattened onto white, JPEG quality 85, progressive+optimized, embedded sRGB ICC;
@@ -335,6 +352,25 @@ Status mapping: 415 non-PNG (bad extension or signature), 413 oversized
 (>25 MB, >20 files, or >100 MP), 422 corrupt or nothing convertible; batch
 mode instead records bad files in `skipped[]` and still returns the valid
 conversions — the response body is a ZIP only when ≥2 files converted.
+
+**Markdown ⇄ HTML tab** — text conversion via `app/services/markup_convert.py`:
+a direction-keyed `MarkupConverter` registry with two converters —
+`markdown-to-html` (mistune `mistune.html()`, same call as the storefront
+descriptions) and `html-to-markdown` (`markdownify.markdownify()` with ATX
+headings and `-` bullets). `convert_markup()` caps input at 1,000,000 chars
+(checked before the empty check), rejects blank/whitespace input, and
+normalises CRLF → LF before rendering; adding a direction is a new converter
+class plus one registry entry. `POST /api/convert/markup`
+(`app/api/markup_convert.py`) takes `{"direction", "text"}` JSON and returns
+the converted `output` plus char counts — always plain text, never rendered
+server-side (the client assigns it to a textarea `.value`). `GET
+/api/convert/markup/directions` lists the registered converters. Status
+mapping: 413 over the character limit, 422 unknown direction or empty text.
+`app/web/static/convert_markup.js` auto-converts on a 400 ms debounce (a
+request counter discards stale responses — any input edit, direction change,
+clear, or swap invalidates in-flight requests and clears the output
+immediately), with copy-to-clipboard and swap-output-to-input helpers.
+HTML→Markdown is approximate; arbitrary markup may not round-trip.
 
 ### Background removal tool + block
 
@@ -462,7 +498,7 @@ time, and `brief` is reset to `_original_brief` before they run.
 
 - Framework: pytest + pytest-asyncio (`asyncio_mode = "auto"`, so async tests need no marker)
 - Run: `pytest` from project root
-- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, structured errors, routing-bound `JobStep` ids/order/tail resequencing, and pending-step visibility before branch expansion — its session fixture calls `discover_blocks()` so the file also passes in isolation), `test_delivery_archive.py` (ZIP packaging/inventory/manifest-hash agreement, Markdown snapshots, expected-output enforcement, path/symlink/namespace safety, audit persistence, archive-only retry semantics, archive API surface), `test_general_settings.py` (delivery settings round-trip, signature validation limits and managed filenames, `/settings/general` page), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping), `test_background_removal.py` (chroma-key service: auto/override key color, tolerance, contiguous/global, erode/feather/despill; `/api/remove-background/` endpoint; `background_remover` block; `BlockConfiguration` seed/upsert/reset and workflow scoping), `test_fourthwall.py` (storefront settings round-trip/validation, `/settings/general` Store Fronts section, the full digital-product flow against an `httpx.MockTransport` fake — product payload, Basic auth, link-document upload (PDF + Markdown formats), upload correlation fields, signed-upload headers, preview selection/conversion, skip/failure semantics, idempotency, listing-only retry, listings API), `test_cloudflare_r2.py` (R2 settings round-trip/validation, `cloudflare.r2` settings section, key/URL derivation, the upload flow against an injected fake `R2Storage`, skip/failure/idempotency, upload-only retry, uploads API, and the PDF/Markdown link-document builder)
+- Files: `test_blocks.py` (registration, metadata, JSON/verdict parsing, Art Director naming, Prompt Architect validation, Media Producer + placeholder backend, routing resolution), `test_pipeline.py` (engine persistence against a throwaway SQLite file, including successful/failed LLM audit records, ordered messages, snapshots, structured errors, routing-bound `JobStep` ids/order/tail resequencing, and pending-step visibility before branch expansion — its session fixture calls `discover_blocks()` so the file also passes in isolation), `test_delivery_archive.py` (ZIP packaging/inventory/manifest-hash agreement, Markdown snapshots, expected-output enforcement, path/symlink/namespace safety, audit persistence, archive-only retry semantics, archive API surface), `test_general_settings.py` (delivery settings round-trip, signature validation limits and managed filenames, `/settings/general` page), `test_configuration.py` (profile seeding/custom/reset, audited change history and origins, history endpoint, settings-page forms, job-detail LLM executions, media profiles), `test_workflows.py` (workflow CRUD/validation/clone/enable-disable, profile scoping, engine stamping, `/api/workflow-definitions`), `test_naming.py`, `test_generation_workflow.py` (SDXL workflow JSON), `test_workload_guard.py`, `test_convert_pngs_to_jpegs.py` (stock-oriented CLI converter), `test_image_convert.py` (shared PNG→JPEG service + `/api/convert/png-to-jpeg`: sRGB output, white alpha flatten, signature sniffing, pixel cap, ZIP dedupe, batch skip semantics, status mapping), `test_markup_convert.py` (Markdown⇄HTML service: both directions, round-trip stability, CRLF normalisation, direction registry, size-before-empty validation; `/api/convert/markup` + `/directions` endpoints, status mapping, tabbed `/convert` page), `test_background_removal.py` (chroma-key service: auto/override key color, tolerance, contiguous/global, erode/feather/despill; `/api/remove-background/` endpoint; `background_remover` block; `BlockConfiguration` seed/upsert/reset and workflow scoping), `test_fourthwall.py` (storefront settings round-trip/validation, `/settings/general` Store Fronts section, the full digital-product flow against an `httpx.MockTransport` fake — product payload, Basic auth, link-document upload (PDF + Markdown formats), upload correlation fields, signed-upload headers, preview selection/conversion, skip/failure semantics, idempotency, listing-only retry, listings API), `test_cloudflare_r2.py` (R2 settings round-trip/validation, `cloudflare.r2` settings section, key/URL derivation, the upload flow against an injected fake `R2Storage`, skip/failure/idempotency, upload-only retry, uploads API, and the PDF/Markdown link-document builder)
 - LLM calls are mocked by monkeypatching `app.blocks.role_block.AsyncOpenAI`; see `_fake_llm_client` in `test_blocks.py`
 - Tests that generate files monkeypatch `settings.image_output_dir` to `tmp_path` — never write into the real output dir
 - Narrow regression pass for archive/engine work: `pytest tests/test_delivery_archive.py tests/test_general_settings.py tests/test_pipeline.py tests/test_database.py`

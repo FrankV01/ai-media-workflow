@@ -123,6 +123,31 @@ Content-Type: image/png
 #   -F 'files=@a.png' -F 'files=@b.png' -OJ -D -
 ###
 
+### Convert markup text — direction is markdown-to-html or html-to-markdown;
+### output is plain text in the JSON response (413 over 1,000,000 chars,
+### 422 unknown direction / blank input).
+POST http://127.0.0.1:8000/api/convert/markup
+Content-Type: application/json
+
+{
+  "direction": "markdown-to-html",
+  "text": "# Title\n\nSome *emphasis* and `code`."
+}
+
+###
+
+POST http://127.0.0.1:8000/api/convert/markup
+Content-Type: application/json
+
+{
+  "direction": "html-to-markdown",
+  "text": "<h2>Heading</h2><p>Hello <strong>bold</strong></p>"
+}
+
+### List the registered markup conversion directions.
+GET http://127.0.0.1:8000/api/convert/markup/directions
+###
+
 ### Remove a solid-color background — single file returns the RGBA .png body;
 ### per-file metadata (key_color, removed_pct) rides in X-Removal-Results.
 ### Form fields: key_color (hex, blank = corner auto-detect), tolerance (0-100),

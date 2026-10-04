@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 import app.database
 import app.services.fourthwall as fw
+import app.services.fourthwall_description as fw_description_module
 import app.services.storefront_settings as ss
 from app.config import settings
 from app.models.cloudflare import CloudflareUpload, CloudflareUploadStatus
@@ -43,6 +44,20 @@ def output_dir(tmp_path, monkeypatch):
 def credentials(monkeypatch):
     monkeypatch.setattr(settings, "fourthwall_api_user", "fw-user")
     monkeypatch.setattr(settings, "fourthwall_api_password", "fw-pass")
+
+
+@pytest.fixture(autouse=True)
+def stub_summarize_description(monkeypatch):
+    """Stub the storefront LLM summarizer so listing tests never hit a real LLM."""
+
+    async def _stub(brief, *, max_chars, call_llm=None):
+        return str(brief or "")[:max_chars].strip()
+
+    monkeypatch.setattr(
+        fw_description_module,
+        "summarize_description",
+        _stub,
+    )
 
 
 @pytest.fixture
@@ -86,6 +101,7 @@ async def _seed_job(
     output_dir: Path,
     *,
     name: str = "Neon Shoot",
+    art_director_output: str | None = None,
     with_archive: bool = True,
     with_steps: bool = True,
     with_upload: bool = True,
@@ -109,6 +125,23 @@ async def _seed_job(
             large = source / "aimw_main_upscaled_4x_00001_.png"
             small.write_bytes(_png_bytes((8, 8)))
             large.write_bytes(_png_bytes((64, 64)))
+            art_director_output = (
+                art_director_output
+                or "A moody editorial shoot on rain-slick neon "
+                   "streets — **magenta rim light**, cinematic "
+                   "haze."
+            )
+            session.add(
+                JobStep(
+                    job_id=job.id,
+                    block_name="art_director",
+                    order=-1,
+                    status=JobStatus.COMPLETED,
+                    output=json.dumps(
+                        {"art_director_output": art_director_output}
+                    ),
+                )
+            )
             session.add(
                 JobStep(
                     job_id=job.id,
@@ -435,12 +468,18 @@ async def test_listing_happy_path(output_dir, listable):
     assert listing.cloudflare_upload_id is not None
     assert listing.link_document_name == "neon-shoot-download.pdf"
     assert listing.link_document_sha256 is not None
-    # Marketplace post + tags + attribution rendered through the template
-    assert "A neon-drenched artwork pack." in listing.description
+    # Art Director brief (Markdown) rendered to HTML + marketplace tags
+    # + attribution via the template
+    assert "rain-slick neon streets" in listing.description
+    assert "<strong>magenta rim light</strong>" in listing.description
+    assert listing.description.startswith("<p>")
+    # The marketplace post's caption is NOT the description seed anymore
+    assert "A neon-drenched artwork pack." not in listing.description
     assert "neon, cyber" in listing.description
     assert "© Studio Z" in listing.description
-    # The AI disclaimer is appended after the rendered template
-    assert listing.description.endswith(ss.DEFAULT_DISCLAIMER)
+    # The AI disclaimer follows the rendered template after <br> line breaks
+    # (FourthWall renders the description as HTML — a bare \n collapses)
+    assert listing.description.endswith(f"<br><br>{ss.DEFAULT_DISCLAIMER}")
     detail = json.loads(listing.detail_json)
     assert detail["file_url"] == "fw-file-1"
     assert detail["preview_count"] == 1
@@ -454,7 +493,7 @@ async def test_listing_happy_path(output_dir, listable):
     assert create["name"] == "Neon Shoot"
     assert create["price"] == 12.5
     assert create["publishOnCreate"] is False
-    assert create["description"].endswith(ss.DEFAULT_DISCLAIMER)
+    assert create["description"].endswith(f"<br><br>{ss.DEFAULT_DISCLAIMER}")
 
     # The digital file is the PDF link document — NOT the delivery ZIP
     grant_key = "POST /products/prod-1/digital-files/upload-url"
@@ -503,18 +542,14 @@ async def test_listing_disclaimer_disabled(output_dir, listable):
 async def test_listing_markdown_link_document(output_dir, listable):
     job, _, _ = await _seed_job(output_dir)
     async with app.database.async_session() as session:
-        await ss.save_storefront_settings(
-            session, price_usd=5.0, link_document_format="markdown"
-        )
+        await ss.save_storefront_settings(session, price_usd=5.0, link_document_format="markdown")
         await session.commit()
     log: list[httpx.Request] = []
     async with _client(log) as client:
         result = await fw.create_storefront_listing(job.id, client=client)
     assert result["storefront_listing_status"] == "ready"
     grant = json.loads(
-        next(
-            r for r in log if r.url.path.endswith("/digital-files/upload-url")
-        ).content
+        next(r for r in log if r.url.path.endswith("/digital-files/upload-url")).content
     )
     assert grant["fileName"] == "neon-shoot-download.md"
     assert grant["contentType"] == "text/markdown"
@@ -559,10 +594,14 @@ async def test_listing_is_idempotent(output_dir, listable):
     assert second["fourthwall_product_id"] == "prod-1"
     async with app.database.async_session() as session:
         count = (
-            await session.execute(
-                select(StorefrontListing).where(StorefrontListing.job_id == job.id)
+            (
+                await session.execute(
+                    select(StorefrontListing).where(StorefrontListing.job_id == job.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(count) == 1
 
 
@@ -575,6 +614,52 @@ async def test_listing_no_images_still_attaches_document(output_dir, listable):
     assert any(r.url.path.endswith("/digital-files") for r in log)
     assert not any(r.url.path == "/media/upload-url" for r in log)
     assert not any(r.url.path.endswith("/images") for r in log)
+    # No step outputs at all — the description falls back to a generic line
+    listing = await _listing(job.id)
+    assert "Digital artwork collection: Neon Shoot" in listing.description
+
+
+async def test_listing_description_respects_fourthwall_character_limit(
+    output_dir, listable
+):
+    """A very long Art Director brief must still produce a description under 4k chars."""
+    long_brief = "A neon street scene. " * 300  # ~6,000 characters
+    job, _, _ = await _seed_job(output_dir, art_director_output=long_brief)
+    log: list[httpx.Request] = []
+
+    async with _client(log) as client:
+        result = await fw.create_storefront_listing(job.id, client=client)
+
+    assert result["storefront_listing_status"] == "ready"
+    by_key = {f"{r.method} {r.url.path}": r for r in log}
+    create_payload = json.loads(by_key["POST /products"].content)
+    description = create_payload["description"]
+    assert len(description) <= 4_000
+    listing = await _listing(job.id)
+    assert listing.description == description
+
+
+async def test_listing_description_falls_back_to_truncation_on_summarizer_failure(
+    output_dir, listable, monkeypatch
+):
+    """If the LLM summarizer fails, the listing still succeeds via truncation."""
+
+    async def _boom(brief, *, max_chars, call_llm=None):
+        raise RuntimeError("summarizer down")
+
+    monkeypatch.setattr(fw_description_module, "summarize_description", _boom)
+
+    long_brief = "A moody editorial shoot on rain-slick neon streets. " * 100
+    job, _, _ = await _seed_job(output_dir, art_director_output=long_brief)
+    log: list[httpx.Request] = []
+
+    async with _client(log) as client:
+        result = await fw.create_storefront_listing(job.id, client=client)
+
+    assert result["storefront_listing_status"] == "ready"
+    by_key = {f"{r.method} {r.url.path}": r for r in log}
+    description = json.loads(by_key["POST /products"].content)["description"]
+    assert len(description) <= 4_000
 
 
 # ── Block ─────────────────────────────────────────────────────────────────

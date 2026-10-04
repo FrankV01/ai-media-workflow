@@ -6,7 +6,8 @@ Full pages:
                    all scoped to the selected workflow)
 - /jobs/<id>     — Job detail: step-by-step input/output + the effective
                    LLM execution audit (prompt snapshot, model, parameters)
-- /convert       — PNG→JPEG drop-zone converter (posts to /api/convert)
+- /convert       — tabbed converter tools: PNG→JPEG drop-zone and
+                   Markdown ⇄ HTML text conversion (post to /api/convert)
 - /remove-background — solid-background cutout tool (posts to
                    /api/remove-background)
 - /workflows     — workflow definitions: create / clone / enable / disable /
@@ -252,7 +253,7 @@ async def dashboard(request: Request, session: AsyncSession = Depends(get_sessio
 
 @router.get("/convert")
 async def convert_page(request: Request):
-    """Render the PNG→JPEG drop-zone converter page."""
+    """Render the tabbed converter page (PNG→JPEG and Markdown ⇄ HTML)."""
     return templates.TemplateResponse(request, "convert.html")
 
 

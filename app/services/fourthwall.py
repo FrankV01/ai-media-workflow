@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import mistune
 from PIL import Image
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,19 +51,22 @@ from app.config import settings
 from app.models.delivery import DeliveryArchive
 from app.models.job import Job, JobStatus, JobStep
 from app.models.storefront import StorefrontListing, StorefrontListingStatus
+from app.services import fourthwall_description as fw_description
 from app.services.cloudflare_r2 import latest_ready_upload
 from app.services.delivery_archive import latest_ready_archive
 from app.services.general_settings import get_delivery_settings
 from app.services.image_convert import ImageConversionError, convert_png_bytes
 from app.services.link_document import build_link_document
-from app.services.storefront_settings import get_storefront_settings
+from app.services.storefront_settings import (
+    StorefrontSettings,
+    get_storefront_settings,
+)
 from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
 
 LISTING_BLOCK_NAME = "fourthwall_listing"
 _MARKETPLACE_PLATFORM = re.compile(r"market|stock|licens|store|shop", re.IGNORECASE)
-_MAX_DESCRIPTION_SEED_CHARS = 4_000
 
 
 class FourthwallError(RuntimeError):
@@ -195,9 +199,7 @@ class FourthwallClient:
         )
         return {"file_url": file_url, "confirmed": confirmed}
 
-    async def upload_media(
-        self, data: bytes, *, content_type: str, file_name: str
-    ) -> str:
+    async def upload_media(self, data: bytes, *, content_type: str, file_name: str) -> str:
         """Upload bytes to the shop media library; returns the file URL."""
         grant = await self._api(
             "POST",
@@ -215,13 +217,9 @@ class FourthwallClient:
         await self._storage_put(upload_url, data, content_type)
         return str(file_url)
 
-    async def attach_images(
-        self, product_id: str, images: list[dict[str, Any]]
-    ) -> Any:
+    async def attach_images(self, product_id: str, images: list[dict[str, Any]]) -> Any:
         """Attach uploaded media URLs as storefront preview images."""
-        return await self._api(
-            "POST", f"/products/{product_id}/images", json={"images": images}
-        )
+        return await self._api("POST", f"/products/{product_id}/images", json={"images": images})
 
 
 def configured_credentials() -> tuple[str, str] | None:
@@ -279,6 +277,82 @@ def _render_description(
     return re.sub(r"\n{3,}", "\n\n", rendered).strip()
 
 
+async def _compose_description(
+    outputs: dict[str, Any],
+    *,
+    job_name: str,
+    storefront: StorefrontSettings,
+    attribution: str,
+) -> str:
+    """Render the product description: summarized Art Director brief + tags.
+
+    $description is produced by an LLM summarization of `art_director_output`
+    so the final storefront copy fits FourthWall's character limit. The prompt
+    asks for the overall mood and direction rather than a literal recitation
+    of the brief's technical details. If the LLM call fails or returns empty
+    content, the original brief is truncated instead.
+
+    $tags still come from the Social Media Specialist's licensing-marketplace
+    post; its tags are written as search keywords rather than social hashtags.
+
+    The composed copy is Markdown — FourthWall renders descriptions as HTML,
+    so it is converted once here. The final HTML is truncated to
+    `MAX_PRODUCT_DESCRIPTION_CHARS` as a last-resort guard.
+    """
+    post = _pick_marketplace_post(outputs.get("social_media_posts"))
+    tags = [str(t) for t in (post or {}).get("tags") or [] if str(t).strip()]
+    brief = str(outputs.get("art_director_output") or "")
+
+    # Size the template wrapper (title/tags/attribution/disclaimer) so we can
+    # ask the summarizer for a description seed that leaves room for it.
+    wrapper = _render_description(
+        storefront.description_template,
+        title=job_name,
+        description="",
+        tags=tags,
+        attribution=attribution,
+    )
+    wrapper_html_len = len(mistune.html(wrapper).strip())
+    disclaimer = storefront.disclaimer.strip()
+    if disclaimer:
+        wrapper_html_len += len("<br><br>") + len(disclaimer)
+    budget = fw_description.budget_for_wrapper(wrapper_html_len)
+
+    if brief.strip():
+        try:
+            seed = await fw_description.summarize_description(brief, max_chars=budget)
+        except Exception:
+            logger.exception(
+                "Storefront description summarizer raised; falling back to truncation"
+            )
+            seed = brief[:budget].strip()
+    else:
+        seed = f"Digital artwork collection: {job_name}"
+
+    if not seed:
+        seed = f"Digital artwork collection: {job_name}"
+
+    description = _render_description(
+        storefront.description_template,
+        title=job_name,
+        description=seed,
+        tags=tags,
+        attribution=attribution,
+    )
+    if not description:
+        description = f"Digital artwork collection: {job_name}"
+    html = mistune.html(description).strip()
+    if disclaimer:
+        html = f"{html}<br><br>{disclaimer}"
+    if len(html) > fw_description.MAX_PRODUCT_DESCRIPTION_CHARS:
+        logger.warning(
+            "Rendered storefront description exceeds %s characters; truncating",
+            fw_description.MAX_PRODUCT_DESCRIPTION_CHARS,
+        )
+        html = html[: fw_description.MAX_PRODUCT_DESCRIPTION_CHARS].strip()
+    return html
+
+
 def _select_preview_paths(outputs: dict[str, Any], limit: int) -> list[Path]:
     """Smallest-pixel image per variant, in variant order, capped at `limit`.
 
@@ -319,9 +393,7 @@ def _select_preview_paths(outputs: dict[str, Any], limit: int) -> list[Path]:
     return selected[:limit]
 
 
-async def _ready_listing_for(
-    session: AsyncSession, archive_id: int
-) -> StorefrontListing | None:
+async def _ready_listing_for(session: AsyncSession, archive_id: int) -> StorefrontListing | None:
     """An already-live listing covering this archive, or None."""
     result = await session.execute(
         select(StorefrontListing)
@@ -353,9 +425,7 @@ def _result(
     }
 
 
-async def _fail_listing(
-    listing_id: int, exc: BaseException, product_id: str | None = None
-) -> None:
+async def _fail_listing(listing_id: int, exc: BaseException, product_id: str | None = None) -> None:
     """Best-effort: record the failure on the attempt row in a fresh session."""
     try:
         async with app.database.async_session() as session:
@@ -401,12 +471,8 @@ async def create_storefront_listing(
         storefront = await get_storefront_settings(session)
         delivery = await get_delivery_settings(session)
         archive = await latest_ready_archive(session, job_id)
-        existing = (
-            await _ready_listing_for(session, archive.id) if archive is not None else None
-        )
-        upload = (
-            await latest_ready_upload(session, archive.id) if archive is not None else None
-        )
+        existing = await _ready_listing_for(session, archive.id) if archive is not None else None
+        upload = await latest_ready_upload(session, archive.id) if archive is not None else None
 
     credentials = configured_credentials()
     if credentials is None:
@@ -419,13 +485,8 @@ async def create_storefront_listing(
         note = "FourthWall listing skipped: no ready delivery archive — run delivery_archive first"
         return _result("skipped", note=note, warning=note)
     if existing is not None:
-        note = (
-            f"FourthWall listing skipped: archive already listed "
-            f"(product {existing.product_id})"
-        )
-        return _result(
-            "skipped", listing_id=existing.id, product_id=existing.product_id, note=note
-        )
+        note = f"FourthWall listing skipped: archive already listed (product {existing.product_id})"
+        return _result("skipped", listing_id=existing.id, product_id=existing.product_id, note=note)
     if upload is None or not upload.object_url:
         note = (
             "FourthWall listing skipped: no ready Cloudflare R2 upload for the "
@@ -438,25 +499,12 @@ async def create_storefront_listing(
         return _result("skipped", note=note, warning=note)
 
     outputs = _step_outputs(steps)
-    post = _pick_marketplace_post(outputs.get("social_media_posts"))
-    tags = [str(t) for t in (post or {}).get("tags") or [] if str(t).strip()]
-    seed = str((post or {}).get("description") or "")
-    if not seed:
-        seed = str(outputs.get("art_director_output") or "")[:_MAX_DESCRIPTION_SEED_CHARS]
-    if not seed:
-        seed = f"Digital artwork collection: {job_name}"
-    description = _render_description(
-        storefront.description_template,
-        title=job_name,
-        description=seed,
-        tags=tags,
+    description = await _compose_description(
+        outputs,
+        job_name=job_name,
+        storefront=storefront,
         attribution=delivery.artist_attribution,
     )
-    if not description:
-        description = f"Digital artwork collection: {job_name}"
-    disclaimer = storefront.disclaimer.strip()
-    if disclaimer:
-        description = f"{description}\n\n{disclaimer}"
 
     # Commit the attempt row before any network/filesystem work so failures
     # always have an audit record (same contract as create_delivery_archive).
@@ -541,9 +589,7 @@ async def create_storefront_listing(
                     content_type="image/jpeg",
                     file_name=converted.output_name,
                 )
-                previews.append(
-                    {"url": url, "width": converted.width, "height": converted.height}
-                )
+                previews.append({"url": url, "width": converted.width, "height": converted.height})
             if previews:
                 await client.attach_images(product_id, previews)
         finally:

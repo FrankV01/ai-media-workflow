@@ -32,6 +32,7 @@ from app.api import background_removal as bg_removal_router
 from app.api import blocks as block_router
 from app.api import configurations as config_router
 from app.api import convert as convert_router
+from app.api import markup_convert as markup_convert_router
 from app.api import workflow_definitions as wf_def_router
 from app.api import workflows as wf_router
 from app.blocks.registry import discover_blocks
@@ -158,6 +159,7 @@ app.include_router(
 app.include_router(block_router.router, prefix="/api/blocks", tags=["blocks"])
 app.include_router(config_router.router, prefix="/api/configurations", tags=["configurations"])
 app.include_router(convert_router.router, prefix="/api/convert", tags=["convert"])
+app.include_router(markup_convert_router.router, prefix="/api/convert", tags=["convert"])
 app.include_router(
     bg_removal_router.router, prefix="/api/remove-background", tags=["background-removal"]
 )

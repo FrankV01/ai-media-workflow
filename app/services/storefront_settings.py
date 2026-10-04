@@ -10,7 +10,8 @@ Storefront API credentials are env-only (FOURTHWALL_API_USER /
 FOURTHWALL_API_PASSWORD) and never enter the database.
 
 The description template uses string.Template placeholders: $title,
-$description, $tags, $attribution.
+$description, $tags, $attribution. The rendered copy is Markdown; the
+listing service converts it to HTML for the product page.
 """
 
 from __future__ import annotations
@@ -116,9 +117,7 @@ def _validate(
     if not isinstance(description_template, str):
         errors.append("description_template must be text")
     elif len(description_template) > MAX_TEMPLATE_CHARS:
-        errors.append(
-            f"description_template must be {MAX_TEMPLATE_CHARS} characters or fewer"
-        )
+        errors.append(f"description_template must be {MAX_TEMPLATE_CHARS} characters or fewer")
     elif not description_template.strip():
         errors.append("description_template must not be empty")
     else:
@@ -131,9 +130,7 @@ def _validate(
     if not isinstance(disclaimer, str):
         errors.append("disclaimer must be text")
     elif len(disclaimer) > MAX_DISCLAIMER_CHARS:
-        errors.append(
-            f"disclaimer must be {MAX_DISCLAIMER_CHARS} characters or fewer"
-        )
+        errors.append(f"disclaimer must be {MAX_DISCLAIMER_CHARS} characters or fewer")
     return errors
 
 
