@@ -299,7 +299,12 @@ archive skips; a new archive version may list again. The global
 FourthWall) holds `price_usd`, `publish_on_create` (default off
 — products are created hidden and published manually in the Fourthwall
 admin), `link_document_format` (`pdf` default / `markdown`),
-`description_template`, and `max_preview_images`. PayHip is documented as
+`description_template`, `max_preview_images`, and `disclaimer` (default-on
+AI-generated notice appended after the rendered description on every
+product — save it empty to disable). The product category Fourthwall maps
+to a sales-tax code is dashboard-only — the API can't set it, so the ready
+note and the listings UI remind to assign it per product. PayHip is
+documented as
 manual-only on the same page
 — its API exposes no listing endpoints.
 

@@ -243,6 +243,9 @@
                     <code class="font-mono text-[10px] text-indigo-300">product {{ listing.product_id }}</code>
                     {% endif %}
                 </div>
+                {% if listing.status == 'ready' and listing.product_id %}
+                <p class="text-gray-600 mt-0.5">Set the product category in the Fourthwall admin — Fourthwall uses it to calculate sales tax.</p>
+                {% endif %}
                 {% if listing.error %}
                 <p class="text-red-400/80 mt-0.5">{{ listing.error }}</p>
                 {% endif %}

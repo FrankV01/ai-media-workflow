@@ -254,6 +254,7 @@ async def test_storefront_settings_defaults(output_dir):
     assert storefront.link_document_format == "pdf"
     assert storefront.max_preview_images == 4
     assert "$description" in storefront.description_template
+    assert storefront.disclaimer == ss.DEFAULT_DISCLAIMER
 
 
 async def test_storefront_settings_roundtrip(output_dir):
@@ -265,6 +266,7 @@ async def test_storefront_settings_roundtrip(output_dir):
             link_document_format="markdown",
             description_template="$title — $tags",
             max_preview_images=2,
+            disclaimer="Synthetic media — no camera involved.",
         )
         await session.commit()
     async with app.database.async_session() as session:
@@ -274,6 +276,16 @@ async def test_storefront_settings_roundtrip(output_dir):
     assert storefront.link_document_format == "markdown"
     assert storefront.description_template == "$title — $tags"
     assert storefront.max_preview_images == 2
+    assert storefront.disclaimer == "Synthetic media — no camera involved."
+
+
+async def test_storefront_settings_disclaimer_empty_disables(output_dir):
+    async with app.database.async_session() as session:
+        await ss.save_storefront_settings(session, disclaimer="")
+        await session.commit()
+    async with app.database.async_session() as session:
+        storefront = await ss.get_storefront_settings(session)
+    assert storefront.disclaimer == ""
 
 
 @pytest.mark.parametrize(
@@ -286,6 +298,8 @@ async def test_storefront_settings_roundtrip(output_dir):
         ({"max_preview_images": "99"}, "max_preview_images"),
         ({"description_template": "   "}, "description_template"),
         ({"description_template": "x" * (ss.MAX_TEMPLATE_CHARS + 1)}, "description_template"),
+        ({"disclaimer": 123}, "disclaimer"),
+        ({"disclaimer": "x" * (ss.MAX_DISCLAIMER_CHARS + 1)}, "disclaimer"),
     ],
 )
 async def test_storefront_settings_validation(output_dir, kwargs, match):
@@ -310,8 +324,10 @@ async def test_settings_page_shows_storefronts(output_dir):
     assert "Cloudflare R2" in page.text
     assert "PayHip" in page.text
     assert "cannot be automated" in page.text
+    assert "product category" in page.text
     assert 'name="description_template"' in page.text
     assert 'name="link_document_format"' in page.text
+    assert 'name="disclaimer"' in page.text
 
 
 async def test_storefronts_save_via_web(output_dir):
@@ -402,6 +418,8 @@ async def test_listing_happy_path(output_dir, listable):
     assert result["storefront_listing_status"] == "ready"
     assert result["fourthwall_product_id"] == "prod-1"
     assert "prod-1" in result["brief"]
+    # The product category is dashboard-only — the note reminds to set it
+    assert "product category" in result["brief"]
 
     listing = await _listing(job.id)
     assert listing is not None
@@ -421,6 +439,8 @@ async def test_listing_happy_path(output_dir, listable):
     assert "A neon-drenched artwork pack." in listing.description
     assert "neon, cyber" in listing.description
     assert "© Studio Z" in listing.description
+    # The AI disclaimer is appended after the rendered template
+    assert listing.description.endswith(ss.DEFAULT_DISCLAIMER)
     detail = json.loads(listing.detail_json)
     assert detail["file_url"] == "fw-file-1"
     assert detail["preview_count"] == 1
@@ -434,6 +454,7 @@ async def test_listing_happy_path(output_dir, listable):
     assert create["name"] == "Neon Shoot"
     assert create["price"] == 12.5
     assert create["publishOnCreate"] is False
+    assert create["description"].endswith(ss.DEFAULT_DISCLAIMER)
 
     # The digital file is the PDF link document — NOT the delivery ZIP
     grant_key = "POST /products/prod-1/digital-files/upload-url"
@@ -459,8 +480,24 @@ async def test_listing_happy_path(output_dir, listable):
     assert media_grant["fileName"] == "aimw_main_refined_1x_00001.jpg"
     media_put = next(r for r in puts if "fw-signed-media" in str(r.url))
     assert media_put.content.startswith(b"\xff\xd8")  # JPEG magic
+    # "size" is the declared length the signed URL binds to — NOT "contentLength"
+    assert media_grant["size"] == len(media_put.content)
     attach = json.loads(by_key["POST /products/prod-1/images"].content)
     assert attach["images"] == [{"url": "fw-media-1", "width": 8, "height": 8}]
+
+
+async def test_listing_disclaimer_disabled(output_dir, listable):
+    job, _, _ = await _seed_job(output_dir)
+    async with app.database.async_session() as session:
+        await ss.save_storefront_settings(session, price_usd=5.0, disclaimer="")
+        await session.commit()
+    log: list[httpx.Request] = []
+    async with _client(log) as client:
+        result = await fw.create_storefront_listing(job.id, client=client)
+    assert result["storefront_listing_status"] == "ready"
+    listing = await _listing(job.id)
+    assert ss.DEFAULT_DISCLAIMER not in listing.description
+    assert not listing.description.endswith("\n")
 
 
 async def test_listing_markdown_link_document(output_dir, listable):
@@ -693,3 +730,4 @@ async def test_job_detail_page_shows_listing(output_dir, listable):
     assert "Cloudflare R2 uploads" in page.text
     assert "prod-1" in page.text
     assert "$12.50" in page.text
+    assert "product category" in page.text

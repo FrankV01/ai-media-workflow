@@ -205,7 +205,7 @@ class FourthwallClient:
             json={
                 "fileName": file_name,
                 "contentType": content_type,
-                "contentLength": len(data),
+                "size": len(data),
             },
         )
         upload_url = (grant or {}).get("uploadUrl")
@@ -454,6 +454,9 @@ async def create_storefront_listing(
     )
     if not description:
         description = f"Digital artwork collection: {job_name}"
+    disclaimer = storefront.disclaimer.strip()
+    if disclaimer:
+        description = f"{description}\n\n{disclaimer}"
 
     # Commit the attempt row before any network/filesystem work so failures
     # always have an audit record (same contract as create_delivery_archive).
@@ -572,7 +575,8 @@ async def create_storefront_listing(
             f"Published FourthWall product {product_id} "
             f"({document.filename} → {upload.object_url}, "
             f"{len(previews)} preview image(s), "
-            f"${price:.2f}, {'published' if storefront.publish_on_create else 'hidden'})"
+            f"${price:.2f}, {'published' if storefront.publish_on_create else 'hidden'}) "
+            f"— set the product category in the Fourthwall admin for correct sales tax"
         )
         return _result("ready", listing_id=listing_id, product_id=product_id, note=note)
     except Exception as exc:

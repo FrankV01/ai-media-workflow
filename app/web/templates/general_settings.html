@@ -184,6 +184,24 @@
                 attribution above.
             </p>
         </div>
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">
+                AI disclaimer
+                <span class="text-gray-600">(appended to every product description)</span>
+            </label>
+            <textarea name="disclaimer" rows="3" spellcheck="false"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">{{ storefront.disclaimer }}</textarea>
+            <p class="text-[11px] text-gray-600 mt-1">
+                Always shown after the description on the product page — clears
+                expectations that the images are AI-generated. Save with this
+                field empty to disable it.
+            </p>
+        </div>
+        <p class="text-[11px] text-gray-600">
+            The product category can't be set through the API — assign one per
+            product in the Fourthwall admin; Fourthwall maps it to the
+            sales-tax code.
+        </p>
         <button type="submit" class="px-4 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">
             Save storefront settings
         </button>

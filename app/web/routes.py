@@ -1350,6 +1350,7 @@ async def storefront_settings_save(
     link_document_format: str = Form("pdf"),
     description_template: str = Form(""),
     max_preview_images: str = Form("4"),
+    disclaimer: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
     """Save the global storefront (FourthWall) settings."""
@@ -1362,6 +1363,7 @@ async def storefront_settings_save(
             link_document_format=link_document_format,
             description_template=description_template,
             max_preview_images=max_preview_images.strip() or "4",
+            disclaimer=disclaimer,
         )
     except StorefrontSettingsError as exc:
         context = await _general_settings_context(
