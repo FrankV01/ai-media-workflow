@@ -179,6 +179,7 @@ templates = Jinja2Templates(directory="app/web/templates")
 templates.env.globals.update(
     app_version=APP_VERSION,
     build_number=settings.build_number,
+    app_name=settings.app_name,
 )
 
 router = APIRouter()

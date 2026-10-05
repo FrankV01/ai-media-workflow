@@ -13,7 +13,7 @@ while [ -L "$SCRIPT_PATH" ]; do
 done
 PROJECT_DIR=$(CDPATH= cd -P -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
 SAN_DISK_VOLUME=${SAN_DISK_VOLUME:-"/Volumes/SanDisk Mac AI"}
-BASE_URL=${BASE_URL:-"http://127.0.0.1:8000"}
+BASE_URL=${BASE_URL:-"http://mac.lan:8000"}
 
 if [ ! -d "$SAN_DISK_VOLUME" ] || ! /usr/sbin/diskutil info "$SAN_DISK_VOLUME" 2>/dev/null | grep -Eq 'Mounted:[[:space:]]+Yes'; then
     printf 'ERROR: Required external disk is not mounted: %s\n' "$SAN_DISK_VOLUME" >&2
