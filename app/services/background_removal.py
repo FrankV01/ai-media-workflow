@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, get_args, get_origin, get_type_hints
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageOps
+from PIL import ExifTags, Image, ImageDraw, ImageFilter, ImageOps, PngImagePlugin
 
 from app.services import image_convert
 from app.services.image_convert import (
@@ -123,6 +123,9 @@ class RemovedImage:
     source_bytes: int
     key_color: str  # the key color actually used ('#rrggbb')
     removed_pct: float  # share of pixels made fully transparent
+    source_metadata: dict[str, str]
+    technical_metadata: dict[str, str]
+    output_metadata: dict[str, str]
     png_bytes: bytes = field(repr=False)
 
     @property
@@ -282,10 +285,30 @@ def remove_background_png(
     data: bytes,
     source_name: str,
     settings: BackgroundRemovalSettings | None = None,
+    output_metadata: dict[str, str] | None = None,
 ) -> RemovedImage:
     """Cut a solid-color background out of PNG bytes; returns RGBA PNG bytes."""
     settings = settings or BackgroundRemovalSettings()
     image = _decode_png(data)
+    source_metadata = {
+        str(key): value
+        for key, value in image.info.items()
+        if isinstance(value, str) and len(str(key)) <= 79 and len(value) <= 10_000
+    }
+    for tag_id, value in image.getexif().items():
+        tag = ExifTags.TAGS.get(tag_id, str(tag_id))
+        if tag in {"Artist", "Copyright", "Software", "ImageDescription", "DateTime"}:
+            if isinstance(value, str) and len(value) <= 10_000:
+                source_metadata.setdefault(tag, value)
+    technical_metadata = {
+        "Source format": "PNG",
+        "Source color mode": image.mode,
+        "Output color mode": "RGBA",
+        "Dimensions": f"{image.width} × {image.height} px",
+        "EXIF data": "Present" if image.getexif() else "Not present",
+        "ICC color profile": "Present" if image.info.get("icc_profile") else "Not present",
+    }
+    written_metadata = source_metadata if output_metadata is None else output_metadata
 
     rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
     rgb = rgba[..., :3]
@@ -324,8 +347,11 @@ def remove_background_png(
     key_hex = f"#{r:02x}{g:02x}{b:02x}"
 
     output = Image.fromarray(np.dstack([out_rgb, alpha]), mode="RGBA")
+    pnginfo = PngImagePlugin.PngInfo()
+    for key, value in written_metadata.items():
+        pnginfo.add_itxt(key, value)
     buffer = io.BytesIO()
-    output.save(buffer, format="PNG", optimize=True)
+    output.save(buffer, format="PNG", optimize=True, pnginfo=pnginfo)
 
     stem = _safe_stem(source_name)
     return RemovedImage(
@@ -336,5 +362,8 @@ def remove_background_png(
         source_bytes=len(data),
         key_color=key_hex,
         removed_pct=removed_pct,
+        source_metadata=source_metadata,
+        technical_metadata=technical_metadata,
+        output_metadata=dict(written_metadata),
         png_bytes=buffer.getvalue(),
     )

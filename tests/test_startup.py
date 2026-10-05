@@ -11,12 +11,27 @@ import asyncio
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_product_version_is_shared_with_fastapi_and_templates() -> None:
+    from app.config import APP_VERSION
+    from app.main import app
+    from app.web.routes import templates
+
+    with (ROOT / "pyproject.toml").open("rb") as file:
+        expected_version = tomllib.load(file)["project"]["version"]
+
+    assert APP_VERSION == expected_version
+    assert app.version == expected_version
+    rendered = templates.get_template("base.html").render()
+    assert f"AI Media Workflow v{expected_version} · build " in rendered
 
 
 def test_main_py_exits_on_startup_failure(tmp_path: Path) -> None:

@@ -5,10 +5,26 @@ Reads from environment variables and/or `.env` file.
 See `.env.example` for all available settings and defaults.
 """
 
+import tomllib
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _app_version() -> str:
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    if pyproject.is_file():
+        with pyproject.open("rb") as file:
+            return str(tomllib.load(file)["project"]["version"])
+    try:
+        return version("ai-media-workflow")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+APP_VERSION = _app_version()
 
 
 class Settings(BaseSettings):
@@ -18,7 +34,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "AI Media Workflow"
+    app_name: str = "Synthetic Muse AI Media Control Panel"
+    build_number: str = "dev"
     debug: bool = True
     log_level: str = "INFO"
     database_url: str = "sqlite+aiosqlite:///./data/app.db"

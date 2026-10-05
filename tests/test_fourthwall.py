@@ -438,9 +438,12 @@ async def test_listing_skipped_without_price(output_dir, credentials):
     assert await _listing(job.id) is None
 
 
-async def test_listing_happy_path(output_dir, listable):
+async def test_listing_happy_path(output_dir, listable, monkeypatch):
+    monkeypatch.setattr(settings, "build_number", "storefront-build")
     async with app.database.async_session() as session:
-        await gs.save_delivery_settings(session, artist_attribution="© Studio Z")
+        await gs.save_delivery_settings(
+            session, artist_attribution="© Studio Z · build {{ build_number }}"
+        )
         await session.commit()
     job, _, archive = await _seed_job(output_dir)
     log: list[httpx.Request] = []
@@ -476,7 +479,7 @@ async def test_listing_happy_path(output_dir, listable):
     # The marketplace post's caption is NOT the description seed anymore
     assert "A neon-drenched artwork pack." not in listing.description
     assert "neon, cyber" in listing.description
-    assert "© Studio Z" in listing.description
+    assert "© Studio Z · build storefront-build" in listing.description
     # The AI disclaimer follows the rendered template after <br> line breaks
     # (FourthWall renders the description as HTML — a bare \n collapses)
     assert listing.description.endswith(f"<br><br>{ss.DEFAULT_DISCLAIMER}")

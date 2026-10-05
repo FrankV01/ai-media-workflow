@@ -44,6 +44,10 @@
         <label class="text-xs text-gray-500 block mb-1">Artist attribution</label>
         <input name="artist_attribution" value="{{ delivery.artist_attribution }}"
                class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+        <p class="text-[11px] text-gray-600 mt-1">
+            Use <code class="font-mono">{% raw %}{{ app_version }}{% endraw %}</code> or
+            <code class="font-mono">{% raw %}{{ build_number }}{% endraw %}</code> in delivery text to insert current build details.
+        </p>
     </div>
     <div>
         <label class="text-xs text-gray-500 block mb-1">

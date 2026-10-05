@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, PngImagePlugin
 
 from app.services import image_convert
 from app.services.background_removal import (
@@ -260,6 +260,32 @@ def test_removed_image_zip_compatible():
     assert result.output_bytes == len(result.png_bytes)
 
 
+def test_text_metadata_is_reported_preserved_and_replaceable():
+    info = PngImagePlugin.PngInfo()
+    info.add_text("Author", "Original Artist")
+    info.add_itxt("Copyright", "Copyright 2026")
+    source = _png_bytes(pnginfo=info)
+
+    preserved = remove_background_png(source, "art.png")
+    assert preserved.source_metadata == {
+        "Author": "Original Artist",
+        "Copyright": "Copyright 2026",
+    }
+    assert preserved.output_metadata == preserved.source_metadata
+    assert preserved.technical_metadata["Source format"] == "PNG"
+    with Image.open(io.BytesIO(preserved.png_bytes)) as image:
+        assert image.text["Author"] == "Original Artist"
+        assert image.text["Copyright"] == "Copyright 2026"
+
+    replaced = remove_background_png(source, "art.png", output_metadata={"Owner": "New Owner"})
+    with Image.open(io.BytesIO(replaced.png_bytes)) as image:
+        assert image.text == {"Owner": "New Owner"}
+
+    stripped = remove_background_png(source, "art.png", output_metadata={})
+    with Image.open(io.BytesIO(stripped.png_bytes)) as image:
+        assert image.text == {}
+
+
 # ── Endpoint ─────────────────────────────────────────────────────────────
 
 
@@ -313,6 +339,38 @@ def test_endpoint_accepts_settings_form_fields(client):
     assert resp.status_code == 200
     with Image.open(io.BytesIO(resp.content)) as img:
         assert img.getpixel((50, 40))[3] != 255  # global mode cut the hole
+
+
+def test_endpoint_applies_metadata_overrides_without_modifying_upload(client):
+    info = PngImagePlugin.PngInfo()
+    info.add_text("Author", "Original Artist")
+    source = _png_bytes(pnginfo=info)
+    overrides = {"art.png": {"Owner": "Edited Owner", "Copyright": "2026"}}
+
+    resp = client.post(
+        "/api/remove-background/",
+        files=[_upload("art.png", source)],
+        data={"metadata_overrides": json.dumps(overrides)},
+    )
+
+    assert resp.status_code == 200
+    [item] = json.loads(resp.headers["x-removal-results"])["converted"]
+    assert item["source_metadata"] == {"Author": "Original Artist"}
+    assert item["output_metadata"] == overrides["art.png"]
+    with Image.open(io.BytesIO(resp.content)) as image:
+        assert image.text == overrides["art.png"]
+    with Image.open(io.BytesIO(source)) as image:
+        assert image.text == {"Author": "Original Artist"}
+
+
+def test_endpoint_rejects_bad_metadata_overrides(client):
+    resp = client.post(
+        "/api/remove-background/",
+        files=[_upload("art.png", _png_bytes())],
+        data={"metadata_overrides": "[]"},
+    )
+    assert resp.status_code == 422
+    assert "metadata overrides" in resp.json()["detail"]
 
 
 def test_endpoint_rejects_bad_settings(client):

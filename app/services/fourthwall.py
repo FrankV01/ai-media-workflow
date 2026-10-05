@@ -469,7 +469,7 @@ async def create_storefront_listing(
             ).scalars()
         )
         storefront = await get_storefront_settings(session)
-        delivery = await get_delivery_settings(session)
+        delivery = (await get_delivery_settings(session)).rendered()
         archive = await latest_ready_archive(session, job_id)
         existing = await _ready_listing_for(session, archive.id) if archive is not None else None
         upload = await latest_ready_upload(session, archive.id) if archive is not None else None

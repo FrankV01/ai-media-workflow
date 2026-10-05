@@ -773,7 +773,7 @@ async def create_delivery_archive(job_id: int, *, job_step_id: int | None = None
 
         from app.services.general_settings import get_delivery_settings
 
-        delivery_settings = (await get_delivery_settings(session)).to_dict()
+        delivery_settings = (await get_delivery_settings(session)).rendered().to_dict()
 
         attempt = (
             await session.execute(

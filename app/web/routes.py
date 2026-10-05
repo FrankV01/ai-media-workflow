@@ -70,7 +70,7 @@ from app.blocks.media_producer import (
     selected_media_model,
 )
 from app.blocks.registry import get_block, list_blocks
-from app.config import settings
+from app.config import APP_VERSION, settings
 from app.database import get_session
 from app.models.cloudflare import CloudflareUploadStatus
 from app.models.creative import RoleExecution
@@ -176,6 +176,10 @@ _BLOCK_TITLES = {
 }
 
 templates = Jinja2Templates(directory="app/web/templates")
+templates.env.globals.update(
+    app_version=APP_VERSION,
+    build_number=settings.build_number,
+)
 
 router = APIRouter()
 

@@ -201,8 +201,55 @@
         return wrap;
     }
 
+    function metadataEditor(item) {
+        var section = el("div", "mt-4 pt-3 border-t border-gray-700");
+        section.appendChild(el("p", "text-xs font-medium text-gray-300", "Embedded PNG metadata"));
+        section.appendChild(
+            el(
+                "p",
+                "text-[11px] text-gray-500 mb-3",
+                "Text fields found in PNG text chunks or common EXIF ownership fields are editable and are written only to the downloaded PNG. Remove a row to omit it. Technical properties are read-only; EXIF and ICC payloads are reported but are not copied."
+            )
+        );
+        var technical = el("div", "space-y-1 mb-3");
+        Object.keys(item.technical_metadata || {}).forEach(function (key) {
+            technical.appendChild(metadataRow(key + " (read-only)", item.technical_metadata[key]));
+        });
+        section.appendChild(technical);
+
+        var fields = el("div", "space-y-2 rb-editable-fields");
+        function addField(key, value) {
+            var row = el("div", "grid grid-cols-[minmax(7rem,0.6fr)_minmax(10rem,1fr)_auto] gap-2");
+            var keyInput = el("input", "bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300");
+            keyInput.value = key || "";
+            keyInput.placeholder = "Field name";
+            keyInput.maxLength = 79;
+            var valueInput = el("input", "bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200");
+            valueInput.value = value || "";
+            valueInput.placeholder = "Value";
+            valueInput.maxLength = 10000;
+            var remove = el("button", "text-xs text-red-400 hover:text-red-300 px-2", "Remove");
+            remove.type = "button";
+            remove.addEventListener("click", function () { row.remove(); });
+            row.appendChild(keyInput);
+            row.appendChild(valueInput);
+            row.appendChild(remove);
+            fields.appendChild(row);
+        }
+        Object.keys(item.output_metadata || {}).forEach(function (key) {
+            addField(key, item.output_metadata[key]);
+        });
+        section.appendChild(fields);
+        var add = el("button", "mt-2 text-xs text-indigo-400 hover:text-indigo-300", "+ Add text field");
+        add.type = "button";
+        add.addEventListener("click", function () { addField("", ""); });
+        section.appendChild(add);
+        return section;
+    }
+
     function renderCard(item, previewUrl) {
-        var card = el("div", "bg-gray-800/60 border border-gray-700 rounded p-3 space-y-1");
+        var card = el("div", "rb-metadata-card bg-gray-800/60 border border-gray-700 rounded p-3 space-y-1");
+        card.dataset.sourceName = item.source_name;
         if (previewUrl) {
             card.appendChild(
                 checkerboardImg(previewUrl, item.output_name, "h-64 mx-auto", "mb-2 p-1")
@@ -222,7 +269,22 @@
             metadataRow("Transparent", item.removed_pct + "% of pixels")
         );
         card.appendChild(metadataRow("Key color", item.key_color));
+        card.appendChild(metadataEditor(item));
         return card;
+    }
+
+    function collectMetadataOverrides() {
+        var overrides = {};
+        metadataEl.querySelectorAll(".rb-metadata-card").forEach(function (card) {
+            var fields = {};
+            card.querySelectorAll(".rb-editable-fields > div").forEach(function (row) {
+                var inputs = row.querySelectorAll("input");
+                var key = inputs[0].value.trim();
+                if (key) fields[key] = inputs[1].value;
+            });
+            overrides[card.dataset.sourceName] = fields;
+        });
+        return overrides;
     }
 
     function showSuccess(blob, isZip, manifest) {
@@ -285,6 +347,7 @@
 
     function upload(files, localSkipped) {
         setState("processing");
+        var metadataOverrides = collectMetadataOverrides();
         var form = new FormData();
         files.forEach(function (file) {
             form.append("files", file, file.name);
@@ -293,6 +356,7 @@
         Object.keys(opts).forEach(function (key) {
             form.append(key, opts[key]);
         });
+        form.append("metadata_overrides", JSON.stringify(metadataOverrides));
 
         fetch(ENDPOINT, { method: "POST", body: form })
             .then(function (resp) {

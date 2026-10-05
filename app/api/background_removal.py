@@ -52,6 +52,7 @@ def _status_for(exc: ImageConversionError) -> int:
 async def _process_upload(
     upload: UploadFile,
     removal: BackgroundRemovalSettings,
+    metadata_overrides: dict[str, dict[str, str]],
     *,
     batch: bool,
     skipped: list[dict[str, str]],
@@ -78,7 +79,7 @@ async def _process_upload(
         return None
 
     try:
-        return remove_background_png(data, name, removal)
+        return remove_background_png(data, name, removal, metadata_overrides.get(name))
     except ImageConversionError as exc:
         fail(_status_for(exc), str(exc))
         return None
@@ -93,6 +94,7 @@ async def remove_background(
     feather: float = Form(1.0),
     despill: bool = Form(False),
     erode: int = Form(0),
+    metadata_overrides: str = Form("{}"),
 ) -> Response:
     """Cut solid backgrounds out of uploaded PNGs; single → png, batch → zip."""
     try:
@@ -106,6 +108,27 @@ async def remove_background(
         )
     except ValueError as exc:
         raise HTTPException(422, f"Invalid removal settings: {exc}") from exc
+
+    try:
+        parsed_metadata = json.loads(metadata_overrides)
+        if not isinstance(parsed_metadata, dict):
+            raise ValueError("must be an object")
+        normalized_metadata: dict[str, dict[str, str]] = {}
+        for filename, fields in parsed_metadata.items():
+            if not isinstance(filename, str) or not isinstance(fields, dict):
+                raise ValueError("each filename must map to an object")
+            if len(fields) > 100:
+                raise ValueError("at most 100 fields are allowed per file")
+            normalized_fields: dict[str, str] = {}
+            for key, value in fields.items():
+                if not isinstance(key, str) or not key or len(key) > 79:
+                    raise ValueError("field names must contain 1 to 79 characters")
+                if not isinstance(value, str) or len(value) > 10_000:
+                    raise ValueError("field values must be strings of at most 10,000 characters")
+                normalized_fields[key] = value
+            normalized_metadata[filename] = normalized_fields
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(422, f"Invalid metadata overrides: {exc}") from exc
 
     if not files:
         raise HTTPException(400, "No files uploaded")
@@ -124,7 +147,9 @@ async def remove_background(
         logger.info("remove-background: processing %d/%d %s (%.1f MB)", i, total, name, size_mb)
         start = time.perf_counter()
         try:
-            result = await _process_upload(upload, removal, batch=batch, skipped=skipped)
+            result = await _process_upload(
+                upload, removal, normalized_metadata, batch=batch, skipped=skipped
+            )
         except HTTPException as exc:
             logger.warning("remove-background: failed %s — %s", name, exc.detail)
             raise
@@ -164,6 +189,9 @@ async def remove_background(
                 "output_bytes": c.output_bytes,
                 "key_color": c.key_color,
                 "removed_pct": c.removed_pct,
+                "source_metadata": c.source_metadata,
+                "technical_metadata": c.technical_metadata,
+                "output_metadata": c.output_metadata,
             }
             for c in converted
         ],

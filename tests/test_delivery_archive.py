@@ -26,7 +26,7 @@ import app.pipeline.engine as engine_module
 import app.services.delivery_archive as da
 from app.blocks.base import Block, BlockMeta
 from app.blocks.registry import discover_blocks, register
-from app.config import settings
+from app.config import APP_VERSION, settings
 from app.models.creative import CreativeRole, RoleExecution
 from app.models.delivery import DeliveryArchive, DeliveryArchiveStatus
 from app.models.job import Job, JobStatus, JobStep
@@ -229,15 +229,16 @@ async def test_create_archive_packages_everything(output_dir):
     assert "](../report.md)" in readme
 
 
-async def test_archive_includes_note_license_signature(output_dir):
+async def test_archive_includes_note_license_signature(output_dir, monkeypatch):
+    monkeypatch.setattr(settings, "build_number", "test-build")
     job, _ = await _make_job(output_dir, SOURCE_FILES)
     signature = gs.save_signature_file(_png_bytes(), "sig.png")
     async with app.database.async_session() as session:
         await gs.save_delivery_settings(
             session,
-            customer_note="Dear customer",
-            artist_attribution="© Studio X",
-            license_markdown="# License\nYou may use this.",
+            customer_note="Dear customer from v{{ app_version }}",
+            artist_attribution="© Studio X build {{ build_number }}",
+            license_markdown="# License v{{ app_version }}\nYou may use this.",
             signature_asset=signature,
         )
         await session.commit()
@@ -246,16 +247,22 @@ async def test_archive_includes_note_license_signature(output_dir):
     archive = await _archive(job.id)
     members = _read_zip(Path(archive.archive_path))
     readme = members["_delivery/README.md"].decode()
-    assert "Dear customer" in readme
-    assert "© Studio X" in readme
-    assert members["_delivery/LICENSE.md"].decode() == "# License\nYou may use this.\n"
+    assert f"Dear customer from v{APP_VERSION}" in readme
+    assert "© Studio X build test-build" in readme
+    assert members["_delivery/LICENSE.md"].decode() == (
+        f"# License v{APP_VERSION}\nYou may use this.\n"
+    )
     assert members["_delivery/signature.png"] == _png_bytes()
     assert "[_delivery/LICENSE.md](LICENSE.md)" in readme
     assert "[_delivery/signature.png](signature.png)" in readme
 
     snapshot = json.loads(archive.settings_json)
-    assert snapshot["customer_note"] == "Dear customer"
+    assert snapshot["customer_note"] == f"Dear customer from v{APP_VERSION}"
+    assert snapshot["artist_attribution"] == "© Studio X build test-build"
     assert snapshot["signature_asset"] == signature
+    async with app.database.async_session() as session:
+        saved = await gs.get_delivery_settings(session)
+    assert saved.customer_note == "Dear customer from v{{ app_version }}"
 
 
 async def test_attempts_version_and_settings_immutable(output_dir):

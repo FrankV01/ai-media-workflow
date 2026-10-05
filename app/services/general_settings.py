@@ -25,7 +25,7 @@ from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import APP_VERSION, settings
 from app.models.setting import Setting
 
 DELIVERY_SETTINGS_KEY = "delivery.general_settings"
@@ -63,6 +63,14 @@ class DeliverySettings:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def rendered(self) -> DeliverySettings:
+        return DeliverySettings(
+            customer_note=render_delivery_text(self.customer_note),
+            artist_attribution=render_delivery_text(self.artist_attribution),
+            license_markdown=render_delivery_text(self.license_markdown),
+            signature_asset=self.signature_asset,
+        )
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DeliverySettings:
         signature = data.get("signature_asset")
@@ -72,6 +80,12 @@ class DeliverySettings:
             license_markdown=str(data.get("license_markdown") or ""),
             signature_asset=str(signature) if signature else None,
         )
+
+
+def render_delivery_text(value: str) -> str:
+    return value.replace("{{ app_version }}", APP_VERSION).replace(
+        "{{ build_number }}", settings.build_number
+    )
 
 
 def _validate_text_fields(

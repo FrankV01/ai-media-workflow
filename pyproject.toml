@@ -1,6 +1,6 @@
 [project]
 name = "ai-media-workflow"
-version = "0.1.0"
+version = "0.5.0"
 description = "Modular workflow engine for AI-driven media processing"
 requires-python = ">=3.11"
 dependencies = [

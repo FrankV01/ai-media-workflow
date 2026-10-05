@@ -36,7 +36,7 @@ from app.api import markup_convert as markup_convert_router
 from app.api import workflow_definitions as wf_def_router
 from app.api import workflows as wf_router
 from app.blocks.registry import discover_blocks
-from app.config import settings
+from app.config import APP_VERSION, settings
 from app.database import init_db
 from app.web.routes import router as web_router
 
@@ -147,7 +147,7 @@ async def lifespan(application: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.5.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
