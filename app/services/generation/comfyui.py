@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 
 from app.config import settings
+from app.pipeline.naming import safe_filename_part
 from app.services.generation.base import GenerationBackend, GenerationRequest, GenerationResult
 from app.services.generation.sdxl_workflow import SdxlWorkflowConfig, build_sdxl_workflow
 from app.services.workload_guard import workload_guard
@@ -161,7 +162,8 @@ class ComfyUIBackend(GenerationBackend):
         if output_subdir:
             output_dir = output_dir / output_subdir
         output_dir.mkdir(parents=True, exist_ok=True)
-        local_path = output_dir / filename
+        safe_name = safe_filename_part(Path(filename).name)
+        local_path = output_dir / safe_name
 
         params = {"filename": filename, "subfolder": subfolder, "type": img_type}
         resp = await client.get(f"{self.base_url}/view", params=params)

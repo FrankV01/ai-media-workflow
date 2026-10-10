@@ -10,6 +10,7 @@ from app.pipeline.naming import (
     fallback_photo_shoot_name,
     output_subdir,
     resolve_photo_shoot_name,
+    safe_filename_part,
     slugify_photo_shoot_name,
 )
 
@@ -83,3 +84,22 @@ def test_fallback_photo_shoot_name() -> None:
         == "Women Riding A Motorcycle In A"
     )
     assert fallback_photo_shoot_name("   ") == "Untitled Shoot"
+
+
+def test_safe_filename_part() -> None:
+    assert safe_filename_part("Vertical Composition 4:5") == "Vertical_Composition_4_5"
+    assert safe_filename_part("a/b\\c.png") == "a_b_c.png"
+    assert safe_filename_part("  leading/trailing  ") == "leading_trailing"
+    assert safe_filename_part("odd]name[2]") == "odd_name_2"
+    assert safe_filename_part("Café résumé") == "Cafe_resume"
+    assert safe_filename_part("CON") == "CON_"
+    assert safe_filename_part("con.png") == "con.png_"
+    assert safe_filename_part("") == "unnamed"
+    assert safe_filename_part(None) == "unnamed"
+    long_name = "a" * 250
+    assert len(safe_filename_part(long_name)) <= 200
+    assert safe_filename_part(long_name).startswith("a")
+    # Multiple separators are collapsed.
+    assert safe_filename_part("a  :  b") == "a_b"
+    # A name made only of unsafe characters falls back to unnamed.
+    assert safe_filename_part("<>*?") == "unnamed"

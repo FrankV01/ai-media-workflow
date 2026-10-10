@@ -7,6 +7,7 @@ LLM reply (or the raw concept) into a clean shoot title.
 import re
 import unicodedata
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 MAX_PHOTO_SHOOT_NAME_LENGTH = 255
 
@@ -75,6 +76,43 @@ def slugify_photo_shoot_name(name: str | None, max_length: int = 60) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-")
     slug = slug[:max_length].strip("-")
     return slug or "untitled-shoot"
+
+
+# Windows reserved device names that cannot be used as a filename, even with an extension.
+_WINDOWS_RESERVED_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
+
+_MAX_FILENAME_PART_LENGTH = 200
+
+
+def safe_filename_part(name: str | None, max_length: int = _MAX_FILENAME_PART_LENGTH) -> str:
+    """Return a filesystem-safe filename component with no path separators.
+
+    - ASCII-folds Unicode, then replaces spaces and any character not in
+      ``[A-Za-z0-9._-]`` with an underscore.
+    - Collapses multiple underscores and trims leading/trailing separators.
+    - Avoids Windows reserved device names by appending an underscore.
+    - Falls back to ``"unnamed"`` if nothing usable remains.
+    """
+    if not name:
+        return "unnamed"
+
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", ascii_name)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("._ ")
+    if not cleaned:
+        cleaned = "unnamed"
+
+    if Path(cleaned).stem.upper() in _WINDOWS_RESERVED_NAMES:
+        cleaned += "_"
+
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rstrip("._ ")
+
+    return cleaned
 
 
 def output_subdir(

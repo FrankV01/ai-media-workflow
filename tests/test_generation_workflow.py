@@ -83,6 +83,31 @@ def test_save_image_prefix_includes_output_subdir(
     assert all(p.startswith("2026-09-23/cyber-chic/job1/aimw_main") for p in prefixes)
 
 
+def test_media_producer_sanitizes_variant_names(workflow_config: SdxlWorkflowConfig) -> None:
+    parsed = {
+        "positive_prompt": "person riding a motorcycle",
+        "negative_prompt": "",
+        "positive_refiner_prompt": "",
+        "negative_refiner_prompt": "",
+        "variants": [
+            {"name": "Vertical Composition 4:5", "positive_prompt": "tall portrait"},
+            {"name": "wide/angle? special!", "positive_prompt": "wide shot"},
+        ],
+    }
+    requests = _build_requests(parsed)
+    names = [req.variant_name for req in requests]
+    assert names == ["main", "Vertical_Composition_4_5", "wide_angle_special"]
+
+    for req in requests:
+        workflow, _ = build_sdxl_workflow(req, "client-id", workflow_config)
+        prefixes = [
+            node["inputs"]["filename_prefix"]
+            for node in workflow["prompt"].values()
+            if node["class_type"] == "SaveImage"
+        ]
+        assert not any(" " in p or ":" in p for p in prefixes), req.variant_name
+
+
 def test_refiner_denoise_must_be_valid_for_comfyui() -> None:
     with pytest.raises(ValueError, match="between 0.0 and 1.0"):
         SdxlWorkflowConfig(

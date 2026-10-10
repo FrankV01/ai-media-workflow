@@ -47,7 +47,7 @@ from app.blocks.base import Block, BlockMeta
 from app.blocks.output_contract import extract_json_object
 from app.blocks.registry import register
 from app.config import settings
-from app.pipeline.naming import output_subdir
+from app.pipeline.naming import output_subdir, safe_filename_part
 from app.services.configuration.base import (
     MediaConfigurationProvider,
     MediaDefaults,
@@ -153,7 +153,7 @@ def _build_requests(
         sampler=defaults.sampler,
         scheduler=defaults.scheduler,
         clip_skip=defaults.clip_skip,
-        variant_name="main",
+        variant_name=safe_filename_part("main"),
         extras=extras,
     )
 
@@ -173,7 +173,9 @@ def _build_requests(
             sampler=main.sampler,
             scheduler=main.scheduler,
             clip_skip=main.clip_skip,
-            variant_name=variant.get("name", f"variant_{len(requests)}"),
+            variant_name=safe_filename_part(
+                variant.get("name", f"variant_{len(requests)}")
+            ),
             extras=dict(extras),
         )
         requests.append(vr)
