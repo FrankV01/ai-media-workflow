@@ -642,6 +642,99 @@ async def test_listing_description_respects_fourthwall_character_limit(
     assert listing.description == description
 
 
+async def test_render_inventory_html_individual_files():
+    """Files <=8 are listed individually with friendly names and sizes."""
+    manifest = json.dumps({
+        "schema_version": 1,
+        "entries": [
+            {"path": "_delivery/", "type": "directory"},
+            {"path": "_delivery/README.md", "type": "file", "size": 512},
+            {"path": "_delivery/creative_process.md", "type": "file", "size": 2048},
+            {"path": "_delivery/manifest.json", "type": "file", "size": 1024},
+            {"path": "_delivery/LICENSE.md", "type": "file", "size": 300},
+            {"path": "_delivery/signature.png", "type": "file", "size": 4096},
+            {"path": "aimw_main_refined_1x_00001_.png", "type": "file", "size": 2_100_000},
+            {"path": "aimw_main_upscaled_4x_00001_.png", "type": "file", "size": 8_400_000},
+            {"path": "art_critic_report.md", "type": "file", "size": 1200},
+        ],
+    })
+    html = fw._render_inventory_html(manifest)
+    assert "<strong>What's Included</strong>" in html
+    assert "Archive Guide" in html
+    assert "Creative Process Documentation" in html
+    assert "License Terms" in html
+    assert "File Inventory (JSON)" in html
+    assert "Artist Signature" in html
+    assert "aimw_main_refined_1x_00001_.png" in html
+    assert "2.0 MB" in html
+    assert "art_critic_report.md" in html
+    assert "<ul>" in html
+
+
+async def test_render_inventory_html_summary_mode():
+    """More than 8 files triggers summary mode."""
+    entries = [{"path": f"image_{i}.png", "type": "file", "size": 1_000_000}
+               for i in range(10)]
+    manifest = json.dumps({"schema_version": 1, "entries": entries})
+    html = fw._render_inventory_html(manifest)
+    assert "<strong>What's Included</strong>" in html
+    assert "10 PNG files" in html
+    assert "total" in html
+    assert "<ul>" not in html
+
+
+async def test_render_inventory_html_no_manifest():
+    assert fw._render_inventory_html(None) == ""
+    assert fw._render_inventory_html("") == ""
+    assert fw._render_inventory_html("not json") == ""
+
+
+async def test_listing_description_includes_inventory(output_dir, listable):
+    """When the archive has a manifest, the description includes a What's Included section."""
+    job, source, archive = await _seed_job(output_dir)
+    # Attach a manifest to the archive
+    manifest = json.dumps({
+        "schema_version": 1,
+        "entries": [
+            {"path": "aimw_main_refined_1x_00001_.png", "type": "file", "size": 2_100_000},
+            {"path": "aimw_main_upscaled_4x_00001_.png", "type": "file", "size": 8_400_000},
+            {"path": "_delivery/", "type": "directory"},
+            {"path": "_delivery/README.md", "type": "file", "size": 512},
+            {"path": "_delivery/creative_process.md", "type": "file", "size": 2048},
+            {"path": "_delivery/manifest.json", "type": "file", "size": 1024},
+        ],
+    })
+    async with app.database.async_session() as session:
+        archive_row = await session.get(DeliveryArchive, archive.id)
+        archive_row.manifest = manifest
+        await session.commit()
+
+    log: list[httpx.Request] = []
+    async with _client(log) as client:
+        result = await fw.create_storefront_listing(job.id, client=client)
+
+    assert result["storefront_listing_status"] == "ready"
+    listing = await _listing(job.id)
+    assert "What's Included" in listing.description
+    assert "aimw_main_refined_1x_00001_.png" in listing.description
+    assert "Archive Guide" in listing.description
+    assert "Creative Process Documentation" in listing.description
+    # The disclaimer is still at the end
+    assert listing.description.endswith(f"<br><br>{ss.DEFAULT_DISCLAIMER}")
+    assert len(listing.description) <= 4_000
+
+
+async def test_listing_description_no_inventory_without_manifest(output_dir, listable):
+    """When the archive has no manifest, the description has no inventory section."""
+    job, _, _ = await _seed_job(output_dir)
+    log: list[httpx.Request] = []
+    async with _client(log) as client:
+        result = await fw.create_storefront_listing(job.id, client=client)
+    assert result["storefront_listing_status"] == "ready"
+    listing = await _listing(job.id)
+    assert "What's Included" not in listing.description
+
+
 async def test_listing_description_falls_back_to_truncation_on_summarizer_failure(
     output_dir, listable, monkeypatch
 ):

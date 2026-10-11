@@ -259,6 +259,92 @@ def _pick_marketplace_post(posts: Any) -> dict[str, Any] | None:
     return posts[0]
 
 
+_DELIVERY_FRIENDLY_NAMES: dict[str, str] = {
+    "_delivery/readme.md": "Archive Guide",
+    "_delivery/creative_process.md": "Creative Process Documentation",
+    "_delivery/license.md": "License Terms",
+    "_delivery/manifest.json": "File Inventory (JSON)",
+}
+
+_INVENTORY_FILE_LIMIT = 8
+
+
+def _humanize_size(size: int) -> str:
+    """Format byte count as a compact human-readable string."""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    if size < 1024 * 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    return f"{size / (1024 * 1024 * 1024):.1f} GB"
+
+
+def _friendly_name(path: str) -> str:
+    """Map a manifest entry path to a customer-friendly display name."""
+    lower = path.lower()
+    if lower in _DELIVERY_FRIENDLY_NAMES:
+        return _DELIVERY_FRIENDLY_NAMES[lower]
+    if lower.startswith("_delivery/signature"):
+        return "Artist Signature"
+    return path
+
+
+def _render_inventory_html(manifest_json: str | None) -> str:
+    """Build a compact 'What's Included' HTML section from the archive manifest.
+
+    Returns empty string when there is no manifest or no files to list.
+    Individual files are listed up to ``_INVENTORY_FILE_LIMIT``; beyond that
+    the section switches to a summarized count-by-extension format.
+    """
+    if not manifest_json:
+        return ""
+    try:
+        manifest = json.loads(manifest_json)
+    except (ValueError, TypeError):
+        return ""
+    entries = manifest.get("entries")
+    if not isinstance(entries, list):
+        return ""
+
+    files: list[tuple[str, int]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") != "file":
+            continue
+        path = str(entry.get("path") or "")
+        size = int(entry.get("size") or 0)
+        files.append((_friendly_name(path), size))
+
+    if not files:
+        return ""
+
+    parts = ["<strong>What's Included</strong><br>"]
+
+    if len(files) <= _INVENTORY_FILE_LIMIT:
+        parts.append("<ul>")
+        for name, size in files:
+            parts.append(f"<li>{name} — {_humanize_size(size)}</li>")
+        parts.append("</ul>")
+    else:
+        # Summarize by extension
+        from collections import Counter
+        ext_counts: Counter[str] = Counter()
+        total_size = 0
+        for name, size in files:
+            total_size += size
+            dot = name.rsplit(".", 1)
+            ext = dot[-1].upper() if len(dot) > 1 else "file"
+            ext_counts[ext] += 1
+        summary_parts = [f"{count} {ext} file{'s' if count != 1 else ''}"
+                         for ext, count in ext_counts.most_common()]
+        parts.append(", ".join(summary_parts))
+        parts.append(f" — {_humanize_size(total_size)} total")
+
+    return "".join(parts)
+
+
 def _render_description(
     template: str,
     *,
@@ -283,6 +369,7 @@ async def _compose_description(
     job_name: str,
     storefront: StorefrontSettings,
     attribution: str,
+    archive_manifest: str | None = None,
 ) -> str:
     """Render the product description: summarized Art Director brief + tags.
 
@@ -295,6 +382,10 @@ async def _compose_description(
     $tags still come from the Social Media Specialist's licensing-marketplace
     post; its tags are written as search keywords rather than social hashtags.
 
+    When ``archive_manifest`` is provided (the JSON manifest from the delivery
+    archive), a compact "What's Included" inventory section is inserted after
+    the main description and before the disclaimer.
+
     The composed copy is Markdown — FourthWall renders descriptions as HTML,
     so it is converted once here. The final HTML is truncated to
     `MAX_PRODUCT_DESCRIPTION_CHARS` as a last-resort guard.
@@ -303,8 +394,11 @@ async def _compose_description(
     tags = [str(t) for t in (post or {}).get("tags") or [] if str(t).strip()]
     brief = str(outputs.get("art_director_output") or "")
 
-    # Size the template wrapper (title/tags/attribution/disclaimer) so we can
-    # ask the summarizer for a description seed that leaves room for it.
+    # Pre-render the inventory so its length can be factored into the budget.
+    inventory_html = _render_inventory_html(archive_manifest)
+
+    # Size the template wrapper (title/tags/attribution/disclaimer/inventory)
+    # so we can ask the summarizer for a description seed that leaves room.
     wrapper = _render_description(
         storefront.description_template,
         title=job_name,
@@ -313,6 +407,8 @@ async def _compose_description(
         attribution=attribution,
     )
     wrapper_html_len = len(mistune.html(wrapper).strip())
+    if inventory_html:
+        wrapper_html_len += len("<br><br>") + len(inventory_html)
     disclaimer = storefront.disclaimer.strip()
     if disclaimer:
         wrapper_html_len += len("<br><br>") + len(disclaimer)
@@ -342,6 +438,8 @@ async def _compose_description(
     if not description:
         description = f"Digital artwork collection: {job_name}"
     html = mistune.html(description).strip()
+    if inventory_html:
+        html = f"{html}<br><br>{inventory_html}"
     if disclaimer:
         html = f"{html}<br><br>{disclaimer}"
     if len(html) > fw_description.MAX_PRODUCT_DESCRIPTION_CHARS:
@@ -504,6 +602,7 @@ async def create_storefront_listing(
         job_name=job_name,
         storefront=storefront,
         attribution=delivery.artist_attribution,
+        archive_manifest=archive.manifest if archive is not None else None,
     )
 
     # Commit the attempt row before any network/filesystem work so failures
