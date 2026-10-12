@@ -24,3 +24,4 @@ data/output/
 .DS_Store
 Thumbs.db
 /data/app.db.*.bak
+/Business.md
