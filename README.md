@@ -118,9 +118,14 @@ ComfyUI checkpoint than "Main".
   editor with a rendered preview); the default workflow can't be disabled.
 - The dashboard workflow selectors (page header, Run Pipeline, Test
   Pipeline — all connected) scope the pipeline visual, run buttons, and job
-  list; `/settings/ai?workflow=<slug>` edits that workflow's profiles.
-  `media_model_name` on a workflow overrides the env-selected checkpoint
-  for its runs.
+  list; `/settings/ai?workflow=<slug>` edits that workflow's profiles and
+  selects its active media profile (checkpoint/model). `media_model_name`
+  is the workflow's persisted active selection; `COMFYUI_CHECKPOINT` now only
+  seeds the default for new workflows.
+- Steps may include per-step config dicts such as
+  `{"block": "media_producer", "config": {"media_model": "..."}}` so a
+  single workflow can contain multiple `media_producer` blocks using
+  different checkpoints.
 - The migration seeds "Main" with the pipeline above and backfills existing
   profiles and jobs to it.
 
@@ -413,9 +418,10 @@ each prompt variant produces three files.
   placeholder backends.
 - **Config** — split between env and DB. Environment (`.env` via
   pydantic-settings, see `.env.example`) owns secrets, URLs, timeouts, poll
-  intervals, filesystem paths, and *selects which profile is active*
-  (`LLM_MODEL`, `GENERATION_BACKEND`, `COMFYUI_CHECKPOINT` — a workflow may
-  override the checkpoint via `media_model_name`). Behavior
+  intervals, filesystem paths, and *selects the default backend/model*
+  (`LLM_MODEL`, `GENERATION_BACKEND`, `COMFYUI_CHECKPOINT`). The active
+  media profile is selected per workflow in the database (`media_model_name`
+  plus per-step `config.media_model` block overrides). Behavior
   profiles — role system prompts/temperature/max_tokens/thinking per
   `(workflow, role, model_name)`, and media request/workflow defaults per
   `(workflow, block, backend, model)` — plus generic per-`(workflow, block)`
@@ -460,13 +466,13 @@ each prompt variant produces three files.
 |---|---|---|
 | `GET` | `/api/blocks/` | List registered blocks with metadata |
 | `GET` | `/api/blocks/{name}` | Single block detail |
-| `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, optional `workflow` (slug), `block_names`, `context`. Step precedence: explicit `block_names` > the workflow's stored steps > the default workflow's. Set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI |
+| `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, optional `workflow` (slug), `block_names`, `context`. Step precedence: explicit `block_names` > the workflow's stored steps > the default workflow's. `block_names` entries may be block names, routing dicts, or `{"block": "media_producer", "config": {"media_model": "..."}}`. Set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI |
 | `GET` | `/api/workflows/jobs` | Recent jobs (`?workflow=<slug>` filters) |
 | `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings, and delivery archive attempt metadata |
 | `GET` | `/api/workflow-definitions/` | List workflow definitions |
-| `POST` | `/api/workflow-definitions/` | Create a workflow (`name`, `description`, `steps`, `media_model_name`) |
+| `POST` | `/api/workflow-definitions/` | Create a workflow (`name`, `description`, `steps`). `media_model_name` defaults to `COMFYUI_CHECKPOINT` for the configured backend. |
 | `GET` | `/api/workflow-definitions/{slug}` | Workflow detail (steps decoded) |
-| `PUT` | `/api/workflow-definitions/{slug}` | Update name/description/steps/media_model_name |
+| `PUT` | `/api/workflow-definitions/{slug}` | Update name/description/steps. Active media profile is set via `/settings/ai` or `/api/configurations/media/active`. |
 | `POST` | `/api/workflow-definitions/{slug}/clone` | Clone (`name` in body) — copies steps + all scoped AI profiles |
 | `POST` | `/api/workflow-definitions/{slug}/enable` | Re-enable a disabled workflow |
 | `POST` | `/api/workflow-definitions/{slug}/disable` | Disable (409 for the default workflow) |

@@ -48,13 +48,11 @@
                    class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
         </div>
         <div>
-            <label class="text-xs text-gray-500 block mb-1">
-                Media model override
-                <span class="text-gray-600">(blank → env default)</span>
-            </label>
-            <input name="media_model_name" value="{{ workflow.media_model_name or '' }}"
-                   placeholder="checkpoint.safetensors"
-                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+            <label class="text-xs text-gray-500 block mb-1">Active media profile</label>
+            <div class="w-full bg-gray-800/50 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono text-gray-300 flex items-center justify-between">
+                <span>{{ workflow.media_model_name or '—' }}</span>
+                <a href="/settings/ai?workflow={{ workflow.slug }}" class="text-xs text-indigo-400 hover:text-indigo-300">Change in AI settings →</a>
+            </div>
         </div>
     </div>
     <div>
@@ -67,9 +65,11 @@
         <textarea name="steps" rows="14" required spellcheck="false"
                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">{{ steps_json }}</textarea>
         <p class="text-[11px] text-gray-600 mt-1">
-            A list of registered block names; routing objects
+            A list of registered block names. Routing objects
             <code class="font-mono">{"on_good": [...], "on_bad": [...], "always": [...]}</code>
-            branch on the preceding block's verdict.
+            branch on the preceding block's verdict. Per-step config overrides
+            <code class="font-mono">{"block": "media_producer", "config": {"media_model": "..."}}</code>
+            let a workflow contain multiple media producers using different checkpoints.
         </p>
     </div>
     <button type="submit" class="px-4 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">

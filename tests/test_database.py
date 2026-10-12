@@ -40,7 +40,7 @@ from app.models.workflow import Workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "e2f5a1c9d7b4"
-HEAD_REVISION = "i6d9b3e7f4c1"
+HEAD_REVISION = "j7e0c3g5h6i2"
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -457,9 +457,7 @@ def test_workflow_migration_appends_archive_once(
         assert "delivery_archives" in tables
         assert "delivery_archive_entries" in tables
         assert "cloudflare_r2_uploads" in tables
-        listing_cols = {
-            r[1] for r in conn.execute("PRAGMA table_info(storefront_listings)")
-        }
+        listing_cols = {r[1] for r in conn.execute("PRAGMA table_info(storefront_listings)")}
         assert {
             "cloudflare_upload_id",
             "link_document_name",
@@ -491,9 +489,7 @@ def test_uploader_migration_skips_branch_only_listing(
 
     path = tmp_path / "app.db"
     _upgrade(path, "d1e4f6a8b3c5", monkeypatch)
-    branch_steps = _json.dumps(
-        ["echo", {"on_good": [], "always": ["fourthwall_listing"]}]
-    )
+    branch_steps = _json.dumps(["echo", {"on_good": [], "always": ["fourthwall_listing"]}])
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO workflows "
@@ -568,8 +564,7 @@ def test_workflow_downgrade_restores_only_untouched_rows(
         )
         assert (
             conn.execute(
-                "SELECT 1 FROM settings "
-                "WHERE key = 'fourthwall_listing.workflow_migration_backup'"
+                "SELECT 1 FROM settings WHERE key = 'fourthwall_listing.workflow_migration_backup'"
             ).fetchone()
             is None
         )
@@ -594,9 +589,7 @@ def test_storefront_enabled_flag_is_scrubbed_and_restored(
 
     path = tmp_path / "app.db"
     _upgrade(path, "g8d5b2e4f6a1", monkeypatch)
-    stored = _json.dumps(
-        {"enabled": True, "price_usd": 9.99, "publish_on_create": False}
-    )
+    stored = _json.dumps({"enabled": True, "price_usd": 9.99, "publish_on_create": False})
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO settings (key, value, description) VALUES (?, ?, '')",
@@ -646,9 +639,7 @@ def test_storefront_size_limit_is_scrubbed_and_restored(
 
     path = tmp_path / "app.db"
     _upgrade(path, "h4f6a8b0c2d4", monkeypatch)
-    stored = _json.dumps(
-        {"price_usd": 9.99, "file_size_limit_mb": 25, "publish_on_create": False}
-    )
+    stored = _json.dumps({"price_usd": 9.99, "file_size_limit_mb": 25, "publish_on_create": False})
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO settings (key, value, description) VALUES (?, ?, '')",
@@ -682,8 +673,7 @@ def test_storefront_size_limit_is_scrubbed_and_restored(
         )
         assert (
             conn.execute(
-                "SELECT 1 FROM settings "
-                "WHERE key = 'storefronts.fourthwall.r2_migration_backup'"
+                "SELECT 1 FROM settings WHERE key = 'storefronts.fourthwall.r2_migration_backup'"
             ).fetchone()
             is None
         )

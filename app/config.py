@@ -53,11 +53,11 @@ class Settings(BaseSettings):
     llm_enable_thinking: bool = False
     llm_timeout: float = 1800.0  # max wait per LLM request (30 min)
 
-    # Image generation settings. generation_backend + comfyui_checkpoint
-    # select the ACTIVE (block, backend, model) media profile; the remaining
-    # model/refiner fields only seed MISSING profile rows —
-    # MediaModelConfiguration owns existing request/workflow defaults.
-    # URLs/polls/timeouts stay env-only.
+    # Image generation settings. generation_backend selects the backend;
+    # comfyui_checkpoint seeds the DEFAULT MediaModelConfiguration profile for
+    # new workflows. Runtime model selection is DB-owned (workflow.media_model_name
+    # and per-step config overrides). The remaining model/refiner fields only
+    # seed MISSING profile rows. URLs/polls/timeouts stay env-only.
     generation_backend: str = "comfyui"  # 'comfyui' or 'placeholder'
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_poll_interval: float = 2.0  # seconds between status polls

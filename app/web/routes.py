@@ -320,9 +320,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
             "name": listing.name,
             "price_usd": listing.price_usd,
             "created_at": (
-                listing.created_at.strftime("%b %d, %Y %H:%M:%S")
-                if listing.created_at
-                else "—"
+                listing.created_at.strftime("%b %d, %Y %H:%M:%S") if listing.created_at else "—"
             ),
             "error": listing.error,
         }
@@ -340,9 +338,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
             "object_key": upload.object_key,
             "object_url": upload.object_url,
             "created_at": (
-                upload.created_at.strftime("%b %d, %Y %H:%M:%S")
-                if upload.created_at
-                else "—"
+                upload.created_at.strftime("%b %d, %Y %H:%M:%S") if upload.created_at else "—"
             ),
             "error": upload.error,
         }
@@ -476,10 +472,16 @@ async def ai_settings_page(
             "uses_code_defaults": config.uses_code_defaults,
             "is_active": config.backend_name == backend_name and config.model_name == media_model,
             "is_test_active": config.backend_name == "placeholder"
-            and config.model_name == (wf.media_model_name or PLACEHOLDER_MODEL_NAME),
+            and config.model_name == PLACEHOLDER_MODEL_NAME,
             "settings_dict": MediaProfileSettings.from_json(config.settings_json),
         }
         for config in media_rows
+    ]
+
+    active_profile_options = [
+        {"backend_name": config.backend_name, "model_name": config.model_name}
+        for config in media_rows
+        if config.backend_name == backend_name
     ]
 
     block_profiles = [
@@ -549,6 +551,7 @@ async def ai_settings_page(
             "media_model": media_model,
             "roles": roles,
             "media_profiles": media_profiles,
+            "active_profile_options": active_profile_options,
             "media_code_defaults": code_media_defaults(
                 "media_producer", backend_name, media_model
             ).settings,
@@ -736,6 +739,22 @@ async def ai_settings_reset_media(
     return _settings_redirect("reset", "media", "media_producer", body.model_name, wf.slug)
 
 
+@router.post("/settings/ai/media/activate")
+async def ai_settings_activate_media(
+    model_name: str = Form(...),
+    workflow: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Set a media profile as the active model for this workflow."""
+    wf = await _scope_from_form(session, workflow)
+    cleaned = model_name.strip()
+    if not cleaned:
+        raise HTTPException(422, "model_name must be non-blank")
+    wf.media_model_name = cleaned
+    await session.commit()
+    return _settings_redirect("activated", "media", "media_producer", cleaned, wf.slug)
+
+
 @router.post("/settings/ai/block/save")
 async def ai_settings_save_block(
     request: Request,
@@ -827,10 +846,13 @@ async def workflows_create(
     name: str = Form(""),
     description: str = Form(""),
     steps: str = Form(""),
-    media_model_name: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
-    """Create a workflow from the management-page form (steps as JSON text)."""
+    """Create a workflow from the management-page form (steps as JSON text).
+
+    The active media model is selected on /settings/ai; new workflows default
+    to the env-selected checkpoint via create_workflow().
+    """
     try:
         parsed_steps: list | None = None
         if steps.strip():
@@ -843,7 +865,6 @@ async def workflows_create(
             name=name,
             description=description,
             steps=parsed_steps,
-            media_model_name=media_model_name or None,
         )
         await session.commit()
     except (json.JSONDecodeError, ValueError) as exc:
@@ -882,10 +903,13 @@ async def workflow_save(
     name: str = Form(""),
     description: str = Form(""),
     steps: str = Form(""),
-    media_model_name: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
-    """Save a workflow edit; invalid JSON/steps re-render the edit page."""
+    """Save a workflow edit; invalid JSON/steps re-render the edit page.
+
+    The active media model is managed on /settings/ai, not here, so it is
+    left unchanged by this handler.
+    """
     try:
         parsed = json.loads(steps) if steps.strip() else []
         if not isinstance(parsed, list):
@@ -896,7 +920,6 @@ async def workflow_save(
             name=name,
             description=description,
             steps=parsed,
-            media_model_name=media_model_name or None,
         )
         await session.commit()
     except (json.JSONDecodeError, ValueError) as exc:
@@ -988,6 +1011,30 @@ def _build_workflow_nodes(workflow: list[str | dict]) -> list[dict]:
                     "title": _BLOCK_TITLES.get(item, item.replace("_", " ").title()),
                     "description": desc,
                     "category": category,
+                }
+            )
+        elif isinstance(item, dict) and "block" in item:
+            # Block-config node (per-step settings override)
+            name = item["block"]
+            try:
+                block_cls = get_block(name)
+                desc = block_cls.meta.description
+                category = block_cls.meta.category
+            except KeyError:
+                desc = ""
+                category = "utility"
+            config = item.get("config", {})
+            label_extra = ""
+            if config.get("media_model"):
+                label_extra = f" ({config['media_model']})"
+            nodes.append(
+                {
+                    "type": "block_config",
+                    "name": name,
+                    "title": _BLOCK_TITLES.get(name, name.replace("_", " ").title()) + label_extra,
+                    "description": desc,
+                    "category": category,
+                    "config": config,
                 }
             )
         elif isinstance(item, dict):

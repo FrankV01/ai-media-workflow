@@ -38,8 +38,9 @@ class Workflow(Base):
     # JSON list[str | dict] — the engine's step format (block names +
     # verdict-routing dicts with on_good/on_bad/always branches)
     steps_json: Mapped[str] = mapped_column(Text)
-    # Optional per-workflow media model key (e.g. a different ComfyUI
-    # checkpoint); None → the env-selected model for the active backend
+    # Active media model profile key for this workflow (e.g. a ComfyUI
+    # checkpoint). Selected from MediaModelConfiguration profiles; the engine
+    # falls back to the env default only when this is unset (deprecated).
     media_model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)

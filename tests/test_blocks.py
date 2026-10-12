@@ -1571,3 +1571,58 @@ async def test_media_producer_report_variant_request_defaults_not_repeated(monke
     assert text.count("Refiner Checkpoint") == 1
     assert "**Steps:** 40" not in text
     assert result["media_producer_report_path"]
+
+
+@pytest.mark.asyncio
+async def test_media_producer_resolve_configuration_uses_workflow_active_model(temp_config_db):
+    """The block resolves the profile matching the workflow's active media model."""
+    from app.services.workflows import create_workflow
+
+    async with temp_config_db() as session:
+        wf = await create_workflow(
+            session,
+            name="Active Model Probe",
+            media_model_name="DreamShaperXL1.0Alpha2_fixedVae_half_00001_.safetensors",
+        )
+        wf_id = wf.id
+        await session.commit()
+
+    block = get_block("media_producer")()
+    resolved = await block.resolve_configuration(
+        {
+            "_workflow_id": wf_id,
+            "_workflow_media_model": wf.media_model_name,
+            "_generation_backend": "comfyui",
+        }
+    )
+
+    assert resolved.model_name == "DreamShaperXL1.0Alpha2_fixedVae_half_00001_.safetensors"
+
+
+@pytest.mark.asyncio
+async def test_media_producer_resolve_configuration_prefers_step_override(temp_config_db):
+    """A per-step media_model config overrides the workflow active profile."""
+    from app.services.workflows import create_workflow
+
+    async with temp_config_db() as session:
+        wf = await create_workflow(
+            session,
+            name="Step Override Probe",
+            media_model_name="Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
+        )
+        wf_id = wf.id
+        await session.commit()
+
+    block = get_block("media_producer")()
+    resolved = await block.resolve_configuration(
+        {
+            "_workflow_id": wf_id,
+            "_workflow_media_model": wf.media_model_name,
+            "_generation_backend": "comfyui",
+            "_step_config": {
+                "media_model": "DreamShaperXL1.0Alpha2_fixedVae_half_00001_.safetensors"
+            },
+        }
+    )
+
+    assert resolved.model_name == "DreamShaperXL1.0Alpha2_fixedVae_half_00001_.safetensors"

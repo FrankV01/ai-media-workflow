@@ -6,6 +6,9 @@ ordered step list (engine format — block names and on_good/on_bad/always
 routing dicts) and scopes every AI configuration profile (LLM role +
 media model) used by the run.
 
+- media_model_name is the workflow's active media model profile (e.g. a
+  ComfyUI checkpoint). New workflows default to the env-selected checkpoint
+  so there is always an explicit selection; change it on /settings/ai.
 - get_or_create_default_workflow() lazily seeds the "Main" workflow
   (DEFAULT_WORKFLOW_STEPS — the pipeline formerly hardcoded in web routes).
   The configuration provider calls it when a caller supplies no
@@ -27,6 +30,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
+from app.config import settings
 from app.models.block import BlockConfiguration
 from app.models.creative import LlmRoleConfiguration
 from app.models.media import MediaModelConfiguration
@@ -95,13 +99,30 @@ def slugify_workflow_name(name: str) -> str:
     return slugify_photo_shoot_name(name)
 
 
+def default_media_model_name() -> str:
+    """Env-selected default checkpoint/model for new workflows."""
+    # Local import avoids a circular import at module load time.
+    from app.blocks.media_producer import selected_media_model
+
+    return selected_media_model(settings.generation_backend)
+
+
 def parse_steps_json(raw: str) -> list[str | dict]:
     """Decode a stored steps_json payload."""
     return json.loads(raw)
 
 
+# Keys that identify a block-config dict (per-step settings override)
+_BLOCK_CONFIG_KEYS = {"block", "config"}
+
+
 def validate_steps(steps: Any) -> list[str]:
     """Validate an engine step list against the block registry.
+
+    A step may be:
+    - a block name string
+    - a routing dict: {"on_good": [...], "on_bad": [...], "always": [...]}
+    - a block-config dict: {"block": "<name>", "config": {...}}
 
     Returns a list of human-readable error strings (empty = valid).
     """
@@ -121,11 +142,31 @@ def validate_steps(steps: Any) -> list[str]:
         elif name not in known:
             errors.append(f"{where}: unknown block '{name}'")
 
+    def check_block_config(item: dict, where: str) -> None:
+        block_name = item.get("block")
+        check_block_name(block_name, f"{where}.block")
+        config = item.get("config")
+        if config is not None and not isinstance(config, dict):
+            errors.append(f"{where}.config: must be a dict")
+        # A block-config dict may not also be a routing dict
+        routing_overlap = set(item) & set(_ROUTING_KEYS)
+        if routing_overlap:
+            errors.append(
+                f"{where}: block-config dict cannot contain routing keys {sorted(routing_overlap)}"
+            )
+        # Only 'block' and 'config' (plus known routing keys, already rejected) are allowed
+        unknown = set(item) - _BLOCK_CONFIG_KEYS - set(_ROUTING_KEYS)
+        if unknown:
+            errors.append(f"{where}: unknown block-config keys {sorted(unknown)}")
+
     for i, item in enumerate(steps):
         where = f"step {i + 1}"
         if isinstance(item, str):
             check_block_name(item, where)
         elif isinstance(item, dict):
+            if "block" in item:
+                check_block_config(item, where)
+                continue
             unexpected = set(item) - set(_ROUTING_KEYS)
             if unexpected:
                 errors.append(f"{where}: unknown routing keys {sorted(unexpected)}")
@@ -141,7 +182,7 @@ def validate_steps(steps: Any) -> list[str]:
                 for bname in branch_steps:
                     check_block_name(bname, f"{where}.{branch}")
         else:
-            errors.append(f"{where}: must be a block name or a routing dict")
+            errors.append(f"{where}: must be a block name, routing dict, or block-config dict")
     return errors
 
 
@@ -173,6 +214,9 @@ async def get_or_create_default_workflow(session) -> Workflow:
         await session.execute(select(Workflow).where(Workflow.is_default.is_(True)))
     ).scalar_one_or_none()
     if workflow is not None:
+        if workflow.media_model_name is None:
+            workflow.media_model_name = default_media_model_name()
+            await session.flush()
         return workflow
 
     workflow = (
@@ -180,6 +224,8 @@ async def get_or_create_default_workflow(session) -> Workflow:
     ).scalar_one_or_none()
     if workflow is not None:
         workflow.is_default = True
+        if workflow.media_model_name is None:
+            workflow.media_model_name = default_media_model_name()
         await session.flush()
         return workflow
 
@@ -263,7 +309,11 @@ async def create_workflow(
     """
     name = name.strip() if isinstance(name, str) else name
     steps = DEFAULT_WORKFLOW_STEPS if steps is None else steps
-    media_model_name = media_model_name.strip() if isinstance(media_model_name, str) else None
+    media_model_name = (
+        media_model_name.strip()
+        if isinstance(media_model_name, str) and media_model_name.strip()
+        else default_media_model_name()
+    )
     errors = validate_workflow_fields(name, steps, media_model_name)
     if errors:
         raise WorkflowValidationError(errors)
