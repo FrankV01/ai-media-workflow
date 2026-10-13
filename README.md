@@ -459,6 +459,34 @@ each prompt variant produces three files.
   `GET /api/configurations/llm/{role}/history?model_name=…` — each event
   names its action and origin. Audit history begins with migration
   `c6e1f0a4b8d3`; resets made before it cannot be attributed retroactively.
+- **ComfyUI generation timed out**: `COMFYUI_TIMEOUT` is an env-only limit
+  applied separately to each generation request. One built-in request is one
+  ComfyUI prompt graph containing the base generation, refiner pass, 1x save,
+  and both 2x and 4x upscales. Queue wait and execution of that entire graph
+  share the same timeout; each main/variant request receives a fresh timeout
+  and prompt ID and runs sequentially. Restart the application after changing
+  the value. Inspect the reported prompt ID in ComfyUI history and logs to
+  determine whether it was queued, executing a particular node, or failed.
+  Run 210 exposed this limitation when prompt
+  `53d5fb49-7d15-426f-ba3b-9fd6b6483e48` did not appear as completed within
+  the former 3600-second limit. The local deployment now uses 14400 seconds.
+
+#### ComfyUI timeout reliability tasks
+
+- [ ] Detect and report ComfyUI execution errors immediately instead of
+  waiting until the polling deadline.
+- [ ] Capture queue state, execution status, and last-known node while polling
+  so timeout messages identify where the prompt stalled.
+- [ ] Persist the ComfyUI prompt ID as soon as submission succeeds so an
+  interrupted or timed-out request can be diagnosed and recovered reliably.
+- [ ] Recover already-produced images from ComfyUI history after a timeout
+  rather than discarding usable outputs.
+- [ ] Add a media-request-only retry/resume operation that does not rerun the
+  preceding LLM blocks or duplicate completed variants.
+- [ ] Add tests for queued prompts, execution failures, partial outputs,
+  multiple sequential variants, and timeout recovery.
+- [ ] Evaluate an inactivity timeout based on observed progress in addition to
+  the absolute safety deadline.
 
 ## REST API
 
