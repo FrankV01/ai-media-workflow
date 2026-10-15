@@ -103,6 +103,10 @@
     </div>
     {% endif %}
 
+    <div hx-get="/partials/jobs/{{ job.id }}/images"
+         hx-trigger="load"
+         hx-swap="outerHTML"></div>
+
     {% if job.archive_error %}
     <div class="mt-4 p-3 rounded bg-red-900/30 border border-red-800/50">
         <p class="text-sm text-red-300 font-medium">Archive retry unavailable</p>

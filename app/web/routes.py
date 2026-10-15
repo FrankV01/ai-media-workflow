@@ -56,12 +56,14 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
+from PIL import Image
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -239,6 +241,70 @@ def _preview(text: str, max_len: int = 120) -> str:
     if len(text) <= max_len:
         return text
     return text[:max_len].rstrip() + "…"
+
+
+def _job_image_groups(job: Job) -> list[tuple[str, list[Path]]]:
+    groups: list[tuple[str, list[Path]]] = []
+    for step in sorted(job.steps, key=lambda item: item.order):
+        if step.block_name != "media_producer" or not step.output:
+            continue
+        try:
+            output = json.loads(step.output)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        metadata = output.get("generation_metadata")
+        if not isinstance(metadata, list):
+            continue
+        for index, entry in enumerate(metadata, start=1):
+            if not isinstance(entry, dict) or not isinstance(entry.get("image_paths"), list):
+                continue
+            paths = [Path(path) for path in entry["image_paths"] if isinstance(path, str)]
+            if paths:
+                groups.append((str(entry.get("variant") or f"Variant {index}"), paths))
+    if groups or not job.generated_assets:
+        return groups
+    try:
+        assets = json.loads(job.generated_assets)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    paths = (
+        [Path(path) for path in assets if isinstance(path, str)]
+        if isinstance(assets, list)
+        else []
+    )
+    return [("Generated image", paths)] if paths else []
+
+
+def _job_images(job: Job) -> list[dict[str, str | int]]:
+    output_root = Path(settings.image_output_dir).resolve()
+    images: list[dict[str, str | int]] = []
+    for label, paths in _job_image_groups(job):
+        candidates: list[tuple[int, Path]] = []
+        for path in paths:
+            try:
+                resolved = path.resolve(strict=True)
+                if not resolved.is_file() or not resolved.is_relative_to(output_root):
+                    continue
+                with Image.open(resolved) as image:
+                    candidates.append((image.width * image.height, resolved))
+            except (FileNotFoundError, OSError):
+                continue
+        if candidates:
+            path = min(candidates, key=lambda candidate: candidate[0])[1]
+            images.append(
+                {"index": len(images), "label": label, "name": path.name, "path": str(path)}
+            )
+    return images
+
+
+async def _job_with_steps(session: AsyncSession, job_id: int) -> Job:
+    result = await session.execute(
+        select(Job).where(Job.id == job_id).options(selectinload(Job.steps))
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return job
 
 
 # ── Full pages ───────────────────────────────────────────────────────────
@@ -1231,6 +1297,43 @@ async def partial_job_preview(
         ],
     }
     return templates.TemplateResponse(request, "partials/job_preview.html", {"job": job})
+
+
+@router.get("/partials/jobs/{job_id}/images")
+async def partial_job_images(
+    request: Request, job_id: int, session: AsyncSession = Depends(get_session)
+):
+    job = await _job_with_steps(session, job_id)
+    return templates.TemplateResponse(
+        request,
+        "partials/job_images.html",
+        {
+            "job_id": job.id,
+            "job_status": job.status.value,
+            "images": _job_images(job),
+        },
+    )
+
+
+@router.get("/jobs/{job_id}/images/{image_index}")
+async def job_image(
+    job_id: int, image_index: int, session: AsyncSession = Depends(get_session)
+):
+    job = await _job_with_steps(session, job_id)
+    images = _job_images(job)
+    if image_index < 0 or image_index >= len(images):
+        raise HTTPException(status_code=404, detail="Job image not found")
+    path = Path(str(images[image_index]["path"]))
+    media_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    media_type = media_types.get(path.suffix.lower())
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="Job image not found")
+    return FileResponse(path, media_type=media_type)
 
 
 @router.post("/partials/jobs/{job_id}/open-folder", response_class=HTMLResponse)
