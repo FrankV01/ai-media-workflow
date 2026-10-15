@@ -116,12 +116,14 @@ ComfyUI checkpoint than "Main".
 
 - Create/clone/edit/enable/disable on the `/workflows` page (JSON steps
   editor with a rendered preview); the default workflow can't be disabled.
-- The dashboard workflow selectors (page header, Run Pipeline, Test
-  Pipeline — all connected) scope the pipeline visual, run buttons, and job
-  list; `/settings/ai?workflow=<slug>` edits that workflow's profiles and
-  selects its active media profile (checkpoint/model). `media_model_name`
-  is the workflow's persisted active selection; `COMFYUI_CHECKPOINT` now only
-  seeds the default for new workflows.
+- The dashboard's Run Pipeline and Test Pipeline selectors are connected and
+  choose the active workflow for new runs and the pipeline visual. Recent Jobs
+  is independent: it is paginated across all workflows and can be filtered by
+  workflow, run status, operator QC rating, and shoot name or job ID.
+  `/settings/ai?workflow=<slug>` edits that workflow's profiles and selects its
+  active media profile (checkpoint/model). `media_model_name` is the workflow's
+  persisted active selection; `COMFYUI_CHECKPOINT` now only seeds the default
+  for new workflows.
 - Steps may include per-step config dicts such as
   `{"block": "media_producer", "config": {"media_model": "..."}}` so a
   single workflow can contain multiple `media_producer` blocks using
@@ -162,6 +164,16 @@ IMAGE_OUTPUT_DIR/
 an absolute path, and can be overridden via the environment.
 `scripts/convert_pngs_to_jpegs.py` writes to `IMAGE_OUTPUT_DIR` when
 `--output-dir` is omitted; an explicit `--output-dir` overrides it.
+
+### Operator quality control
+
+After a job finishes as `completed` or `failed`, its detail page allows an
+operator to assign an informational **Good**, **Neutral**, or **Bad** rating and
+write Markdown notes with a safe live preview. This review is stored separately
+from pipeline context and never affects the Art Critic, routing, generated
+assets, or delivery. Neutral is an explicit rating; Unrated means no review has
+yet been saved. Saved reviews can be edited but not cleared back to Unrated.
+Pending and running jobs reject review updates server-side.
 
 ### Delivery archives and General Settings
 
@@ -407,12 +419,13 @@ each prompt variant produces three files.
   Images are grouped under `IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/`,
   where the date is the job's UTC creation date.
 - **Persistence** — SQLite via SQLAlchemy async. Jobs, steps, input/output
-  snapshots, generated asset paths, and delivery archive audit
-  (`DeliveryArchive`/`DeliveryArchiveEntry`: attempt status, checksums, file
-  inventory, Markdown snapshots) are all stored.
+  snapshots, generated asset paths, operator QC reviews, and delivery archive
+  audit (`DeliveryArchive`/`DeliveryArchiveEntry`: attempt status, checksums,
+  file inventory, Markdown snapshots) are all stored.
 - **Web UI** — Jinja2 + HTMX, Tailwind CDN. No JS build step. Dashboard at
-  `/`, job detail at `/jobs/{id}` (including the Delivery archives box with
-  download and eligible Retry archive actions), workflow management at
+  `/` with independent job filters and active-workflow run selectors; job
+  detail at `/jobs/{id}` includes operator QC plus the Delivery archives box
+  with download and eligible Retry archive actions; workflow management at
   `/workflows`, AI configuration at `/settings/ai` (per-workflow), global
   delivery settings at `/settings/general`, run buttons for the real and
   placeholder backends.
@@ -495,8 +508,8 @@ each prompt variant produces three files.
 | `GET` | `/api/blocks/` | List registered blocks with metadata |
 | `GET` | `/api/blocks/{name}` | Single block detail |
 | `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, optional `workflow` (slug), `block_names`, `context`. Step precedence: explicit `block_names` > the workflow's stored steps > the default workflow's. `block_names` entries may be block names, routing dicts, or `{"block": "media_producer", "config": {"media_model": "..."}}`. Set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI |
-| `GET` | `/api/workflows/jobs` | Recent jobs (`?workflow=<slug>` filters) |
-| `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings, and delivery archive attempt metadata |
+| `GET` | `/api/workflows/jobs` | Recent jobs with QC metadata (`?workflow=<slug>` filters; `limit` defaults to 20 and must be 1–100) |
+| `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings, operator QC metadata, and delivery archive attempt metadata |
 | `GET` | `/api/workflow-definitions/` | List workflow definitions |
 | `POST` | `/api/workflow-definitions/` | Create a workflow (`name`, `description`, `steps`). `media_model_name` defaults to `COMFYUI_CHECKPOINT` for the configured backend. |
 | `GET` | `/api/workflow-definitions/{slug}` | Workflow detail (steps decoded) |

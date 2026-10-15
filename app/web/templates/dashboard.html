@@ -18,11 +18,7 @@
 
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-2xl font-bold">Dashboard</h1>
-    <div class="flex items-center gap-2">
-        <label for="workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Workflow</label>
-        {{ workflow_select("workflow-select") }}
-        <a href="/workflows" class="text-xs text-indigo-400 hover:text-indigo-300 ml-1">Manage</a>
-    </div>
+    <a href="/workflows" class="text-xs text-indigo-400 hover:text-indigo-300">Manage workflows</a>
 </div>
 
 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -47,17 +43,42 @@
 
     <!-- Recent Jobs -->
     <section class="bg-gray-900 rounded-lg p-5 border border-gray-800">
-        <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center justify-between mb-1">
             <h2 class="text-lg font-semibold">Recent Jobs</h2>
-            <button hx-get="/partials/jobs{% if selected_workflow %}?workflow={{ selected_workflow.slug }}{% endif %}"
-                    hx-target="#job-list"
-                    hx-swap="innerHTML"
-                    class="text-[10px] text-indigo-400 hover:text-indigo-300 uppercase tracking-wide cursor-pointer">
-                Refresh
-            </button>
         </div>
+        <p class="text-xs text-gray-500 mb-3">Browse all jobs independently of the active workflow.</p>
+        <form id="job-filters" class="grid grid-cols-2 gap-2 mb-3"
+              hx-get="/partials/jobs" hx-target="#job-list" hx-swap="innerHTML"
+              hx-trigger="change, input changed delay:400ms from:#job-search">
+            <select name="workflow" aria-label="Filter by workflow"
+                    class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
+                <option value="">All workflows</option>
+                {% for w in workflows %}<option value="{{ w.slug }}">{{ w.name }}</option>{% endfor %}
+            </select>
+            <select name="status" aria-label="Filter by status"
+                    class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
+                <option value="">All statuses</option>
+                <option value="pending">Pending</option>
+                <option value="running">Running</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+            </select>
+            <select name="quality" aria-label="Filter by quality"
+                    class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
+                <option value="">All QC ratings</option>
+                <option value="unrated">Unrated</option>
+                <option value="good">Good</option>
+                <option value="neutral">Neutral</option>
+                <option value="bad">Bad</option>
+            </select>
+            <div class="flex gap-2">
+                <input id="job-search" name="q" type="search" maxlength="200" placeholder="Name or job ID"
+                       class="min-w-0 flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
+                <button type="submit" class="text-xs text-indigo-400 hover:text-indigo-300">Refresh</button>
+            </div>
+        </form>
         <div id="job-list"
-             hx-get="/partials/jobs{% if selected_workflow %}?workflow={{ selected_workflow.slug }}{% endif %}"
+             hx-get="/partials/jobs"
              hx-trigger="load"
              hx-swap="innerHTML"
              class="text-sm text-gray-400">
@@ -93,7 +114,7 @@
     <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-semibold">Run Pipeline</h2>
         <div class="flex items-center gap-2">
-            <label for="run-workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Workflow</label>
+            <label for="run-workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Active workflow</label>
             {{ workflow_select("run-workflow-select", "#run-pipeline") }}
         </div>
     </div>
@@ -137,7 +158,7 @@
     <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-semibold">Test Pipeline</h2>
         <div class="flex items-center gap-2">
-            <label for="test-workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Workflow</label>
+            <label for="test-workflow-select" class="text-xs text-gray-500 uppercase tracking-wide">Active workflow</label>
             {{ workflow_select("test-workflow-select", "#test-pipeline") }}
         </div>
     </div>

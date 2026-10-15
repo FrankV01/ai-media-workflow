@@ -2,10 +2,10 @@
 app.web.routes — HTML routes served via Jinja2 + HTMX
 
 Full pages:
-- /              — Dashboard (blocks, jobs, pipeline visual, quick run —
-                   all scoped to the selected workflow)
-- /jobs/<id>     — Job detail: step-by-step input/output + the effective
-                   LLM execution audit (prompt snapshot, model, parameters)
+- /              — Dashboard (blocks, independently filtered jobs, pipeline
+                   visual, and workflow-scoped run forms)
+- /jobs/<id>     — Job detail: operator quality control, step-by-step I/O, and
+                   the effective LLM execution audit
 - /convert       — tabbed converter tools: PNG→JPEG drop-zone and
                    Markdown ⇄ HTML text conversion (post to /api/convert)
 - /remove-background — solid-background cutout tool (posts to
@@ -32,11 +32,13 @@ Form POSTs (redirect with a status query):
 - /jobs/<id>/archives/retry                        — archive-only retry
 - /jobs/<id>/listings/retry                        — listing-only retry
 - /jobs/<id>/uploads/retry                         — R2-upload-only retry
+- /jobs/<id>/quality-control                       — save operator QC metadata
 - /workflows/create, /workflows/<id>/{save,clone,enable,disable,set-default}
 
 HTMX partials (return HTML fragments, not full pages):
 - /partials/blocks              — styled block list
-- /partials/jobs                — styled recent jobs list (?workflow= filter)
+- /partials/jobs                — filtered, paginated recent jobs list
+- /partials/jobs/quality-control/preview — safe Markdown QC preview
 - /partials/jobs/<id>/preview   — hover preview popover for a job
 - /partials/workflow            — pipeline visual for ?workflow=<slug>
 - /partials/run-pipeline        — queue a pipeline run (background)
@@ -56,9 +58,10 @@ from dataclasses import replace
 from datetime import datetime
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -130,6 +133,13 @@ from app.services.general_settings import (
     save_signature_file,
     signature_path,
 )
+from app.services.job_quality_control import (
+    JobNotReviewableError,
+    JobQualityControlError,
+    render_quality_comment,
+    save_job_quality_control,
+)
+from app.services.jobs import JobFilterError, list_job_page
 from app.services.open_folder import (
     OpenerUnavailableError,
     job_output_dir,
@@ -238,8 +248,8 @@ def _preview(text: str, max_len: int = 120) -> str:
 async def dashboard(request: Request, session: AsyncSession = Depends(get_session)):
     """Render the main dashboard page.
 
-    ?workflow=<slug> selects which workflow the pipeline visual, run forms,
-    and job list are scoped to; omitted → the default workflow.
+    ?workflow=<slug> selects the active workflow for the pipeline visual and
+    run forms; Recent Jobs has independent filters. Omitted → the default workflow.
     """
     workflows = await list_workflows(session)
     if not workflows:
@@ -274,7 +284,11 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
     result = await session.execute(
         select(Job)
         .where(Job.id == job_id)
-        .options(selectinload(Job.steps), selectinload(Job.workflow))
+        .options(
+            selectinload(Job.steps),
+            selectinload(Job.workflow),
+            selectinload(Job.quality_control),
+        )
     )
     job_raw = result.scalar_one_or_none()
     if not job_raw:
@@ -373,6 +387,23 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         "uploads": uploads,
         "upload_retryable": await upload_retryable(session, job_raw.id),
         "upload_error": request.query_params.get("upload_error"),
+        "quality_control": (
+            {
+                "rating": job_raw.quality_control.rating.value,
+                "comment_markdown": job_raw.quality_control.comment_markdown,
+                "comment_html": Markup(
+                    render_quality_comment(job_raw.quality_control.comment_markdown)
+                ),
+                "updated_at": job_raw.quality_control.updated_at.strftime(
+                    "%b %d, %Y %H:%M:%S"
+                ),
+            }
+            if job_raw.quality_control
+            else None
+        ),
+        "quality_editable": job_raw.status.value in {"completed", "failed"},
+        "quality_saved": request.query_params.get("quality_saved") == "1",
+        "quality_error": request.query_params.get("quality_error"),
         "folder_path": str(job_output_dir(job_raw)),
         "steps": [
             {
@@ -410,6 +441,41 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         ],
     }
     return templates.TemplateResponse(request, "job_detail.html", {"job": job})
+
+
+@router.post("/jobs/{job_id}/quality-control")
+async def save_job_quality_control_form(
+    job_id: int,
+    rating: str = Form(...),
+    comment_markdown: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        await save_job_quality_control(session, job_id, rating, comment_markdown)
+        await session.commit()
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except JobNotReviewableError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except JobQualityControlError as exc:
+        query = urlencode({"quality_error": str(exc)})
+        return RedirectResponse(f"/jobs/{job_id}?{query}", status_code=303)
+    return RedirectResponse(f"/jobs/{job_id}?quality_saved=1", status_code=303)
+
+
+@router.post("/partials/jobs/quality-control/preview")
+async def quality_control_preview(request: Request, comment_markdown: str = Form("")):
+    try:
+        comment_html = Markup(render_quality_comment(comment_markdown))
+        error = None
+    except JobQualityControlError as exc:
+        comment_html = None
+        error = str(exc)
+    return templates.TemplateResponse(
+        request,
+        "partials/quality_control_preview.html",
+        {"comment_html": comment_html, "error": error},
+    )
 
 
 # ── AI settings page ─────────────────────────────────────────────────────
@@ -1081,32 +1147,47 @@ async def partial_blocks(request: Request):
 async def partial_jobs(
     request: Request,
     workflow: str | None = None,
+    status: str | None = None,
+    quality: str | None = None,
+    q: str | None = None,
+    page: int = Query(1, ge=1),
     session: AsyncSession = Depends(get_session),
 ):
-    """Return styled HTML fragment listing recent jobs (?workflow= filters)."""
-    stmt = (
-        select(Job)
-        .options(selectinload(Job.steps), selectinload(Job.workflow))
-        .order_by(Job.created_at.desc())
-        .limit(20)
-    )
-    if workflow:
-        stmt = stmt.join(Workflow, Job.workflow_id == Workflow.id).where(Workflow.slug == workflow)
-    result = await session.execute(stmt)
-    jobs_raw = result.scalars().all()
+    try:
+        result_page = await list_job_page(
+            session,
+            workflow=workflow,
+            status=status,
+            quality=quality,
+            query=q,
+            page=page,
+        )
+    except JobFilterError as exc:
+        raise HTTPException(400, str(exc)) from exc
     jobs = [
         {
             "id": j.id,
             "workflow_name": j.workflow_name,
             "workflow": j.workflow.name if j.workflow else "",
             "status": j.status.value,
+            "quality": j.quality_control.rating.value if j.quality_control else None,
             "created_at": j.created_at.strftime("%b %d, %H:%M") if j.created_at else None,
             "duration": _fmt_duration(j.created_at, j.finished_at),
             "steps": list(j.steps),
         }
-        for j in jobs_raw
+        for j in result_page.jobs
     ]
-    return templates.TemplateResponse(request, "partials/job_list.html", {"jobs": jobs})
+    return templates.TemplateResponse(
+        request,
+        "partials/job_list.html",
+        {
+            "jobs": jobs,
+            "page": result_page.page,
+            "pages": result_page.pages,
+            "total": result_page.total,
+            "has_active_filters": bool(workflow or status or quality or (q and q.strip())),
+        },
+    )
 
 
 @router.get("/partials/jobs/{job_id}/preview")
@@ -1117,7 +1198,11 @@ async def partial_job_preview(
     result = await session.execute(
         select(Job)
         .where(Job.id == job_id)
-        .options(selectinload(Job.steps), selectinload(Job.workflow))
+        .options(
+            selectinload(Job.steps),
+            selectinload(Job.workflow),
+            selectinload(Job.quality_control),
+        )
     )
     job_raw = result.scalar_one_or_none()
     if not job_raw:

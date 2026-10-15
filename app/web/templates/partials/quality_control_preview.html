@@ -1,0 +1,7 @@
+{% if error %}
+<p class="text-red-300">{{ error }}</p>
+{% elif comment_html %}
+{{ comment_html }}
+{% else %}
+<p class="text-gray-600 italic">Nothing to preview.</p>
+{% endif %}

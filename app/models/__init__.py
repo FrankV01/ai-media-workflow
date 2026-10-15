@@ -1,7 +1,7 @@
 """
 app.models — SQLAlchemy ORM models
 
-Pipeline tracking: Job (incl. warnings), JobStep (app/models/job.py)
+Pipeline tracking: Job (incl. warnings), JobQualityControl, JobStep (app/models/job.py)
 Creative audit trail + LLM profiles: CreativeRole, LlmRoleConfiguration,
 LlmConfigurationChange (save/reset mutation history), RoleExecution,
 Message (app/models/creative.py)

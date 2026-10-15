@@ -30,6 +30,14 @@
                         {% else %}bg-gray-700 text-gray-400{% endif %}">
                         {{ job.status }}
                     </span>
+                    {% if job.quality %}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded
+                        {% if job.quality == 'good' %}bg-emerald-900/40 text-emerald-300
+                        {% elif job.quality == 'neutral' %}bg-amber-900/40 text-amber-300
+                        {% else %}bg-red-900/40 text-red-300{% endif %}">
+                        QC {{ job.quality }}
+                    </span>
+                    {% endif %}
                 </div>
                 <p class="text-[11px] text-gray-500 mt-0.5">
                     Job #{{ job.id }}
@@ -55,6 +63,23 @@
     </div>
     {% endfor %}
 </div>
+<div class="flex items-center justify-between mt-3 text-xs text-gray-500">
+    <span>{{ total }} job{{ "s" if total != 1 }}{% if pages > 1 %} · Page {{ page }} of {{ pages }}{% endif %}</span>
+    {% if pages > 1 %}
+    <div class="flex gap-2">
+        <button {% if page <= 1 %}disabled{% endif %}
+                hx-get="/partials/jobs" hx-target="#job-list" hx-swap="innerHTML"
+                hx-include="#job-filters" hx-vals='{"page": {{ page - 1 }}}'
+                class="px-2 py-1 rounded bg-gray-800 text-indigo-400 disabled:opacity-40">Previous</button>
+        <button {% if page >= pages %}disabled{% endif %}
+                hx-get="/partials/jobs" hx-target="#job-list" hx-swap="innerHTML"
+                hx-include="#job-filters" hx-vals='{"page": {{ page + 1 }}}'
+                class="px-2 py-1 rounded bg-gray-800 text-indigo-400 disabled:opacity-40">Next</button>
+    </div>
+    {% endif %}
+</div>
 {% else %}
-<p class="text-gray-500 italic text-sm">No jobs yet. Run a workflow to get started.</p>
+<p class="text-gray-500 italic text-sm">
+    {% if has_active_filters %}No jobs match these filters.{% else %}No jobs yet. Run a workflow to get started.{% endif %}
+</p>
 {% endif %}

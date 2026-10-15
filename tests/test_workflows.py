@@ -796,6 +796,13 @@ def test_api_jobs_list_scoped_to_workflow(api_client):
 # ── Web pages (template smoke tests) ─────────────────────────────────────
 
 
+def test_api_jobs_limit_is_bounded(api_client):
+    client, _ = api_client
+    assert client.get("/api/workflows/jobs?limit=0").status_code == 422
+    assert client.get("/api/workflows/jobs?limit=101").status_code == 422
+    assert client.get("/api/workflows/jobs?limit=100").status_code == 200
+
+
 def test_workflows_pages_render(api_client):
     client, _ = api_client
     client.post(
@@ -818,9 +825,12 @@ def test_workflows_pages_render(api_client):
     dashboard = client.get("/?workflow=page-flow")
     assert dashboard.status_code == 200
     assert "Page Flow" in dashboard.text
-    # Connected workflow selectors: page header + both run forms
-    for select_id in ("workflow-select", "run-workflow-select", "test-workflow-select"):
+    assert 'id="workflow-select"' not in dashboard.text
+    for select_id in ("run-workflow-select", "test-workflow-select"):
         assert f'id="{select_id}"' in dashboard.text
+    assert 'id="job-filters"' in dashboard.text
+    assert dashboard.text.count("Active workflow") == 2
+    assert "independently of the active workflow" in dashboard.text
 
     settings_page = client.get("/settings/ai?workflow=page-flow")
     assert settings_page.status_code == 200

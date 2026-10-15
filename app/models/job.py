@@ -24,6 +24,12 @@ class JobStatus(enum.StrEnum):
     FAILED = "failed"
 
 
+class JobQualityRating(enum.StrEnum):
+    GOOD = "good"
+    NEUTRAL = "neutral"
+    BAD = "bad"
+
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -48,6 +54,27 @@ class Job(Base):
 
     workflow: Mapped["Workflow | None"] = relationship(back_populates="jobs")
     steps: Mapped[list["JobStep"]] = relationship(back_populates="job", cascade="all, delete")
+    quality_control: Mapped["JobQualityControl | None"] = relationship(
+        back_populates="job", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class JobQualityControl(Base):
+    __tablename__ = "job_quality_controls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    rating: Mapped[JobQualityRating] = mapped_column(Enum(JobQualityRating))
+    comment_markdown: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    job: Mapped["Job"] = relationship(back_populates="quality_control")
 
 
 class JobStep(Base):
