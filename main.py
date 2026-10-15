@@ -7,7 +7,9 @@ Usage:
     uvicorn app.main:app    # production-style launch
 
 Environment overrides:
-    HOST                     bind host (default 127.0.0.1)
+    HOST                     bind host (default 0.0.0.0 — all interfaces, so the
+                             app is reachable over the LAN; use 127.0.0.1 for
+                             localhost-only)
     PORT                     bind port (default 8000, use 0 for an available port)
     AI_MEDIA_AUTO_MIGRATE    set 0 to skip automatic `alembic upgrade head`
 """
@@ -72,7 +74,7 @@ def main():
 
     config = Config(
         "app.main:app",
-        host=os.environ.get("HOST", "127.0.0.1"),
+        host=os.environ.get("HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", "8000")),
         reload=True,
         log_level=settings.log_level.lower(),
