@@ -2,6 +2,10 @@
 
 {% block title %}Dashboard — AI Media Workflow{% endblock %}
 
+{% block head %}
+<script src="/static/dashboard.js?v=1" defer></script>
+{% endblock %}
+
 {% block content %}
 {% macro workflow_select(select_id, anchor="") %}
 <select id="{{ select_id }}"
@@ -80,6 +84,7 @@
         <div id="job-list"
              hx-get="/partials/jobs"
              hx-trigger="load"
+             hx-include="#job-filters"
              hx-swap="innerHTML"
              class="text-sm text-gray-400">
             <div class="animate-pulse space-y-2">

@@ -829,6 +829,8 @@ def test_workflows_pages_render(api_client):
     for select_id in ("run-workflow-select", "test-workflow-select"):
         assert f'id="{select_id}"' in dashboard.text
     assert 'id="job-filters"' in dashboard.text
+    assert '<script src="/static/dashboard.js?v=1" defer></script>' in dashboard.text
+    assert 'hx-include="#job-filters"' in dashboard.text
     assert dashboard.text.count("Active workflow") == 2
     assert "independently of the active workflow" in dashboard.text
 
