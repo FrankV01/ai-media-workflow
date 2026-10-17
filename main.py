@@ -7,7 +7,9 @@ Usage:
     uvicorn app.main:app    # production-style launch
 
 Environment overrides:
-    HOST                     bind host (default 127.0.0.1)
+    HOST                     bind host (default 0.0.0.0 — all interfaces, so the
+                             app is reachable over the LAN; use 127.0.0.1 for
+                             localhost-only)
     PORT                     bind port (default 8000, use 0 for an available port)
     AI_MEDIA_AUTO_MIGRATE    set 0 to skip automatic `alembic upgrade head`
 """
@@ -22,7 +24,7 @@ from uvicorn.server import Server
 from uvicorn.supervisors import ChangeReload
 
 from app.config import settings
-from app.database import upgrade_database
+from app.database import backup_sqlite_database_once, upgrade_database
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,12 @@ class _StartupAwareReload(ChangeReload):
 
 
 def main():
+    try:
+        backup_sqlite_database_once()
+    except Exception as exc:
+        logger.error("SQLite database backup failed: %s", exc)
+        sys.exit(1)
+
     # Auto-apply pending Alembic migrations by default. Disable with
     # AI_MEDIA_AUTO_MIGRATE=0 if you prefer to run `alembic upgrade head`
     # manually.
@@ -72,7 +80,7 @@ def main():
 
     config = Config(
         "app.main:app",
-        host=os.environ.get("HOST", "127.0.0.1"),
+        host=os.environ.get("HOST", "0.0.0.0"),
         port=int(os.environ.get("PORT", "8000")),
         reload=True,
         log_level=settings.log_level.lower(),

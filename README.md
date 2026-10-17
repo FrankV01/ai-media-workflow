@@ -116,11 +116,18 @@ ComfyUI checkpoint than "Main".
 
 - Create/clone/edit/enable/disable on the `/workflows` page (JSON steps
   editor with a rendered preview); the default workflow can't be disabled.
-- The dashboard workflow selectors (page header, Run Pipeline, Test
-  Pipeline — all connected) scope the pipeline visual, run buttons, and job
-  list; `/settings/ai?workflow=<slug>` edits that workflow's profiles.
-  `media_model_name` on a workflow overrides the env-selected checkpoint
-  for its runs.
+- The dashboard's Run Pipeline and Test Pipeline selectors are connected and
+  choose the active workflow for new runs and the pipeline visual. Recent Jobs
+  is independent: it is paginated across all workflows and can be filtered by
+  workflow, run status, operator QC rating, and shoot name or job ID.
+  `/settings/ai?workflow=<slug>` edits that workflow's profiles and selects its
+  active media profile (checkpoint/model). `media_model_name` is the workflow's
+  persisted active selection; `COMFYUI_CHECKPOINT` now only seeds the default
+  for new workflows.
+- Steps may include per-step config dicts such as
+  `{"block": "media_producer", "config": {"media_model": "..."}}` so a
+  single workflow can contain multiple `media_producer` blocks using
+  different checkpoints.
 - The migration seeds "Main" with the pipeline above and backfills existing
   profiles and jobs to it.
 
@@ -157,6 +164,16 @@ IMAGE_OUTPUT_DIR/
 an absolute path, and can be overridden via the environment.
 `scripts/convert_pngs_to_jpegs.py` writes to `IMAGE_OUTPUT_DIR` when
 `--output-dir` is omitted; an explicit `--output-dir` overrides it.
+
+### Operator quality control
+
+After a job finishes as `completed` or `failed`, its detail page allows an
+operator to assign an informational **Good**, **Neutral**, or **Bad** rating and
+write Markdown notes with a safe live preview. This review is stored separately
+from pipeline context and never affects the Art Critic, routing, generated
+assets, or delivery. Neutral is an explicit rating; Unrated means no review has
+yet been saved. Saved reviews can be edited but not cleared back to Unrated.
+Pending and running jobs reject review updates server-side.
 
 ### Delivery archives and General Settings
 
@@ -401,21 +418,24 @@ each prompt variant produces three files.
   `app/services/generation/`. ComfyUI for production, placeholder for testing.
   Images are grouped under `IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/`,
   where the date is the job's UTC creation date.
-- **Persistence** — SQLite via SQLAlchemy async. Jobs, steps, input/output
-  snapshots, generated asset paths, and delivery archive audit
-  (`DeliveryArchive`/`DeliveryArchiveEntry`: attempt status, checksums, file
-  inventory, Markdown snapshots) are all stored.
+- **Persistence** — SQLite via SQLAlchemy async. SQLite is the only database
+  currently supported and covered by the migration test suite. Jobs, steps, input/output
+  snapshots, generated asset paths, operator QC reviews, and delivery archive
+  audit (`DeliveryArchive`/`DeliveryArchiveEntry`: attempt status, checksums,
+  file inventory, Markdown snapshots) are all stored.
 - **Web UI** — Jinja2 + HTMX, Tailwind CDN. No JS build step. Dashboard at
-  `/`, job detail at `/jobs/{id}` (including the Delivery archives box with
-  download and eligible Retry archive actions), workflow management at
+  `/` with independent job filters and active-workflow run selectors; job
+  detail at `/jobs/{id}` includes operator QC plus the Delivery archives box
+  with download and eligible Retry archive actions; workflow management at
   `/workflows`, AI configuration at `/settings/ai` (per-workflow), global
   delivery settings at `/settings/general`, run buttons for the real and
   placeholder backends.
 - **Config** — split between env and DB. Environment (`.env` via
   pydantic-settings, see `.env.example`) owns secrets, URLs, timeouts, poll
-  intervals, filesystem paths, and *selects which profile is active*
-  (`LLM_MODEL`, `GENERATION_BACKEND`, `COMFYUI_CHECKPOINT` — a workflow may
-  override the checkpoint via `media_model_name`). Behavior
+  intervals, filesystem paths, and *selects the default backend/model*
+  (`LLM_MODEL`, `GENERATION_BACKEND`, `COMFYUI_CHECKPOINT`). The active
+  media profile is selected per workflow in the database (`media_model_name`
+  plus per-step `config.media_model` block overrides). Behavior
   profiles — role system prompts/temperature/max_tokens/thinking per
   `(workflow, role, model_name)`, and media request/workflow defaults per
   `(workflow, block, backend, model)` — plus generic per-`(workflow, block)`
@@ -453,6 +473,34 @@ each prompt variant produces three files.
   `GET /api/configurations/llm/{role}/history?model_name=…` — each event
   names its action and origin. Audit history begins with migration
   `c6e1f0a4b8d3`; resets made before it cannot be attributed retroactively.
+- **ComfyUI generation timed out**: `COMFYUI_TIMEOUT` is an env-only limit
+  applied separately to each generation request. One built-in request is one
+  ComfyUI prompt graph containing the base generation, refiner pass, 1x save,
+  and both 2x and 4x upscales. Queue wait and execution of that entire graph
+  share the same timeout; each main/variant request receives a fresh timeout
+  and prompt ID and runs sequentially. Restart the application after changing
+  the value. Inspect the reported prompt ID in ComfyUI history and logs to
+  determine whether it was queued, executing a particular node, or failed.
+  Run 210 exposed this limitation when prompt
+  `53d5fb49-7d15-426f-ba3b-9fd6b6483e48` did not appear as completed within
+  the former 3600-second limit. The local deployment now uses 14400 seconds.
+
+#### ComfyUI timeout reliability tasks
+
+- [ ] Detect and report ComfyUI execution errors immediately instead of
+  waiting until the polling deadline.
+- [ ] Capture queue state, execution status, and last-known node while polling
+  so timeout messages identify where the prompt stalled.
+- [ ] Persist the ComfyUI prompt ID as soon as submission succeeds so an
+  interrupted or timed-out request can be diagnosed and recovered reliably.
+- [ ] Recover already-produced images from ComfyUI history after a timeout
+  rather than discarding usable outputs.
+- [ ] Add a media-request-only retry/resume operation that does not rerun the
+  preceding LLM blocks or duplicate completed variants.
+- [ ] Add tests for queued prompts, execution failures, partial outputs,
+  multiple sequential variants, and timeout recovery.
+- [ ] Evaluate an inactivity timeout based on observed progress in addition to
+  the absolute safety deadline.
 
 ## REST API
 
@@ -460,13 +508,13 @@ each prompt variant produces three files.
 |---|---|---|
 | `GET` | `/api/blocks/` | List registered blocks with metadata |
 | `GET` | `/api/blocks/{name}` | Single block detail |
-| `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, optional `workflow` (slug), `block_names`, `context`. Step precedence: explicit `block_names` > the workflow's stored steps > the default workflow's. Set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI |
-| `GET` | `/api/workflows/jobs` | Recent jobs (`?workflow=<slug>` filters) |
-| `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings, and delivery archive attempt metadata |
+| `POST` | `/api/workflows/run` | Queue a run (`202`); body: `photo_shoot_name`, optional `workflow` (slug), `block_names`, `context`. Step precedence: explicit `block_names` > the workflow's stored steps > the default workflow's. `block_names` entries may be block names, routing dicts, or `{"block": "media_producer", "config": {"media_model": "..."}}`. Set `context._generation_backend` to `"placeholder"` for a test run without ComfyUI |
+| `GET` | `/api/workflows/jobs` | Recent jobs with QC metadata (`?workflow=<slug>` filters; `limit` defaults to 20 and must be 1–100) |
+| `GET` | `/api/workflows/jobs/{id}` | Job with per-step status, I/O snapshots, timing, warnings, operator QC metadata, and delivery archive attempt metadata |
 | `GET` | `/api/workflow-definitions/` | List workflow definitions |
-| `POST` | `/api/workflow-definitions/` | Create a workflow (`name`, `description`, `steps`, `media_model_name`) |
+| `POST` | `/api/workflow-definitions/` | Create a workflow (`name`, `description`, `steps`). `media_model_name` defaults to `COMFYUI_CHECKPOINT` for the configured backend. |
 | `GET` | `/api/workflow-definitions/{slug}` | Workflow detail (steps decoded) |
-| `PUT` | `/api/workflow-definitions/{slug}` | Update name/description/steps/media_model_name |
+| `PUT` | `/api/workflow-definitions/{slug}` | Update name/description/steps. Active media profile is set via `/settings/ai` or `/api/configurations/media/active`. |
 | `POST` | `/api/workflow-definitions/{slug}/clone` | Clone (`name` in body) — copies steps + all scoped AI profiles |
 | `POST` | `/api/workflow-definitions/{slug}/enable` | Re-enable a disabled workflow |
 | `POST` | `/api/workflow-definitions/{slug}/disable` | Disable (409 for the default workflow) |
@@ -578,9 +626,8 @@ app/
   api/               → REST endpoints (/api/blocks, /api/workflows, /api/workflow-definitions, /api/configurations, /api/convert, /api/remove-background)
   web/               → routes.py (pages + HTMX partials), templates/, static/
 tests/               → pytest suite
-data/                → SQLite DB (gitignored) + local backups (keep out of
-                       Git — backup filenames aren't universally covered by
-                       the current ignore rules); generated images and
+data/                → SQLite DB + adjacent automatic snapshots (both gitignored);
+                       generated images and
                        delivery ZIPs live under IMAGE_OUTPUT_DIR
 ```
 
@@ -624,8 +671,24 @@ the `storefronts.fourthwall` settings JSON, and `i6d9b3e7f4c1` creates
 top-level listing or already hosting the uploader), and scrubs the retired
 `file_size_limit_mb` key — same backup + exact-match downgrade restore.
 
-Back up the SQLite file before applying migrations with a consistent snapshot
-(the `sqlite3.Connection.backup` API), not a raw copy of a live database —
-startup does not create backups automatically.
+Startup automatically creates a consistent SQLite snapshot before migrations or
+schema validation by using the `sqlite3.Connection.backup` API rather than copying
+a live database file. For `data/app.db`, snapshots are adjacent files named like
+`data/app.backup-20261003T024959Z.db`. Missing and in-memory databases are skipped,
+and non-SQLite `DATABASE_URL` values do not trigger filesystem backup work. Startup
+fails before migration if an existing SQLite database cannot be snapshotted.
+
+Automatic snapshots are pruned by both `SQLITE_BACKUP_RETENTION_DAYS` and
+`SQLITE_BACKUP_RETENTION_COUNT` (both default to 90); pruning only matches this exact
+automatic filename pattern and happens after a new snapshot succeeds. Adjacent
+snapshots provide a local migration recovery point, but they share the source disk
+and do not replace an off-device backup policy.
+
+Although the models and most application queries use portable SQLAlchemy APIs,
+PostgreSQL and MySQL are not currently supported configurations. The project only
+installs the SQLite async driver, and the complete Alembic history is SQLite-oriented
+and tested only on SQLite. Moving to either server database requires choosing and
+installing its async driver, exercising and correcting the full migration chain on
+that dialect, and adding integration coverage before production use.
 
 For detailed AI-agent coding guidelines, see [`agents.md`](agents.md).

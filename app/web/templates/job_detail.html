@@ -103,6 +103,10 @@
     </div>
     {% endif %}
 
+    <div hx-get="/partials/jobs/{{ job.id }}/images"
+         hx-trigger="load"
+         hx-swap="outerHTML"></div>
+
     {% if job.archive_error %}
     <div class="mt-4 p-3 rounded bg-red-900/30 border border-red-800/50">
         <p class="text-sm text-red-300 font-medium">Archive retry unavailable</p>
@@ -257,6 +261,64 @@
         {% endif %}
     </div>
 </div>
+
+<section class="bg-gray-900 rounded-lg p-6 border border-gray-800 mb-6">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <h2 class="text-lg font-semibold">Quality Control</h2>
+            <p class="text-xs text-gray-500 mt-1">Operator review only; this does not affect the Art Critic or pipeline.</p>
+        </div>
+        {% if job.quality_control %}
+        <span class="text-xs text-gray-500">Updated {{ job.quality_control.updated_at }}</span>
+        {% endif %}
+    </div>
+    {% if job.quality_saved %}
+    <p class="mb-3 text-sm text-emerald-300">Quality control saved.</p>
+    {% endif %}
+    {% if job.quality_error %}
+    <p class="mb-3 text-sm text-red-300">{{ job.quality_error }}</p>
+    {% endif %}
+    {% if not job.quality_editable %}
+    <p class="mb-3 text-sm text-amber-300">Quality control can be edited after the job has finished.</p>
+    {% endif %}
+    <form method="post" action="/jobs/{{ job.id }}/quality-control" class="space-y-4">
+        <fieldset {% if not job.quality_editable %}disabled{% endif %}>
+            <legend class="text-xs text-gray-500 mb-2">Rating</legend>
+            <div class="grid grid-cols-3 gap-3">
+                {% for value, label, colors in [
+                    ('good', 'Good', 'peer-checked:border-emerald-500 peer-checked:bg-emerald-900/40 peer-checked:text-emerald-300'),
+                    ('neutral', 'Neutral', 'peer-checked:border-amber-500 peer-checked:bg-amber-900/40 peer-checked:text-amber-300'),
+                    ('bad', 'Bad', 'peer-checked:border-red-500 peer-checked:bg-red-900/40 peer-checked:text-red-300')
+                ] %}
+                <label class="cursor-pointer">
+                    <input class="peer sr-only" type="radio" name="rating" value="{{ value }}" required
+                           {% if job.quality_control and job.quality_control.rating == value %}checked{% endif %}>
+                    <span class="block rounded border border-gray-700 bg-gray-800 px-3 py-2 text-center text-sm text-gray-300 peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-400 {{ colors }}">{{ label }}</span>
+                </label>
+                {% endfor %}
+            </div>
+            <label for="quality-comment" class="block text-xs text-gray-500 mt-4 mb-1">Comment (Markdown)</label>
+            <textarea id="quality-comment" name="comment_markdown" rows="6" maxlength="20000"
+                      hx-post="/partials/jobs/quality-control/preview"
+                      hx-trigger="input changed delay:400ms"
+                      hx-target="#quality-preview"
+                      hx-swap="innerHTML"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 resize-y"
+                      placeholder="Add review notes…">{{ job.quality_control.comment_markdown if job.quality_control else '' }}</textarea>
+            <p class="text-[11px] text-gray-600 mt-1">20,000 character maximum.</p>
+        </fieldset>
+        <div>
+            <p class="text-xs text-gray-500 mb-1">Preview</p>
+            <div id="quality-preview" class="markdown-preview min-h-16 rounded border border-gray-700 bg-gray-800/60 p-3 text-sm text-gray-300">
+                {% if job.quality_control %}{{ job.quality_control.comment_html }}{% else %}<p class="text-gray-600 italic">Nothing to preview.</p>{% endif %}
+            </div>
+        </div>
+        <button type="submit" {% if not job.quality_editable %}disabled{% endif %}
+                class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-1.5 rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed">
+            Save quality control
+        </button>
+    </form>
+</section>
 
 <!-- Steps -->
 <h2 class="text-lg font-semibold mb-4">Steps</h2>

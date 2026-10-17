@@ -2,10 +2,10 @@
 app.web.routes — HTML routes served via Jinja2 + HTMX
 
 Full pages:
-- /              — Dashboard (blocks, jobs, pipeline visual, quick run —
-                   all scoped to the selected workflow)
-- /jobs/<id>     — Job detail: step-by-step input/output + the effective
-                   LLM execution audit (prompt snapshot, model, parameters)
+- /              — Dashboard (blocks, independently filtered jobs, pipeline
+                   visual, and workflow-scoped run forms)
+- /jobs/<id>     — Job detail: operator quality control, step-by-step I/O, and
+                   the effective LLM execution audit
 - /convert       — tabbed converter tools: PNG→JPEG drop-zone and
                    Markdown ⇄ HTML text conversion (post to /api/convert)
 - /remove-background — solid-background cutout tool (posts to
@@ -32,11 +32,13 @@ Form POSTs (redirect with a status query):
 - /jobs/<id>/archives/retry                        — archive-only retry
 - /jobs/<id>/listings/retry                        — listing-only retry
 - /jobs/<id>/uploads/retry                         — R2-upload-only retry
+- /jobs/<id>/quality-control                       — save operator QC metadata
 - /workflows/create, /workflows/<id>/{save,clone,enable,disable,set-default}
 
 HTMX partials (return HTML fragments, not full pages):
 - /partials/blocks              — styled block list
-- /partials/jobs                — styled recent jobs list (?workflow= filter)
+- /partials/jobs                — filtered, paginated recent jobs list
+- /partials/jobs/quality-control/preview — safe Markdown QC preview
 - /partials/jobs/<id>/preview   — hover preview popover for a job
 - /partials/workflow            — pipeline visual for ?workflow=<slug>
 - /partials/run-pipeline        — queue a pipeline run (background)
@@ -54,11 +56,14 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
+from PIL import Image
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -130,6 +135,13 @@ from app.services.general_settings import (
     save_signature_file,
     signature_path,
 )
+from app.services.job_quality_control import (
+    JobNotReviewableError,
+    JobQualityControlError,
+    render_quality_comment,
+    save_job_quality_control,
+)
+from app.services.jobs import JobFilterError, list_job_page
 from app.services.open_folder import (
     OpenerUnavailableError,
     job_output_dir,
@@ -231,6 +243,70 @@ def _preview(text: str, max_len: int = 120) -> str:
     return text[:max_len].rstrip() + "…"
 
 
+def _job_image_groups(job: Job) -> list[tuple[str, list[Path]]]:
+    groups: list[tuple[str, list[Path]]] = []
+    for step in sorted(job.steps, key=lambda item: item.order):
+        if step.block_name != "media_producer" or not step.output:
+            continue
+        try:
+            output = json.loads(step.output)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        metadata = output.get("generation_metadata")
+        if not isinstance(metadata, list):
+            continue
+        for index, entry in enumerate(metadata, start=1):
+            if not isinstance(entry, dict) or not isinstance(entry.get("image_paths"), list):
+                continue
+            paths = [Path(path) for path in entry["image_paths"] if isinstance(path, str)]
+            if paths:
+                groups.append((str(entry.get("variant") or f"Variant {index}"), paths))
+    if groups or not job.generated_assets:
+        return groups
+    try:
+        assets = json.loads(job.generated_assets)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    paths = (
+        [Path(path) for path in assets if isinstance(path, str)]
+        if isinstance(assets, list)
+        else []
+    )
+    return [("Generated image", paths)] if paths else []
+
+
+def _job_images(job: Job) -> list[dict[str, str | int]]:
+    output_root = Path(settings.image_output_dir).resolve()
+    images: list[dict[str, str | int]] = []
+    for label, paths in _job_image_groups(job):
+        candidates: list[tuple[int, Path]] = []
+        for path in paths:
+            try:
+                resolved = path.resolve(strict=True)
+                if not resolved.is_file() or not resolved.is_relative_to(output_root):
+                    continue
+                with Image.open(resolved) as image:
+                    candidates.append((image.width * image.height, resolved))
+            except (FileNotFoundError, OSError):
+                continue
+        if candidates:
+            path = min(candidates, key=lambda candidate: candidate[0])[1]
+            images.append(
+                {"index": len(images), "label": label, "name": path.name, "path": str(path)}
+            )
+    return images
+
+
+async def _job_with_steps(session: AsyncSession, job_id: int) -> Job:
+    result = await session.execute(
+        select(Job).where(Job.id == job_id).options(selectinload(Job.steps))
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return job
+
+
 # ── Full pages ───────────────────────────────────────────────────────────
 
 
@@ -238,8 +314,8 @@ def _preview(text: str, max_len: int = 120) -> str:
 async def dashboard(request: Request, session: AsyncSession = Depends(get_session)):
     """Render the main dashboard page.
 
-    ?workflow=<slug> selects which workflow the pipeline visual, run forms,
-    and job list are scoped to; omitted → the default workflow.
+    ?workflow=<slug> selects the active workflow for the pipeline visual and
+    run forms; Recent Jobs has independent filters. Omitted → the default workflow.
     """
     workflows = await list_workflows(session)
     if not workflows:
@@ -274,7 +350,11 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
     result = await session.execute(
         select(Job)
         .where(Job.id == job_id)
-        .options(selectinload(Job.steps), selectinload(Job.workflow))
+        .options(
+            selectinload(Job.steps),
+            selectinload(Job.workflow),
+            selectinload(Job.quality_control),
+        )
     )
     job_raw = result.scalar_one_or_none()
     if not job_raw:
@@ -320,9 +400,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
             "name": listing.name,
             "price_usd": listing.price_usd,
             "created_at": (
-                listing.created_at.strftime("%b %d, %Y %H:%M:%S")
-                if listing.created_at
-                else "—"
+                listing.created_at.strftime("%b %d, %Y %H:%M:%S") if listing.created_at else "—"
             ),
             "error": listing.error,
         }
@@ -340,9 +418,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
             "object_key": upload.object_key,
             "object_url": upload.object_url,
             "created_at": (
-                upload.created_at.strftime("%b %d, %Y %H:%M:%S")
-                if upload.created_at
-                else "—"
+                upload.created_at.strftime("%b %d, %Y %H:%M:%S") if upload.created_at else "—"
             ),
             "error": upload.error,
         }
@@ -377,6 +453,23 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         "uploads": uploads,
         "upload_retryable": await upload_retryable(session, job_raw.id),
         "upload_error": request.query_params.get("upload_error"),
+        "quality_control": (
+            {
+                "rating": job_raw.quality_control.rating.value,
+                "comment_markdown": job_raw.quality_control.comment_markdown,
+                "comment_html": Markup(
+                    render_quality_comment(job_raw.quality_control.comment_markdown)
+                ),
+                "updated_at": job_raw.quality_control.updated_at.strftime(
+                    "%b %d, %Y %H:%M:%S"
+                ),
+            }
+            if job_raw.quality_control
+            else None
+        ),
+        "quality_editable": job_raw.status.value in {"completed", "failed"},
+        "quality_saved": request.query_params.get("quality_saved") == "1",
+        "quality_error": request.query_params.get("quality_error"),
         "folder_path": str(job_output_dir(job_raw)),
         "steps": [
             {
@@ -414,6 +507,41 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         ],
     }
     return templates.TemplateResponse(request, "job_detail.html", {"job": job})
+
+
+@router.post("/jobs/{job_id}/quality-control")
+async def save_job_quality_control_form(
+    job_id: int,
+    rating: str = Form(...),
+    comment_markdown: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        await save_job_quality_control(session, job_id, rating, comment_markdown)
+        await session.commit()
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except JobNotReviewableError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except JobQualityControlError as exc:
+        query = urlencode({"quality_error": str(exc)})
+        return RedirectResponse(f"/jobs/{job_id}?{query}", status_code=303)
+    return RedirectResponse(f"/jobs/{job_id}?quality_saved=1", status_code=303)
+
+
+@router.post("/partials/jobs/quality-control/preview")
+async def quality_control_preview(request: Request, comment_markdown: str = Form("")):
+    try:
+        comment_html = Markup(render_quality_comment(comment_markdown))
+        error = None
+    except JobQualityControlError as exc:
+        comment_html = None
+        error = str(exc)
+    return templates.TemplateResponse(
+        request,
+        "partials/quality_control_preview.html",
+        {"comment_html": comment_html, "error": error},
+    )
 
 
 # ── AI settings page ─────────────────────────────────────────────────────
@@ -476,10 +604,16 @@ async def ai_settings_page(
             "uses_code_defaults": config.uses_code_defaults,
             "is_active": config.backend_name == backend_name and config.model_name == media_model,
             "is_test_active": config.backend_name == "placeholder"
-            and config.model_name == (wf.media_model_name or PLACEHOLDER_MODEL_NAME),
+            and config.model_name == PLACEHOLDER_MODEL_NAME,
             "settings_dict": MediaProfileSettings.from_json(config.settings_json),
         }
         for config in media_rows
+    ]
+
+    active_profile_options = [
+        {"backend_name": config.backend_name, "model_name": config.model_name}
+        for config in media_rows
+        if config.backend_name == backend_name
     ]
 
     block_profiles = [
@@ -549,6 +683,7 @@ async def ai_settings_page(
             "media_model": media_model,
             "roles": roles,
             "media_profiles": media_profiles,
+            "active_profile_options": active_profile_options,
             "media_code_defaults": code_media_defaults(
                 "media_producer", backend_name, media_model
             ).settings,
@@ -736,6 +871,22 @@ async def ai_settings_reset_media(
     return _settings_redirect("reset", "media", "media_producer", body.model_name, wf.slug)
 
 
+@router.post("/settings/ai/media/activate")
+async def ai_settings_activate_media(
+    model_name: str = Form(...),
+    workflow: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Set a media profile as the active model for this workflow."""
+    wf = await _scope_from_form(session, workflow)
+    cleaned = model_name.strip()
+    if not cleaned:
+        raise HTTPException(422, "model_name must be non-blank")
+    wf.media_model_name = cleaned
+    await session.commit()
+    return _settings_redirect("activated", "media", "media_producer", cleaned, wf.slug)
+
+
 @router.post("/settings/ai/block/save")
 async def ai_settings_save_block(
     request: Request,
@@ -827,10 +978,13 @@ async def workflows_create(
     name: str = Form(""),
     description: str = Form(""),
     steps: str = Form(""),
-    media_model_name: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
-    """Create a workflow from the management-page form (steps as JSON text)."""
+    """Create a workflow from the management-page form (steps as JSON text).
+
+    The active media model is selected on /settings/ai; new workflows default
+    to the env-selected checkpoint via create_workflow().
+    """
     try:
         parsed_steps: list | None = None
         if steps.strip():
@@ -843,7 +997,6 @@ async def workflows_create(
             name=name,
             description=description,
             steps=parsed_steps,
-            media_model_name=media_model_name or None,
         )
         await session.commit()
     except (json.JSONDecodeError, ValueError) as exc:
@@ -882,10 +1035,13 @@ async def workflow_save(
     name: str = Form(""),
     description: str = Form(""),
     steps: str = Form(""),
-    media_model_name: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
-    """Save a workflow edit; invalid JSON/steps re-render the edit page."""
+    """Save a workflow edit; invalid JSON/steps re-render the edit page.
+
+    The active media model is managed on /settings/ai, not here, so it is
+    left unchanged by this handler.
+    """
     try:
         parsed = json.loads(steps) if steps.strip() else []
         if not isinstance(parsed, list):
@@ -896,7 +1052,6 @@ async def workflow_save(
             name=name,
             description=description,
             steps=parsed,
-            media_model_name=media_model_name or None,
         )
         await session.commit()
     except (json.JSONDecodeError, ValueError) as exc:
@@ -990,6 +1145,30 @@ def _build_workflow_nodes(workflow: list[str | dict]) -> list[dict]:
                     "category": category,
                 }
             )
+        elif isinstance(item, dict) and "block" in item:
+            # Block-config node (per-step settings override)
+            name = item["block"]
+            try:
+                block_cls = get_block(name)
+                desc = block_cls.meta.description
+                category = block_cls.meta.category
+            except KeyError:
+                desc = ""
+                category = "utility"
+            config = item.get("config", {})
+            label_extra = ""
+            if config.get("media_model"):
+                label_extra = f" ({config['media_model']})"
+            nodes.append(
+                {
+                    "type": "block_config",
+                    "name": name,
+                    "title": _BLOCK_TITLES.get(name, name.replace("_", " ").title()) + label_extra,
+                    "description": desc,
+                    "category": category,
+                    "config": config,
+                }
+            )
         elif isinstance(item, dict):
             # Routing node
             on_good = [_BLOCK_TITLES.get(b, b) for b in item.get("on_good", [])]
@@ -1034,32 +1213,47 @@ async def partial_blocks(request: Request):
 async def partial_jobs(
     request: Request,
     workflow: str | None = None,
+    status: str | None = None,
+    quality: str | None = None,
+    q: str | None = None,
+    page: int = Query(1, ge=1),
     session: AsyncSession = Depends(get_session),
 ):
-    """Return styled HTML fragment listing recent jobs (?workflow= filters)."""
-    stmt = (
-        select(Job)
-        .options(selectinload(Job.steps), selectinload(Job.workflow))
-        .order_by(Job.created_at.desc())
-        .limit(20)
-    )
-    if workflow:
-        stmt = stmt.join(Workflow, Job.workflow_id == Workflow.id).where(Workflow.slug == workflow)
-    result = await session.execute(stmt)
-    jobs_raw = result.scalars().all()
+    try:
+        result_page = await list_job_page(
+            session,
+            workflow=workflow,
+            status=status,
+            quality=quality,
+            query=q,
+            page=page,
+        )
+    except JobFilterError as exc:
+        raise HTTPException(400, str(exc)) from exc
     jobs = [
         {
             "id": j.id,
             "workflow_name": j.workflow_name,
             "workflow": j.workflow.name if j.workflow else "",
             "status": j.status.value,
+            "quality": j.quality_control.rating.value if j.quality_control else None,
             "created_at": j.created_at.strftime("%b %d, %H:%M") if j.created_at else None,
             "duration": _fmt_duration(j.created_at, j.finished_at),
             "steps": list(j.steps),
         }
-        for j in jobs_raw
+        for j in result_page.jobs
     ]
-    return templates.TemplateResponse(request, "partials/job_list.html", {"jobs": jobs})
+    return templates.TemplateResponse(
+        request,
+        "partials/job_list.html",
+        {
+            "jobs": jobs,
+            "page": result_page.page,
+            "pages": result_page.pages,
+            "total": result_page.total,
+            "has_active_filters": bool(workflow or status or quality or (q and q.strip())),
+        },
+    )
 
 
 @router.get("/partials/jobs/{job_id}/preview")
@@ -1070,7 +1264,11 @@ async def partial_job_preview(
     result = await session.execute(
         select(Job)
         .where(Job.id == job_id)
-        .options(selectinload(Job.steps), selectinload(Job.workflow))
+        .options(
+            selectinload(Job.steps),
+            selectinload(Job.workflow),
+            selectinload(Job.quality_control),
+        )
     )
     job_raw = result.scalar_one_or_none()
     if not job_raw:
@@ -1099,6 +1297,43 @@ async def partial_job_preview(
         ],
     }
     return templates.TemplateResponse(request, "partials/job_preview.html", {"job": job})
+
+
+@router.get("/partials/jobs/{job_id}/images")
+async def partial_job_images(
+    request: Request, job_id: int, session: AsyncSession = Depends(get_session)
+):
+    job = await _job_with_steps(session, job_id)
+    return templates.TemplateResponse(
+        request,
+        "partials/job_images.html",
+        {
+            "job_id": job.id,
+            "job_status": job.status.value,
+            "images": _job_images(job),
+        },
+    )
+
+
+@router.get("/jobs/{job_id}/images/{image_index}")
+async def job_image(
+    job_id: int, image_index: int, session: AsyncSession = Depends(get_session)
+):
+    job = await _job_with_steps(session, job_id)
+    images = _job_images(job)
+    if image_index < 0 or image_index >= len(images):
+        raise HTTPException(status_code=404, detail="Job image not found")
+    path = Path(str(images[image_index]["path"]))
+    media_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    media_type = media_types.get(path.suffix.lower())
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="Job image not found")
+    return FileResponse(path, media_type=media_type)
 
 
 @router.post("/partials/jobs/{job_id}/open-folder", response_class=HTMLResponse)

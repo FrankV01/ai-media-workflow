@@ -2,8 +2,8 @@
 app.api.workflows — Workflow execution endpoints
 
 POST /api/workflows/run       — queue a pipeline run, returns job_id immediately
-GET  /api/workflows/jobs      — list recent jobs (optional ?workflow=<slug> filter)
-GET  /api/workflows/jobs/{id} — job detail with per-step status, I/O, and timing
+GET  /api/workflows/jobs      — list recent jobs and QC metadata (optional workflow filter)
+GET  /api/workflows/jobs/{id} — job detail with QC, per-step status, I/O, and timing
 
 Every run executes inside a workflow "container": `workflow` (a slug) picks
 the persisted definition and the scope for all AI configuration profiles;
@@ -14,7 +14,7 @@ the default workflow's steps and configuration scope apply.
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
@@ -121,13 +121,16 @@ async def run_workflow(req: RunRequest, session: AsyncSession = Depends(get_sess
 
 @router.get("/jobs")
 async def list_jobs(
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=100),
     workflow: str | None = None,
     session: AsyncSession = Depends(get_session),
 ):
-    """Return recent jobs, newest first; `workflow` filters by slug."""
+    """Return 1–100 recent jobs with QC metadata; `workflow` filters by slug."""
     stmt = (
-        select(Job).options(selectinload(Job.workflow)).order_by(Job.created_at.desc()).limit(limit)
+        select(Job)
+        .options(selectinload(Job.workflow), selectinload(Job.quality_control))
+        .order_by(Job.created_at.desc())
+        .limit(limit)
     )
     if workflow is not None:
         stmt = stmt.join(Workflow, Job.workflow_id == Workflow.id).where(Workflow.slug == workflow)
@@ -144,6 +147,15 @@ async def list_jobs(
             "finished_at": j.finished_at.isoformat() if j.finished_at else None,
             "error": j.error,
             "warnings": json.loads(j.warnings) if j.warnings else [],
+            "quality_control": (
+                {
+                    "rating": j.quality_control.rating.value,
+                    "comment_markdown": j.quality_control.comment_markdown,
+                    "updated_at": j.quality_control.updated_at.isoformat(),
+                }
+                if j.quality_control
+                else None
+            ),
         }
         for j in jobs
     ]
@@ -155,7 +167,11 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
     result = await session.execute(
         select(Job)
         .where(Job.id == job_id)
-        .options(selectinload(Job.steps), selectinload(Job.workflow))
+        .options(
+            selectinload(Job.steps),
+            selectinload(Job.workflow),
+            selectinload(Job.quality_control),
+        )
     )
     job = result.scalar_one_or_none()
     if not job:
@@ -191,6 +207,15 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "error": job.error,
         "warnings": json.loads(job.warnings) if job.warnings else [],
+        "quality_control": (
+            {
+                "rating": job.quality_control.rating.value,
+                "comment_markdown": job.quality_control.comment_markdown,
+                "updated_at": job.quality_control.updated_at.isoformat(),
+            }
+            if job.quality_control
+            else None
+        ),
         "generated_assets": job.generated_assets,
         "report_files": json.loads(job.report_files) if job.report_files else [],
         "archives": archives,

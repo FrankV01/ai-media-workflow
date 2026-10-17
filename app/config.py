@@ -9,7 +9,7 @@ import tomllib
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     debug: bool = True
     log_level: str = "INFO"
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
+    sqlite_backup_retention_days: int = Field(default=90, ge=1)
+    sqlite_backup_retention_count: int = Field(default=90, ge=1)
 
     # LLM settings (defaults target LM Studio local server).
     # llm_model selects the ACTIVE (role, model) profile; temperature /
@@ -53,11 +55,16 @@ class Settings(BaseSettings):
     llm_enable_thinking: bool = False
     llm_timeout: float = 1800.0  # max wait per LLM request (30 min)
 
-    # Image generation settings. generation_backend + comfyui_checkpoint
-    # select the ACTIVE (block, backend, model) media profile; the remaining
-    # model/refiner fields only seed MISSING profile rows —
-    # MediaModelConfiguration owns existing request/workflow defaults.
-    # URLs/polls/timeouts stay env-only.
+    # Social Media Specialist vision input: downscaled variant images are
+    # attached to its LLM call (requires a vision-capable profile model).
+    social_media_max_images: int = 4  # cap on images attached per call
+    social_media_image_max_edge: int = 1024  # longest edge sent to the VLM
+
+    # Image generation settings. generation_backend selects the backend;
+    # comfyui_checkpoint seeds the DEFAULT MediaModelConfiguration profile for
+    # new workflows. Runtime model selection is DB-owned (workflow.media_model_name
+    # and per-step config overrides). The remaining model/refiner fields only
+    # seed MISSING profile rows. URLs/polls/timeouts stay env-only.
     generation_backend: str = "comfyui"  # 'comfyui' or 'placeholder'
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_poll_interval: float = 2.0  # seconds between status polls

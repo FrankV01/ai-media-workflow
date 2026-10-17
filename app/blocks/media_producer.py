@@ -97,7 +97,12 @@ def code_media_defaults(block_name: str, backend_name: str, model_name: str) -> 
 
 
 def selected_media_model(backend_name: str) -> str:
-    """The model name a backend run is keyed on (base checkpoint for ComfyUI)."""
+    """The env-selected default model name for a backend.
+
+    This is now a seed/default value. Runtime selection should come from the
+    workflow's active media profile (workflow.media_model_name) or a per-step
+    config override. Keeping this fallback avoids breaking pre-migration runs.
+    """
     if backend_name.lower() == "comfyui":
         return settings.comfyui_checkpoint
     if backend_name.lower() == "placeholder":
@@ -173,9 +178,7 @@ def _build_requests(
             sampler=main.sampler,
             scheduler=main.scheduler,
             clip_skip=main.clip_skip,
-            variant_name=safe_filename_part(
-                variant.get("name", f"variant_{len(requests)}")
-            ),
+            variant_name=safe_filename_part(variant.get("name", f"variant_{len(requests)}")),
             extras=dict(extras),
         )
         requests.append(vr)
@@ -219,11 +222,23 @@ class MediaProducer(Block):
         return (context.get("_generation_backend") or settings.generation_backend).lower()
 
     async def resolve_configuration(self, context: dict[str, Any]) -> ResolvedMediaConfiguration:
-        """Resolve the (workflow, media_producer, backend, model) profile + warning."""
+        """Resolve the (workflow, media_producer, backend, model) profile + warning.
+
+        Selection precedence:
+        1. Per-step config (Phase 2 block-config dict): _step_config["media_model"]
+        2. Workflow active media profile: _workflow_media_model
+        3. Env-selected default (deprecated fallback): COMFYUI_CHECKPOINT / placeholder
+        """
         backend_name = self._backend_name(context)
-        # A workflow may pin a different media model (e.g. an illustration
-        # checkpoint); otherwise the env-selected model for the backend applies
-        model_name = context.get("_workflow_media_model") or selected_media_model(backend_name)
+        # Per-step override wins, then the workflow's active profile. The env
+        # default is a last-resort fallback now that every workflow should have
+        # an explicit media_model_name selection.
+        step_config = context.get("_step_config") or {}
+        model_name = (
+            step_config.get("media_model")
+            or context.get("_workflow_media_model")
+            or selected_media_model(backend_name)
+        )
         resolved = await self._provider().resolve_media(
             code_media_defaults(self.meta.name, backend_name, model_name),
             workflow_id=context.get("_workflow_id"),

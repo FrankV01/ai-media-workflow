@@ -55,6 +55,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.blocks.registry import get_block
+from app.config import settings
 from app.database import async_session
 from app.models.creative import CreativeRole, Message, MessageRole, RoleExecution
 from app.models.job import Job, JobStatus, JobStep
@@ -79,15 +80,18 @@ VERDICT_BAD = "bad"
 UNTITLED_SHOOT = "Untitled shoot"
 
 
-def _resolve_steps(steps: list[str | dict], verdict: str | None) -> list[str]:
-    """Flatten a mixed step list into an ordered list of block names.
+def _resolve_steps(steps: list[str | dict], verdict: str | None) -> list[str | dict]:
+    """Flatten a routing dict into block names/configs.
 
-    When a routing dict is encountered, the appropriate branch is selected
-    based on the current verdict. The "always" branch runs regardless.
+    Strings and block-config dicts pass through unchanged. The appropriate
+    branch is selected based on the current verdict; the "always" branch runs
+    regardless.
     """
-    resolved: list[str] = []
+    resolved: list[str | dict] = []
     for item in steps:
         if isinstance(item, str):
+            resolved.append(item)
+        elif isinstance(item, dict) and "block" in item:
             resolved.append(item)
         elif isinstance(item, dict):
             # Routing dict — pick branch based on verdict
@@ -273,8 +277,27 @@ async def run_pipeline(
 
         context["_workflow_id"] = workflow.id
         context["_workflow_slug"] = workflow.slug
-        if workflow.media_model_name:
-            context["_workflow_media_model"] = workflow.media_model_name
+        effective_backend = context.get("_generation_backend") or settings.generation_backend
+        if (
+            workflow.media_model_name
+            and effective_backend.lower() == settings.generation_backend.lower()
+        ):
+            active_media_model = workflow.media_model_name
+        else:
+            # Backend override (e.g. test run) or no workflow selection yet: use
+            # the default model for the effective backend.
+            from app.blocks.media_producer import selected_media_model
+
+            active_media_model = selected_media_model(effective_backend)
+            if workflow.media_model_name is None:
+                logger.warning(
+                    "Workflow '%s' has no active media model; falling back to env default '%s'. "
+                    "Select a profile at /settings/ai?workflow=%s.",
+                    workflow.slug,
+                    active_media_model,
+                    workflow.slug,
+                )
+        context["_workflow_media_model"] = active_media_model
 
         if workflow_name is not None:
             # Caller-supplied name wins — nothing may rename the shoot mid-run
@@ -333,8 +356,11 @@ async def _execute_pipeline(
 
         # Pre-create PENDING steps for all known blocks so they appear in status
         # queries immediately.  Routing dicts are skipped — those blocks are
-        # created when the branch is resolved at runtime.
+        # created when the branch is resolved at runtime.  Block-config dicts
+        # are pre-created under their registered block name and the per-step
+        # config is captured for execution.
         queue: list[JobStep | dict] = []
+        pending_steps: list[tuple[JobStep, dict[str, Any]]] = []
         next_order = 0
         for item in block_names:
             if isinstance(item, str):
@@ -345,11 +371,25 @@ async def _execute_pipeline(
                     status=JobStatus.PENDING,
                 )
                 session.add(step)
-                next_order += 1
+                pending_steps.append((step, {}))
                 queue.append(step)
+                next_order += 1
+            elif isinstance(item, dict) and "block" in item:
+                step = JobStep(
+                    job_id=job_id,
+                    block_name=item["block"],
+                    order=next_order,
+                    status=JobStatus.PENDING,
+                )
+                session.add(step)
+                pending_steps.append((step, item.get("config", {})))
+                queue.append(step)
+                next_order += 1
             else:
                 queue.append(item)
         await session.commit()
+
+        step_configs = {step.id: config for step, config in pending_steps}
 
         # Preserve the original user brief so re-routed blocks can access it
         if "brief" in context:
@@ -373,9 +413,17 @@ async def _execute_pipeline(
                 # Restore original brief for re-routed blocks
                 if "_original_brief" in context:
                     context["brief"] = context["_original_brief"]
-                # Create PENDING steps for newly-resolved blocks
+                # Create PENDING steps for newly-resolved blocks, preserving
+                # any block-config dicts from the branch.
+                branch_specs: list[tuple[str, dict[str, Any]]] = []
+                for branch_item in branch_blocks:
+                    if isinstance(branch_item, dict) and "block" in branch_item:
+                        branch_specs.append((branch_item["block"], branch_item.get("config", {})))
+                    else:
+                        branch_specs.append((branch_item, {}))
+
                 branch_steps: list[JobStep] = []
-                for offset, bname in enumerate(branch_blocks):
+                for offset, (bname, _) in enumerate(branch_specs):
                     step = JobStep(
                         job_id=job_id,
                         block_name=bname,
@@ -389,6 +437,8 @@ async def _execute_pipeline(
                         queued.order += len(branch_steps)
                 if branch_steps:
                     await session.commit()
+                    for step, (_, config) in zip(branch_steps, branch_specs):
+                        step_configs[step.id] = config
                 queue = branch_steps + queue
                 continue
 
@@ -397,6 +447,7 @@ async def _execute_pipeline(
             step = item
             name = step.block_name
             context["_job_step_id"] = step.id
+            context["_step_config"] = step_configs.get(step.id) or {}
 
             step.status = JobStatus.RUNNING
             step.started_at = datetime.now(UTC)

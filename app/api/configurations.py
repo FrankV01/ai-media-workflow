@@ -38,7 +38,7 @@ import json
 from dataclasses import replace
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.blocks.media_producer import code_media_defaults, selected_media_model
@@ -89,7 +89,7 @@ async def _workflow_scope(session: AsyncSession, slug: str | None) -> Workflow:
 
 
 def _effective_media_model(workflow: Workflow, backend_name: str) -> str:
-    """The model key a media run resolves: workflow override or env selection."""
+    """The model key a media run resolves: workflow active profile or env fallback."""
     return workflow.media_model_name or selected_media_model(backend_name.lower())
 
 
@@ -313,6 +313,28 @@ async def reset_media_configuration(
     defaults = code_media_defaults(block_name, body.backend_name, body.model_name)
     config = await _provider().reset_media_configuration(defaults, workflow_id=scope.id)
     return _media_json(config, scope)
+
+
+@router.put("/media/active")
+async def set_active_media_model(
+    request: Request,
+    workflow: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Set the workflow's active media model profile (stored on workflow.media_model_name)."""
+    scope = await _workflow_scope(session, workflow)
+    body = await request.json()
+    model_name = str(body.get("model_name", "")).strip()
+    if not model_name:
+        raise HTTPException(422, "model_name must be non-blank")
+    scope.media_model_name = model_name
+    await session.commit()
+    configs = await _provider().list_media_configurations(scope.id)
+    return {
+        "workflow": {"slug": scope.slug, "name": scope.name},
+        "active_model": model_name,
+        "profiles": [_media_json(config, scope) for config in configs],
+    }
 
 
 # ── Block endpoints ──────────────────────────────────────────────────────

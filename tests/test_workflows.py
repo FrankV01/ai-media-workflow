@@ -54,7 +54,7 @@ class WorkflowProbeBlock(Block):
         description="Echoes workflow scope — workflow tests only",
         category="test",
         inputs=["brief"],
-        outputs=["brief", "seen_workflow_slug", "seen_workflow_media_model"],
+        outputs=["brief", "seen_workflow_slug", "seen_workflow_media_model", "seen_step_config"],
     )
 
     async def run(self, context):
@@ -62,6 +62,7 @@ class WorkflowProbeBlock(Block):
             "brief": "x",
             "seen_workflow_slug": context.get("_workflow_slug"),
             "seen_workflow_media_model": context.get("_workflow_media_model"),
+            "seen_step_config": context.get("_step_config"),
         }
 
 
@@ -135,7 +136,39 @@ def test_validate_steps_rejects_bad_routing():
     assert any("must be a list" in e for e in errors)
     assert any("unknown routing keys" in e for e in errors)
     assert any("unknown block 'ghost_block'" in e for e in errors)
-    assert any("block name or a routing dict" in e for e in errors)
+    assert any("block name, routing dict, or block-config dict" in e for e in errors)
+
+
+def test_validate_steps_accepts_block_config_dicts():
+    errors = validate_steps(
+        [
+            "art_director",
+            {"block": "media_producer", "config": {"media_model": "DreamShaperXL.safetensors"}},
+        ]
+    )
+    assert errors == []
+
+
+def test_validate_steps_rejects_mixed_block_config_and_routing():
+    errors = validate_steps(
+        [
+            {"block": "media_producer", "on_good": []},
+        ]
+    )
+    assert any("block-config dict cannot contain routing keys" in e for e in errors)
+
+
+def test_validate_steps_rejects_bad_block_config():
+    errors = validate_steps(
+        [
+            {"block": "ghost_block"},
+            {"block": "media_producer", "config": "not-a-dict"},
+            {"block": "media_producer", "extra_key": "x"},
+        ]
+    )
+    assert any("unknown block 'ghost_block'" in e for e in errors)
+    assert any("config: must be a dict" in e for e in errors)
+    assert any("unknown block-config keys" in e for e in errors)
 
 
 # ── Service: defaults, CRUD, clone, flags ────────────────────────────────
@@ -177,8 +210,18 @@ async def test_create_and_list_workflows(temp_config_db):
     assert created.is_enabled is True
     assert created.is_default is False
     assert created.media_model_name == "illustration.safetensors"
-    # Default first, then alphabetical
     assert [w.id for w in workflows] == [main.id, created.id]
+
+
+async def test_create_workflow_defaults_active_media_model(temp_config_db):
+    from app.blocks.media_producer import selected_media_model
+    from app.config import settings
+
+    expected = selected_media_model(settings.generation_backend)
+    async with temp_config_db() as session:
+        created = await create_workflow(session, name="Default Model Flow")
+        await session.commit()
+    assert created.media_model_name == expected
 
 
 async def test_create_defaults_steps_to_main_pipeline(temp_config_db):
@@ -418,6 +461,50 @@ async def test_engine_stamps_job_workflow_and_scopes_context(session_factory):
     output = json.loads(step.output)
     assert output["seen_workflow_slug"] == "probe-flow"
     assert output["seen_workflow_media_model"] == "illustration.safetensors"
+
+
+async def test_engine_passes_block_config_to_steps(session_factory):
+    async with session_factory() as session:
+        wf = await create_workflow(
+            session,
+            name="Config Flow",
+            steps=[
+                "test_workflow_probe",
+                {
+                    "block": "test_workflow_probe",
+                    "config": {"media_model": "DreamShaperXL.safetensors"},
+                },
+            ],
+            media_model_name="illustration.safetensors",
+        )
+        await session.commit()
+        wf_id = wf.id
+
+    job_id = await engine_module.run_pipeline(
+        workflow_name=None,
+        workflow_id=wf_id,
+        context={"brief": "go"},
+    )
+
+    async with session_factory() as session:
+        steps = (
+            (
+                await session.execute(
+                    select(JobStep).where(JobStep.job_id == job_id).order_by(JobStep.order)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(steps) == 3  # auto-prepended job_namer + 2 probe steps
+    probe_steps = [s for s in steps if s.block_name == "test_workflow_probe"]
+    assert len(probe_steps) == 2
+    outputs = [json.loads(s.output) for s in probe_steps]
+    assert outputs[0]["seen_step_config"] == {}
+    assert outputs[0]["seen_workflow_media_model"] == "illustration.safetensors"
+    assert outputs[1]["seen_step_config"] == {"media_model": "DreamShaperXL.safetensors"}
+    assert outputs[1]["seen_workflow_media_model"] == "illustration.safetensors"
 
 
 async def test_engine_uses_workflow_steps_when_block_names_omitted(session_factory):
@@ -709,6 +796,13 @@ def test_api_jobs_list_scoped_to_workflow(api_client):
 # ── Web pages (template smoke tests) ─────────────────────────────────────
 
 
+def test_api_jobs_limit_is_bounded(api_client):
+    client, _ = api_client
+    assert client.get("/api/workflows/jobs?limit=0").status_code == 422
+    assert client.get("/api/workflows/jobs?limit=101").status_code == 422
+    assert client.get("/api/workflows/jobs?limit=100").status_code == 200
+
+
 def test_workflows_pages_render(api_client):
     client, _ = api_client
     client.post(
@@ -731,9 +825,14 @@ def test_workflows_pages_render(api_client):
     dashboard = client.get("/?workflow=page-flow")
     assert dashboard.status_code == 200
     assert "Page Flow" in dashboard.text
-    # Connected workflow selectors: page header + both run forms
-    for select_id in ("workflow-select", "run-workflow-select", "test-workflow-select"):
+    assert 'id="workflow-select"' not in dashboard.text
+    for select_id in ("run-workflow-select", "test-workflow-select"):
         assert f'id="{select_id}"' in dashboard.text
+    assert 'id="job-filters"' in dashboard.text
+    assert '<script src="/static/dashboard.js?v=1" defer></script>' in dashboard.text
+    assert 'hx-include="#job-filters"' in dashboard.text
+    assert dashboard.text.count("Active workflow") == 2
+    assert "independently of the active workflow" in dashboard.text
 
     settings_page = client.get("/settings/ai?workflow=page-flow")
     assert settings_page.status_code == 200

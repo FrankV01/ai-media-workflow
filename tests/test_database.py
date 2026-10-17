@@ -14,6 +14,7 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -40,7 +41,7 @@ from app.models.workflow import Workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "e2f5a1c9d7b4"
-HEAD_REVISION = "i6d9b3e7f4c1"
+HEAD_REVISION = "k8f1d4h6i7j3"
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -59,6 +60,81 @@ VALUES (1, 1, 1, 'test brief', 'old-model', '2026-01-01 00:00:00');
 INSERT INTO messages (id, execution_id, role, content, ordinal, created_at)
 VALUES (1, 1, 'SYSTEM', 'historical system prompt', 0, '2026-01-01 00:00:00');
 """
+
+
+def test_sqlite_startup_backup_is_consistent_and_uses_utc_name(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    connection = sqlite3.connect(path)
+    cursor = connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL").fetchone()
+    cursor.execute("CREATE TABLE example (value TEXT NOT NULL)")
+    cursor.execute("INSERT INTO example VALUES ('committed in wal')")
+    cursor.close()
+    connection.commit()
+
+    created_at = datetime(2026, 10, 3, 2, 49, 59, tzinfo=UTC)
+    backup = app.database.backup_sqlite_database(
+        f"sqlite+aiosqlite:///{path}",
+        now=created_at,
+        retention_days=90,
+        retention_count=90,
+    )
+    connection.close()
+
+    assert backup == tmp_path / "app.backup-20261003T024959Z.db"
+    with sqlite3.connect(backup) as restored:
+        assert restored.execute("SELECT value FROM example").fetchone() == ("committed in wal",)
+        assert restored.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_sqlite_startup_backup_skips_non_file_databases(tmp_path: Path) -> None:
+    assert app.database.backup_sqlite_database("sqlite+aiosqlite:///:memory:") is None
+    assert app.database.backup_sqlite_database(f"sqlite+aiosqlite:///{tmp_path}/missing.db") is None
+    assert app.database.backup_sqlite_database("postgresql+asyncpg://localhost/app") is None
+    assert not (tmp_path / "missing.db").exists()
+
+
+def test_sqlite_startup_backup_prunes_by_age_and_count(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE example (value TEXT)")
+
+    now = datetime(2026, 10, 3, 2, 49, 59, tzinfo=UTC)
+    expired = tmp_path / "app.backup-20260701T000000Z.db"
+    oldest_retained = tmp_path / "app.backup-20261001T000000Z.db"
+    newest_retained = tmp_path / "app.backup-20261002T000000Z.db"
+    unrelated = tmp_path / "other.backup-20200101T000000Z.db"
+    for candidate in (expired, oldest_retained, newest_retained, unrelated):
+        candidate.touch()
+
+    created = app.database.backup_sqlite_database(
+        f"sqlite+aiosqlite:///{path}",
+        now=now,
+        retention_days=90,
+        retention_count=2,
+    )
+
+    assert created is not None and created.exists()
+    assert not expired.exists()
+    assert not oldest_retained.exists()
+    assert newest_retained.exists()
+    assert unrelated.exists()
+
+
+def test_sqlite_startup_backup_removes_partial_destination_on_failure(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    path.write_bytes(b"not a sqlite database")
+    now = datetime(2026, 10, 3, 2, 49, 59, tzinfo=UTC)
+
+    with pytest.raises(RuntimeError, match="Failed to back up SQLite database"):
+        app.database.backup_sqlite_database(
+            f"sqlite+aiosqlite:///{path}",
+            now=now,
+            retention_days=90,
+            retention_count=90,
+        )
+
+    assert not (tmp_path / "app.backup-20261003T024959Z.db").exists()
 
 
 def _alembic_config() -> Config:
@@ -457,9 +533,7 @@ def test_workflow_migration_appends_archive_once(
         assert "delivery_archives" in tables
         assert "delivery_archive_entries" in tables
         assert "cloudflare_r2_uploads" in tables
-        listing_cols = {
-            r[1] for r in conn.execute("PRAGMA table_info(storefront_listings)")
-        }
+        listing_cols = {r[1] for r in conn.execute("PRAGMA table_info(storefront_listings)")}
         assert {
             "cloudflare_upload_id",
             "link_document_name",
@@ -491,9 +565,7 @@ def test_uploader_migration_skips_branch_only_listing(
 
     path = tmp_path / "app.db"
     _upgrade(path, "d1e4f6a8b3c5", monkeypatch)
-    branch_steps = _json.dumps(
-        ["echo", {"on_good": [], "always": ["fourthwall_listing"]}]
-    )
+    branch_steps = _json.dumps(["echo", {"on_good": [], "always": ["fourthwall_listing"]}])
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO workflows "
@@ -568,8 +640,7 @@ def test_workflow_downgrade_restores_only_untouched_rows(
         )
         assert (
             conn.execute(
-                "SELECT 1 FROM settings "
-                "WHERE key = 'fourthwall_listing.workflow_migration_backup'"
+                "SELECT 1 FROM settings WHERE key = 'fourthwall_listing.workflow_migration_backup'"
             ).fetchone()
             is None
         )
@@ -594,9 +665,7 @@ def test_storefront_enabled_flag_is_scrubbed_and_restored(
 
     path = tmp_path / "app.db"
     _upgrade(path, "g8d5b2e4f6a1", monkeypatch)
-    stored = _json.dumps(
-        {"enabled": True, "price_usd": 9.99, "publish_on_create": False}
-    )
+    stored = _json.dumps({"enabled": True, "price_usd": 9.99, "publish_on_create": False})
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO settings (key, value, description) VALUES (?, ?, '')",
@@ -646,9 +715,7 @@ def test_storefront_size_limit_is_scrubbed_and_restored(
 
     path = tmp_path / "app.db"
     _upgrade(path, "h4f6a8b0c2d4", monkeypatch)
-    stored = _json.dumps(
-        {"price_usd": 9.99, "file_size_limit_mb": 25, "publish_on_create": False}
-    )
+    stored = _json.dumps({"price_usd": 9.99, "file_size_limit_mb": 25, "publish_on_create": False})
     with sqlite3.connect(path) as conn:
         conn.execute(
             "INSERT INTO settings (key, value, description) VALUES (?, ?, '')",
@@ -682,8 +749,7 @@ def test_storefront_size_limit_is_scrubbed_and_restored(
         )
         assert (
             conn.execute(
-                "SELECT 1 FROM settings "
-                "WHERE key = 'storefronts.fourthwall.r2_migration_backup'"
+                "SELECT 1 FROM settings WHERE key = 'storefronts.fourthwall.r2_migration_backup'"
             ).fetchone()
             is None
         )

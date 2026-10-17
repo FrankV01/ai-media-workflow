@@ -34,7 +34,7 @@ LLM_DEFAULT_WARNING = (
 MEDIA_DEFAULT_WARNING = (
     "Using code-default AI configuration for block '{block}' "
     "(backend '{backend}', model '{model}') in workflow '{workflow}'. "
-    "Customize it at /settings/ai?workflow={workflow}."
+    "Customize it at /settings/ai?workflow={workflow} and activate the profile there."
 )
 BLOCK_DEFAULT_WARNING = (
     "Using code-default configuration for block '{block}' "

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from PIL import Image
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.database
@@ -21,7 +22,7 @@ import app.pipeline.engine as engine_module
 from app.blocks.registry import discover_blocks
 from app.config import settings
 from app.database import Base
-from app.models.job import Job
+from app.models.job import Job, JobStatus, JobStep
 from app.services.open_folder import (
     OpenerUnavailableError,
     job_output_dir,
@@ -180,3 +181,80 @@ async def test_job_detail_hides_open_folder_without_reports(api_client, session_
     resp = client.get(f"/jobs/{job_id}")
     assert resp.status_code == 200
     assert "Open folder" not in resp.text
+
+
+async def test_job_images_partial_selects_smallest_per_variant_and_polls(
+    api_client, session_factory, tmp_path, monkeypatch
+):
+    client, _ = api_client
+    monkeypatch.setattr(settings, "image_output_dir", tmp_path)
+    paths = []
+    image_specs = (
+        ("main_1x.png", (16, 16)),
+        ("main_4x.png", (64, 64)),
+        ("alt_1x.png", (8, 8)),
+    )
+    for name, size in image_specs:
+        path = tmp_path / name
+        Image.new("RGB", size).save(path)
+        paths.append(str(path))
+    async with session_factory() as session:
+        job = Job(workflow_name="Gallery", status=JobStatus.RUNNING)
+        session.add(job)
+        await session.flush()
+        session.add(
+            JobStep(
+                job_id=job.id,
+                block_name="media_producer",
+                order=1,
+                status=JobStatus.COMPLETED,
+                output=json.dumps(
+                    {
+                        "generation_metadata": [
+                            {"variant": "Main", "image_paths": paths[:2]},
+                            {"variant": "Alternate", "image_paths": paths[2:]},
+                        ]
+                    }
+                ),
+            )
+        )
+        await session.commit()
+        job_id = job.id
+
+    partial = client.get(f"/partials/jobs/{job_id}/images")
+    assert partial.status_code == 200
+    assert "every 3s" in partial.text
+    assert "main_1x.png" in partial.text
+    assert "main_4x.png" not in partial.text
+    assert "alt_1x.png" in partial.text
+
+    image = client.get(f"/jobs/{job_id}/images/0")
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/png"
+    assert image.content == Path(paths[0]).read_bytes()
+
+
+async def test_job_images_stop_polling_and_reject_unavailable_assets(
+    api_client, session_factory, tmp_path, monkeypatch
+):
+    client, _ = api_client
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    monkeypatch.setattr(settings, "image_output_dir", output_dir)
+    outside = tmp_path / "outside.png"
+    Image.new("RGB", (8, 8)).save(outside)
+    async with session_factory() as session:
+        job = Job(
+            workflow_name="Gallery",
+            status=JobStatus.COMPLETED,
+            generated_assets=json.dumps([str(outside), str(output_dir / "missing.png")]),
+        )
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+
+    partial = client.get(f"/partials/jobs/{job_id}/images")
+    assert partial.status_code == 200
+    assert "every 3s" not in partial.text
+    assert "Generated images" not in partial.text
+    assert client.get(f"/jobs/{job_id}/images/0").status_code == 404

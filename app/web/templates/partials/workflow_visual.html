@@ -43,6 +43,46 @@
           {% endif %}
         </div>
 
+      {% elif node.type == "block_config" %}
+        <!-- Block-config node (per-step override) -->
+        <div class="flex items-center">
+          <div class="relative group">
+            <div class="px-3 py-2 rounded-lg border border-dashed text-center min-w-[120px]
+                        {% if node.category == 'creative' %}
+                          bg-indigo-950/40 border-indigo-700/40 hover:border-indigo-500
+                        {% elif node.category == 'production' %}
+                          bg-emerald-950/40 border-emerald-700/40 hover:border-emerald-500
+                        {% else %}
+                          bg-gray-800/60 border-gray-700 hover:border-gray-500
+                        {% endif %}
+                        transition-colors duration-150">
+              <div class="text-xs font-semibold
+                          {% if node.category == 'creative' %}text-indigo-300
+                          {% elif node.category == 'production' %}text-emerald-300
+                          {% else %}text-gray-300{% endif %}">
+                {{ node.title }}
+              </div>
+              <div class="text-[10px] text-gray-500 mt-0.5">{{ node.name }}</div>
+            </div>
+            <!-- Tooltip -->
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-md
+                        bg-gray-800 border border-gray-700 text-xs text-gray-300
+                        opacity-0 group-hover:opacity-100 transition-opacity duration-150
+                        pointer-events-none whitespace-nowrap z-10 shadow-lg">
+              {{ node.description }}
+            </div>
+          </div>
+          {% if not loop.last %}
+            <!-- Arrow -->
+            <div class="flex items-center px-1">
+              <svg width="24" height="16" viewBox="0 0 24 16" class="text-gray-600">
+                <line x1="0" y1="8" x2="18" y2="8" stroke="currentColor" stroke-width="1.5"/>
+                <polyline points="14,3 20,8 14,13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              </svg>
+            </div>
+          {% endif %}
+        </div>
+
       {% elif node.type == "routing" %}
         <!-- Routing / branch node -->
         <div class="flex items-center">
