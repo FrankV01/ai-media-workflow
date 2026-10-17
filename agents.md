@@ -68,7 +68,7 @@ FourthWall digital product whose downloadable file is a small link document.
 | `prompt_architect` | RoleBlock | Converts brief to structured JSON prompts; appends canonical JSON contract to resolved prompt; fails the step unless all four prompts are present | `prompt_architect_output` |
 | `media_producer` | Block | Dispatches to generation backend using the media profile's request settings (authoritative — model-emitted `parameters` are ignored with a warning), collects images | `generated_images`, `generation_metadata`, `media_producer_output` |
 | `art_critic` | RoleBlock | Evaluates quality, sets verdict; appends a Markdown lead + JSON contract to resolved prompt | `art_critic_output`, `_verdict` |
-| `social_media_specialist` | RoleBlock | Creates marketing content (per-channel post suggestions incl. licensing marketplaces); appends a Markdown lead-post + JSON contract to resolved prompt | `social_media_specialist_output`, `social_media_posts` |
+| `social_media_specialist` | RoleBlock | Creates one unified post suggestion usable across social feeds and licensing marketplaces; attaches downscaled variant images to the LLM call as vision content (requires a vision-capable profile model — capped/downscaled via `SOCIAL_MEDIA_MAX_IMAGES`/`SOCIAL_MEDIA_IMAGE_MAX_EDGE`); appends a Markdown lead-post + JSON contract to resolved prompt | `social_media_specialist_output`, `social_media_posts` |
 | `art_critic_report` | Block | Writes critique to art_critic_report.md | `art_critic_report_path`, `report_files` |
 | `social_media_report` | Block | Writes post suggestions to social_media_specialist.md | `social_media_report_path`, `report_files` |
 | `media_producer_report` | Block | Writes the resolved generation settings (backend workflow settings + effective per-request params from `_media_executions`; request defaults are not restated) to media_producer_report.md | `media_producer_report_path`, `report_files` |
@@ -464,6 +464,12 @@ class MyRole(RoleBlock):
 To post-process the LLM response (parse JSON, set a verdict, name the shoot), override `run`,
 call `result = await super().run(context)`, and mutate `result` — see `art_critic.py`,
 `prompt_architect.py`, and `job_namer.py`.
+
+To send vision content (images) in the user message, override `build_user_content(context,
+input_brief)` — it returns `(api_content, audit_content)`: api_content may be an OpenAI
+content-parts list (`image_url` parts), while audit_content stays plain text for the
+persisted `Message` row so binary payloads never reach the audit tables. See
+`social_media_specialist.py`.
 
 ### Pipeline routing and step config
 The engine accepts a mixed list of block names, routing dicts, and block-config dicts:

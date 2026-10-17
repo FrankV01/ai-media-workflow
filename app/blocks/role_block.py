@@ -108,6 +108,16 @@ class RoleBlock(Block):
             logger.warning("%s", resolved.warning)
         return resolved
 
+    def build_user_content(self, context: dict[str, Any], input_brief: str) -> tuple[Any, str]:
+        """Return (api_content, audit_content) for the user message.
+
+        api_content is sent to the API verbatim — a plain string, or a list
+        of OpenAI content parts for vision roles. audit_content is the plain
+        text stored in the persisted Message row, so binary payloads never
+        reach the audit tables.
+        """
+        return input_brief, input_brief
+
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """Execute this LLM role under exclusive workload ownership."""
         async with workload_guard.hold(f"llm-role-{self.role_name}"):
@@ -132,10 +142,12 @@ class RoleBlock(Block):
         effective_prompt = resolved.system_prompt
         thinking = resolved.enable_thinking
 
-        # Build messages
+        # Build messages — vision roles may return content parts; the audit
+        # record always stores plain text so binary payloads never hit the DB
+        user_content, user_audit = self.build_user_content(context, input_brief)
         messages = [
             {"role": "system", "content": effective_prompt},
-            {"role": "user", "content": input_brief},
+            {"role": "user", "content": user_content},
         ]
 
         # Call LLM (OpenAI-compatible API — works with LM Studio, OpenAI, etc.)
@@ -192,7 +204,7 @@ class RoleBlock(Block):
             "finished_at": None,
             "messages": [
                 {"role": "system", "content": effective_prompt, "ordinal": 0},
-                {"role": "user", "content": input_brief, "ordinal": 1},
+                {"role": "user", "content": user_audit, "ordinal": 1},
             ],
         }
         executions = context.setdefault("_executions", [])

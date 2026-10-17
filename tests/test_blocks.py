@@ -245,6 +245,101 @@ async def test_social_media_appends_contract_to_resolved_prompt():
     assert '"posts"' in resolved.system_prompt
 
 
+def _make_png(path, size=(64, 64)):
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, (128, 64, 200)).save(path, format="PNG")
+    return str(path)
+
+
+def test_social_media_vision_selects_one_per_variant(tmp_path):
+    """Smallest file per variant is picked; upscales are skipped."""
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+
+    small = tmp_path / "a_1x.png"
+    small.write_bytes(b"x" * 100)
+    big = tmp_path / "a_4x.png"
+    big.write_bytes(b"x" * 10000)
+    var_b = tmp_path / "b_1x.png"
+    var_b.write_bytes(b"x" * 100)
+    small, big, var_b = str(small), str(big), str(var_b)
+    context = {
+        "generation_metadata": [
+            {"variant_name": "a", "image_paths": [small, big]},
+            {"variant_name": "b", "image_paths": [var_b]},
+        ],
+        "generated_images": [small, big, var_b],
+    }
+    picked = SocialMediaSpecialist()._select_vision_images(context)
+    assert small in picked and var_b in picked
+    assert big not in picked
+    assert len(picked) == 2
+
+
+def test_social_media_vision_cap_and_missing_files(tmp_path, monkeypatch):
+    """Cap honored; nonexistent paths are skipped."""
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "social_media_max_images", 2)
+    imgs = [_make_png(tmp_path / f"i{n}.png") for n in range(4)]
+    context = {"generated_images": imgs + [str(tmp_path / "gone.png")]}
+    picked = SocialMediaSpecialist()._select_vision_images(context)
+    assert len(picked) == 2
+    assert all(p in imgs for p in picked)
+
+
+def test_social_media_vision_no_images(tmp_path):
+    """No usable files → empty selection."""
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+
+    context = {"generated_images": [str(tmp_path / "missing.png")]}
+    assert SocialMediaSpecialist()._select_vision_images(context) == []
+
+
+def test_social_media_build_user_content_attaches_parts(tmp_path):
+    """Vision run returns image_url parts; audit text has no base64."""
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+
+    img = _make_png(tmp_path / "shot.png")
+    context = {"generated_images": [img]}
+    api_content, audit = SocialMediaSpecialist().build_user_content(context, "dossier")
+    assert isinstance(api_content, list)
+    assert api_content[0] == {"type": "text", "text": "dossier"}
+    assert api_content[1]["type"] == "image_url"
+    assert api_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert img in audit
+    assert "base64" not in audit
+
+
+def test_social_media_build_user_content_text_only():
+    """No images → plain string passthrough like the base role."""
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+
+    api_content, audit = SocialMediaSpecialist().build_user_content({}, "dossier")
+    assert api_content == "dossier"
+    assert audit == "dossier"
+
+
+def test_social_media_encode_image_downscales(tmp_path, monkeypatch):
+    """Longest edge is capped at social_media_image_max_edge."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    from app.blocks.social_media_specialist import SocialMediaSpecialist
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "social_media_image_max_edge", 32)
+    img = _make_png(tmp_path / "big.png", size=(256, 128))
+    part = SocialMediaSpecialist()._encode_image(img)
+    raw = base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
+    with Image.open(io.BytesIO(raw)) as decoded:
+        assert decoded.size == (32, 16)
+
+
 # ── Art Critic block tests ─────────────────────────────────────────────
 
 
