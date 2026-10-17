@@ -37,7 +37,7 @@ from app.api import workflow_definitions as wf_def_router
 from app.api import workflows as wf_router
 from app.blocks.registry import discover_blocks
 from app.config import APP_VERSION, settings
-from app.database import init_db
+from app.database import backup_sqlite_database_once, init_db
 from app.web.routes import router as web_router
 
 # Uvicorn only attaches handlers to its own loggers — without this, app.*
@@ -130,6 +130,7 @@ async def lifespan(application: FastAPI):
     shuts down instead of waiting forever for file changes.
     """
     try:
+        backup_sqlite_database_once()
         await init_db()
         discover_blocks()
         await _check_dependencies()

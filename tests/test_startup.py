@@ -9,6 +9,7 @@ whole process on startup failure.
 
 import asyncio
 import os
+import sqlite3
 import subprocess
 import sys
 import tomllib
@@ -37,7 +38,8 @@ def test_product_version_is_shared_with_fastapi_and_templates() -> None:
 def test_main_py_exits_on_startup_failure(tmp_path: Path) -> None:
     """`python main.py` exits promptly when the lifespan fails at startup."""
     bad_db = tmp_path / "app.db"
-    bad_db.touch()  # existing but unmigrated file triggers the schema check failure
+    with sqlite3.connect(bad_db):
+        pass
 
     env = os.environ.copy()
     env["DATABASE_URL"] = f"sqlite+aiosqlite:///{bad_db}"
@@ -65,6 +67,54 @@ def test_main_py_exits_on_startup_failure(tmp_path: Path) -> None:
     assert "Database migrations are required" in out
 
 
+def test_lifespan_backs_up_before_database_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.main
+
+    events: list[str] = []
+
+    def backup() -> None:
+        events.append("backup")
+
+    async def init_db() -> None:
+        events.append("init")
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(app.main, "backup_sqlite_database_once", backup)
+    monkeypatch.setattr(app.main, "init_db", init_db)
+
+    async def _enter() -> None:
+        async with app.main.lifespan(app.main.app):
+            pass
+
+    with pytest.raises(RuntimeError, match="stop"):
+        asyncio.run(_enter())
+    assert events == ["backup", "init"]
+
+
+def test_lifespan_backup_failure_prevents_database_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.main
+
+    init_db = AsyncMock()
+
+    def backup() -> None:
+        raise OSError("snapshot failed")
+
+    monkeypatch.setattr(app.main, "backup_sqlite_database_once", backup)
+    monkeypatch.setattr(app.main, "init_db", init_db)
+
+    async def _enter() -> None:
+        async with app.main.lifespan(app.main.app):
+            pass
+
+    with pytest.raises(OSError, match="snapshot failed"):
+        asyncio.run(_enter())
+    init_db.assert_not_awaited()
+
+
 def test_lifespan_still_raises_without_reloader_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -72,6 +122,7 @@ def test_lifespan_still_raises_without_reloader_marker(
     monkeypatch.delenv("AI_MEDIA_WORKFLOW_RELOAD", raising=False)
     import app.main
 
+    monkeypatch.setattr(app.main, "backup_sqlite_database_once", lambda: None)
     monkeypatch.setattr(app.main, "init_db", AsyncMock(side_effect=RuntimeError("boom")))
 
     async def _enter() -> None:

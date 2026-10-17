@@ -418,7 +418,8 @@ each prompt variant produces three files.
   `app/services/generation/`. ComfyUI for production, placeholder for testing.
   Images are grouped under `IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/`,
   where the date is the job's UTC creation date.
-- **Persistence** — SQLite via SQLAlchemy async. Jobs, steps, input/output
+- **Persistence** — SQLite via SQLAlchemy async. SQLite is the only database
+  currently supported and covered by the migration test suite. Jobs, steps, input/output
   snapshots, generated asset paths, operator QC reviews, and delivery archive
   audit (`DeliveryArchive`/`DeliveryArchiveEntry`: attempt status, checksums,
   file inventory, Markdown snapshots) are all stored.
@@ -625,9 +626,8 @@ app/
   api/               → REST endpoints (/api/blocks, /api/workflows, /api/workflow-definitions, /api/configurations, /api/convert, /api/remove-background)
   web/               → routes.py (pages + HTMX partials), templates/, static/
 tests/               → pytest suite
-data/                → SQLite DB (gitignored) + local backups (keep out of
-                       Git — backup filenames aren't universally covered by
-                       the current ignore rules); generated images and
+data/                → SQLite DB + adjacent automatic snapshots (both gitignored);
+                       generated images and
                        delivery ZIPs live under IMAGE_OUTPUT_DIR
 ```
 
@@ -671,8 +671,24 @@ the `storefronts.fourthwall` settings JSON, and `i6d9b3e7f4c1` creates
 top-level listing or already hosting the uploader), and scrubs the retired
 `file_size_limit_mb` key — same backup + exact-match downgrade restore.
 
-Back up the SQLite file before applying migrations with a consistent snapshot
-(the `sqlite3.Connection.backup` API), not a raw copy of a live database —
-startup does not create backups automatically.
+Startup automatically creates a consistent SQLite snapshot before migrations or
+schema validation by using the `sqlite3.Connection.backup` API rather than copying
+a live database file. For `data/app.db`, snapshots are adjacent files named like
+`data/app.backup-20261003T024959Z.db`. Missing and in-memory databases are skipped,
+and non-SQLite `DATABASE_URL` values do not trigger filesystem backup work. Startup
+fails before migration if an existing SQLite database cannot be snapshotted.
+
+Automatic snapshots are pruned by both `SQLITE_BACKUP_RETENTION_DAYS` and
+`SQLITE_BACKUP_RETENTION_COUNT` (both default to 90); pruning only matches this exact
+automatic filename pattern and happens after a new snapshot succeeds. Adjacent
+snapshots provide a local migration recovery point, but they share the source disk
+and do not replace an off-device backup policy.
+
+Although the models and most application queries use portable SQLAlchemy APIs,
+PostgreSQL and MySQL are not currently supported configurations. The project only
+installs the SQLite async driver, and the complete Alembic history is SQLite-oriented
+and tested only on SQLite. Moving to either server database requires choosing and
+installing its async driver, exercising and correcting the full migration chain on
+that dialect, and adding integration coverage before production use.
 
 For detailed AI-agent coding guidelines, see [`agents.md`](agents.md).

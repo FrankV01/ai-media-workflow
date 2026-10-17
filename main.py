@@ -24,7 +24,7 @@ from uvicorn.server import Server
 from uvicorn.supervisors import ChangeReload
 
 from app.config import settings
-from app.database import upgrade_database
+from app.database import backup_sqlite_database_once, upgrade_database
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,12 @@ class _StartupAwareReload(ChangeReload):
 
 
 def main():
+    try:
+        backup_sqlite_database_once()
+    except Exception as exc:
+        logger.error("SQLite database backup failed: %s", exc)
+        sys.exit(1)
+
     # Auto-apply pending Alembic migrations by default. Disable with
     # AI_MEDIA_AUTO_MIGRATE=0 if you prefer to run `alembic upgrade head`
     # manually.
