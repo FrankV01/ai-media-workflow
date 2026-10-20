@@ -35,9 +35,7 @@
     {% endif %}
 </div>
 
-<!-- Workflow list -->
-<div class="space-y-4 mb-10">
-    {% for w in workflows %}
+{% macro workflow_card(w) %}
     <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
         <div class="flex items-start justify-between">
             <div>
@@ -106,8 +104,29 @@
             {% endif %}
         </div>
     </div>
+{% endmacro %}
+
+<!-- Workflow list -->
+<div class="space-y-4 mb-10">
+    {% for w in workflows if w.is_enabled %}
+    {{ workflow_card(w) }}
     {% endfor %}
 </div>
+
+<!-- Disabled workflows -->
+{% set disabled = workflows | selectattr('is_enabled', 'equalto', false) | list %}
+{% if disabled %}
+<details class="mb-10 bg-gray-900 rounded-lg border border-gray-800">
+    <summary class="px-5 py-3 cursor-pointer text-sm text-gray-400 hover:text-gray-300 select-none">
+        {{ disabled | length }} Disabled Workflow{{ "s" if disabled | length != 1 }}
+    </summary>
+    <div class="space-y-4 p-5 pt-2">
+        {% for w in disabled %}
+        {{ workflow_card(w) }}
+        {% endfor %}
+    </div>
+</details>
+{% endif %}
 
 <!-- Create a new workflow -->
 <div class="bg-gray-900 rounded-lg border border-gray-800 p-5">
