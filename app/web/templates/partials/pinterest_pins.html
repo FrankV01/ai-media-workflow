@@ -1,0 +1,66 @@
+<div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+    {% if pins %}
+    <table class="w-full text-sm">
+        <thead class="text-left text-xs text-gray-500 border-b border-gray-800">
+            <tr>
+                <th class="px-4 py-2">Pin</th>
+                <th class="px-4 py-2">Board</th>
+                <th class="px-4 py-2">Scheduled</th>
+                <th class="px-4 py-2">Published</th>
+                <th class="px-4 py-2">Status</th>
+                <th class="px-4 py-2"></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for pin in pins %}
+            <tr class="border-b border-gray-800/60 last:border-0">
+                <td class="px-4 py-2 text-gray-200 max-w-xs truncate" title="{{ pin.title }}">
+                    {% if pin.pinterest_pin_url %}
+                    <a href="{{ pin.pinterest_pin_url }}" target="_blank" rel="noopener"
+                       class="text-indigo-400 hover:underline">{{ pin.title }}</a>
+                    {% else %}{{ pin.title }}{% endif %}
+                </td>
+                <td class="px-4 py-2 text-gray-400">{{ pin.board_name or pin.board_id or '—' }}</td>
+                <td class="px-4 py-2 text-gray-400">{{ pin.scheduled_for }}</td>
+                <td class="px-4 py-2 text-gray-400">{{ pin.published_at }}</td>
+                <td class="px-4 py-2">
+                    {% if pin.status == 'published' %}
+                    <span class="text-emerald-400">published</span>
+                    {% elif pin.status == 'failed' %}
+                    <span class="text-red-400">failed</span>
+                    {% elif pin.status == 'canceled' %}
+                    <span class="text-gray-500">canceled</span>
+                    {% else %}
+                    <span class="text-amber-400">{{ pin.status }}</span>
+                    {% endif %}
+                    {% if pin.error %}
+                    <div class="text-[11px] text-red-400/80 mt-0.5 max-w-xs" title="{{ pin.error }}">
+                        {{ pin.error }}
+                    </div>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-2 text-right">
+                    {% if pin.cancelable %}
+                    <form method="post" action="/pinterest/pins/{{ pin.id }}/cancel" class="inline">
+                        <button type="submit"
+                                class="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs">
+                            Cancel
+                        </button>
+                    </form>
+                    {% elif pin.retryable %}
+                    <form method="post" action="/pinterest/pins/{{ pin.id }}/retry" class="inline">
+                        <button type="submit"
+                                class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs">
+                            Retry now
+                        </button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="px-4 py-6 text-sm text-gray-500">No pins scheduled yet.</p>
+    {% endif %}
+</div>

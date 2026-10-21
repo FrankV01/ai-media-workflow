@@ -21,7 +21,7 @@ For project overview and setup, see [`README.md`](README.md).
 6. **Workflows are first-class DB rows.** A `Workflow` (`app/models/workflow.py`) is a named pipeline definition: ordered steps in the engine's `list[str | dict]` format (block names, `on_good`/`on_bad`/`always` routing dicts, and per-step `{"block": "…", "config": {…}}` dicts), enable/disable flags, a single default, and a `media_model_name` that selects the workflow's active Media Model Profile. `app/services/workflows.py` owns CRUD/validation/clone; the engine resolves the workflow before a run, uses its `steps_json` when no explicit `block_names` are given, and stamps `Job.workflow_id`. Every run executes inside a workflow "container" — its AI configuration profiles are scoped to that workflow (see Database). "Main" (slug `main`) is the seeded default workflow; disabling the default is rejected. New workflows default `media_model_name` to the env-selected checkpoint so there is always an explicit active profile; change it on `/settings/ai`. Managed on the `/workflows` page (create/clone/enable/disable/set-default) and `/workflows/{id}` (validated JSON steps editor with rendered preview); the dashboard Run/Test selectors choose the active workflow for new runs and the pipeline visual, Recent Jobs filters independently across workflows, and `/settings/ai?workflow=<slug>` scopes that workflow's profiles.
 7. **Generation backends are pluggable.** `app/services/generation/` provides `ComfyUIBackend` (production; SDXL base → refiner → 2x/4x upscale workflow built in `sdxl_workflow.py`) and `PlaceholderBackend` (fast testing). Switch via `GENERATION_BACKEND` in `.env`, or per run via `context["_generation_backend"]`.
 8. **UI is server-rendered.** Jinja2 templates + HTMX. No JS build step. Tailwind via CDN.
-9. **Config via environment + database.** `pydantic-settings` reads `.env` for secrets, URLs, timeouts, and filesystem paths (see `.env.example`; defaults live in `app/config.py`). Mutable behavior is DB-backed: per-workflow AI profiles (`/settings/ai`) and global, unscoped delivery settings (customer note, attribution, license, signature reference) under the `delivery.general_settings` Setting row, global storefront listing options under `storefronts.fourthwall`, and global Cloudflare R2 upload options under `cloudflare.r2` — all edited on `/settings/general`.
+9. **Config via environment + database.** `pydantic-settings` reads `.env` for secrets, URLs, timeouts, and filesystem paths (see `.env.example`; defaults live in `app/config.py`). Mutable behavior is DB-backed: per-workflow AI profiles (`/settings/ai`) and global, unscoped delivery settings (customer note, attribution, license, signature reference) under the `delivery.general_settings` Setting row, global storefront listing options under `storefronts.fourthwall`, global Cloudflare R2 upload options under `cloudflare.r2`, and global Pinterest scheduling options under `social.pinterest` — all edited on `/settings/general`.
 10. **Startup backups and health checks.** For a file-backed SQLite `DATABASE_URL`, startup creates a consistent adjacent `app.backup-<UTC timestamp>.db` snapshot via `sqlite3.Connection.backup` before automatic migrations or schema validation, then applies configurable age/count retention; backup failure aborts startup. `app/main.py` then verifies the LLM endpoint, ComfyUI (only when it's the configured backend), and output directory writability before accepting requests, and refuses to start otherwise. When launched via `python main.py` (auto-reload enabled), a startup failure exits the whole process with a non-zero status instead of leaving a hung reloader. `main.py` also honors `HOST`/`PORT` environment overrides.
 
 ## Current Pipeline
@@ -328,6 +328,38 @@ and `run` executes under `workload_guard` then restores the job's prior
 terminal status (COMPLETED or FAILED) regardless of outcome. Eligibility:
 job terminal, no unfinished steps, a ready archive exists, and the latest
 archive has no READY listing yet.
+
+### Pinterest scheduling (`/pinterest`)
+
+Pinterest pins promoting FourthWall products are composed per product and
+scheduled for a future time — the Pinterest API publishes immediately, so
+scheduling is app-side. `/pinterest` lists READY `StorefrontListing` rows
+with per-product pin status and a schedule form
+(`/pinterest/schedule/{listing_id}`) prefilled from the Social Media
+Specialist's marketplace post and the resolved product URL
+(`resolve_product_link`: stored `storefront_listings.product_url` — set
+manually via the table's Edit link popover — then detail_json URL/slug →
+FourthWall `GET /products/{id}`; a `product_url_template` guess only
+prefills the form and never satisfies eligibility). Pin images are
+cover-cropped to 2:3 (1000×1500) and sent base64 in `POST /v5/pins` — no
+public hosting needed.
+
+Auth is OAuth 2.0: env-only `PINTEREST_CLIENT_ID` /
+`PINTEREST_CLIENT_SECRET`, `/pinterest/connect` →
+`/pinterest/callback`, tokens under the `social.pinterest.tokens` Setting
+row with proactive refresh in `get_valid_token`. The in-process scheduler
+(`app/services/pinterest_scheduler.py`, started in the FastAPI lifespan)
+polls `scheduled_pins` every `PINTEREST_SCHEDULER_INTERVAL` seconds, claims
+due rows, and publishes under `workload_guard`; pins due while the server
+was down publish on the next tick.
+
+Anti-spam rules (Pinterest's duplicate-content guidance — pins never
+expire): a product link must be known (stored or resolvable), no second pin
+while one is SCHEDULED/PUBLISHING for the same listing, a configurable
+`repin_cooldown_days` (default 30) after the last PUBLISHED pin, and a
+rolling `daily_pin_limit` that defers excess due pins.
+Enforced by `pin_ineligibility` in `app/services/pinterest.py`; each row in
+`scheduled_pins` is the audited attempt record.
 
 ### Converter tools (`/convert`)
 

@@ -1,0 +1,9 @@
+{% if ineligibility %}
+<div class="p-3 rounded text-sm bg-amber-900/30 border border-amber-800/50 text-amber-300">
+    {{ ineligibility }}
+</div>
+{% else %}
+<div class="p-3 rounded text-sm bg-emerald-900/30 border border-emerald-800/50 text-emerald-300">
+    This product is eligible for a new pin.
+</div>
+{% endif %}

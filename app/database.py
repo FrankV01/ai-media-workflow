@@ -199,6 +199,7 @@ async def init_db() -> None:
     import app.models.delivery  # noqa: F401
     import app.models.job  # noqa: F401
     import app.models.media  # noqa: F401
+    import app.models.pinterest  # noqa: F401
     import app.models.setting  # noqa: F401
     import app.models.storefront  # noqa: F401
     import app.models.workflow  # noqa: F401

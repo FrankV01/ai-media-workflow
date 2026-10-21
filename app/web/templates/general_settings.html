@@ -16,6 +16,7 @@
         {% elif status == 'cleared' %}Signature cleared.
         {% elif status == 'storefront' %}Storefront settings saved.
         {% elif status == 'cloudflare' %}Cloudflare R2 settings saved.
+        {% elif status == 'pinterest' %}Pinterest settings saved.
         {% else %}{{ status }}{% endif %}
     </div>
     {% endif %}
@@ -283,6 +284,94 @@
             dashboard and upload the ZIP by hand.
         </p>
     </section>
+</section>
+
+
+<section class="mb-8">
+    <h1 class="text-2xl font-bold mb-1">Social</h1>
+    <p class="text-sm text-gray-500 mb-4">
+        Global social-channel publishing options — applied to every scheduled
+        pin, with no per-workflow or per-run overrides.
+    </p>
+
+    <form method="post" action="/settings/general/pinterest/save"
+          class="bg-gray-900 rounded-lg border border-gray-800 p-5 space-y-4 mb-6">
+        <h2 class="text-lg font-semibold">Pinterest</h2>
+        <p class="text-xs text-gray-500">
+            Scheduled pins are composed per product on the
+            <a href="/pinterest" class="underline">Pinterest page</a> and
+            published through the official API at the chosen time — Pinterest
+            has no native scheduling, and its guidelines allow scheduling only
+            when you choose each pin. OAuth app credentials are read from
+            <code class="font-mono">PINTEREST_CLIENT_ID</code> /
+            <code class="font-mono">PINTEREST_CLIENT_SECRET</code> in
+            <code class="font-mono">.env</code>; the account token from
+            /pinterest/connect is stored in the database.
+            {% if pinterest_connected %}
+            Connected{% if pinterest_username %} as
+            <span class="font-medium text-gray-300">{{ pinterest_username }}</span>{% endif %}.
+            {% else %}
+            <span class="text-amber-500">Not connected.</span>
+            {% endif %}
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">
+                    Re-pin cooldown (days)
+                    <span class="text-gray-600">(per product, after a pin publishes)</span>
+                </label>
+                <input name="repin_cooldown_days" type="number" step="1" min="0" max="365"
+                       value="{{ pinterest.repin_cooldown_days }}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">
+                    Daily pin limit
+                    <span class="text-gray-600">(rolling 24h cap across all products)</span>
+                </label>
+                <input name="daily_pin_limit" type="number" step="1" min="1" max="100"
+                       value="{{ pinterest.daily_pin_limit }}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">
+                    Default board ID
+                    <span class="text-gray-600">(preselected in the schedule form)</span>
+                </label>
+                <input name="default_board_id" value="{{ pinterest.default_board_id }}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500 block mb-1">
+                    Default board name
+                    <span class="text-gray-600">(display only)</span>
+                </label>
+                <input name="default_board_name" value="{{ pinterest.default_board_name }}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+            </div>
+        </div>
+        <div>
+            <label class="text-xs text-gray-500 block mb-1">
+                Product URL template
+                <span class="text-gray-600">
+                    (placeholders: <code class="font-mono">{slug}</code>,
+                    <code class="font-mono">{product_id}</code> — used when the
+                    FourthWall API doesn't return a public URL)
+                </span>
+            </label>
+            <input name="product_url_template" value="{{ pinterest.product_url_template }}"
+                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+        </div>
+        <p class="text-[11px] text-gray-600">
+            Scheduling is blocked while a pin is pending for the same product,
+            and during the cooldown after a publish — matching Pinterest's
+            duplicate-content guidance. The daily limit defers (never fails)
+            extra due pins.
+        </p>
+        <button type="submit" class="px-4 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">
+            Save Pinterest settings
+        </button>
+    </form>
 </section>
 
 

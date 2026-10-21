@@ -96,6 +96,18 @@ class Settings(BaseSettings):
     cloudflare_r2_access_key_id: str = ""
     cloudflare_r2_secret_access_key: str = ""
 
+    # Pinterest integration (env-only: the OAuth app credentials are secrets
+    # and never enter the database). Create the app at
+    # developers.pinterest.com linked to a Business account; set the app's
+    # redirect URI to pinterest_oauth_redirect_uri. The OAuth tokens obtained
+    # via /pinterest/connect are stored in the DB (Setting "social.pinterest.tokens").
+    pinterest_client_id: str = ""
+    pinterest_client_secret: str = ""
+    pinterest_base_url: str = "https://api.pinterest.com/v5"
+    pinterest_oauth_redirect_uri: str = "http://localhost:8000/pinterest/callback"
+    pinterest_scheduler_interval: float = 60.0  # seconds between due-pin polls
+    pinterest_timeout: float = 60.0  # max wait per Pinterest API request
+
     @field_validator("image_output_dir")
     @classmethod
     def require_absolute_image_output_dir(cls, value: Path) -> Path:

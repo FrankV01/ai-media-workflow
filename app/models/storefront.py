@@ -86,6 +86,10 @@ class StorefrontListing(Base):
     product_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     detail_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Public product page on the selling site — set manually from the
+    # Pinterest page when the API can't resolve it; preferred link for pins.
+    product_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Identity of the link document uploaded as the digital file
     link_document_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     link_document_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)

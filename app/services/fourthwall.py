@@ -221,6 +221,11 @@ class FourthwallClient:
         """Attach uploaded media URLs as storefront preview images."""
         return await self._api("POST", f"/products/{product_id}/images", json={"images": images})
 
+    async def get_product(self, product_id: str) -> dict[str, Any]:
+        """Fetch a product's details (best-effort public URL/slug source)."""
+        payload = await self._api("GET", f"/products/{product_id}")
+        return payload if isinstance(payload, dict) else {}
+
 
 def configured_credentials() -> tuple[str, str] | None:
     """The env-configured Open API credential pair, or None when unset."""

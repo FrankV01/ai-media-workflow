@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}Schedule Pin — AI Media Workflow{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold">Schedule a Pin</h1>
+    <p class="text-sm text-gray-500 mt-1">
+        {{ listing.name or 'Product' }} — the pin publishes via the Pinterest
+        API at the time you pick. Nothing posts automatically.
+    </p>
+    {% if error %}
+    <div class="mt-3 p-3 rounded text-sm bg-red-900/30 border border-red-800/50 text-red-300">
+        {{ error }}
+    </div>
+    {% endif %}
+</div>
+
+{% if not connected %}
+<div class="p-4 rounded bg-amber-900/30 border border-amber-800/50 text-amber-300 text-sm mb-6">
+    Pinterest isn't connected.
+    <a href="/pinterest/connect" class="underline">Connect your account</a> first.
+</div>
+{% else %}
+
+<div hx-get="/pinterest/schedule/{{ listing.id }}/check" hx-trigger="load" hx-swap="outerHTML">
+    {% include "partials/pinterest_eligibility.html" %}
+</div>
+
+<form method="post" action="/pinterest/schedule/{{ listing.id }}"
+      class="bg-gray-900 rounded-lg border border-gray-800 p-5 space-y-4 mt-4">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+            <label class="text-xs text-gray-500 block mb-1">Board</label>
+            {% if boards %}
+            <select name="board_id"
+                    class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+                {% for board in boards %}
+                <option value="{{ board.id }}"
+                        {% if board.id == default_board_id %}selected{% endif %}>
+                    {{ board.name }}
+                </option>
+                {% endfor %}
+            </select>
+            {% else %}
+            <input name="board_id" placeholder="Board ID (couldn't load boards)"
+                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+            <p class="text-[11px] text-gray-600 mt-1">
+                Boards couldn't be loaded — paste a board ID from Pinterest.
+            </p>
+            {% endif %}
+            <input type="hidden" name="board_name" id="board_name" value="">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500 block mb-1">
+                Publish at <span class="text-gray-600">(local time)</span>
+            </label>
+            <input name="scheduled_for" type="datetime-local" required
+                   min="{{ min_time }}"
+                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+            <div class="flex gap-2 mt-2 flex-wrap">
+                {% for label, value in quick_picks %}
+                <button type="button" data-time="{{ value }}"
+                        class="quick-pick px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 text-xs text-gray-300">
+                    {{ label }}
+                </button>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <div>
+        <label class="text-xs text-gray-500 block mb-1">
+            Title <span class="text-gray-600">(max 100 chars)</span>
+        </label>
+        <input name="title" maxlength="100" value="{{ suggested_title }}" required
+               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+    </div>
+    <div>
+        <label class="text-xs text-gray-500 block mb-1">
+            Description <span class="text-gray-600">(max 500 chars)</span>
+        </label>
+        <textarea name="description" rows="4" maxlength="500"
+                  class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">{{ suggested_description }}</textarea>
+    </div>
+    <div>
+        <label class="text-xs text-gray-500 block mb-1">
+            Destination link <span class="text-gray-600">(your product page)</span>
+        </label>
+        <input name="link" type="url" value="{{ link }}" required
+               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+        <p class="text-[11px] text-gray-600 mt-1">
+            Resolved from the FourthWall listing — verify it before scheduling.
+        </p>
+    </div>
+
+    {% if image_paths %}
+    <div>
+        <label class="text-xs text-gray-500 block mb-2">
+            Pin image <span class="text-gray-600">(cover-cropped to 2:3 / 1000×1500)</span>
+        </label>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {% for path in image_paths %}
+            <label class="cursor-pointer">
+                <input type="radio" name="image_path" value="{{ path }}"
+                       {% if path == default_image %}checked{% endif %}
+                       class="peer sr-only">
+                <img src="/pinterest/image?path={{ path|urlencode }}"
+                     alt="Pin candidate"
+                     class="rounded border-2 border-transparent peer-checked:border-indigo-500
+                            peer-checked:ring-2 peer-checked:ring-indigo-500/40 aspect-[2/3] object-cover">
+            </label>
+            {% endfor %}
+        </div>
+    </div>
+    {% else %}
+    <div>
+        <label class="text-xs text-gray-500 block mb-1">Pin image path</label>
+        <input name="image_path" placeholder="No generated images found — paste a path"
+               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+    </div>
+    {% endif %}
+
+    <div class="flex items-center gap-3">
+        <button type="submit" {% if ineligibility %}disabled{% endif %}
+                class="px-4 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm font-medium
+                       disabled:opacity-40 disabled:cursor-not-allowed">
+            Schedule pin
+        </button>
+        <a href="/pinterest" class="text-sm text-gray-400 hover:underline">Back</a>
+    </div>
+</form>
+
+<script>
+// Quick-pick buttons fill the datetime-local input; board name follows the select.
+document.querySelectorAll('.quick-pick').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        document.querySelector('input[name="scheduled_for"]').value = btn.dataset.time;
+    });
+});
+var boardSelect = document.querySelector('select[name="board_id"]');
+if (boardSelect) {
+    var syncBoardName = function () {
+        document.getElementById('board_name').value =
+            boardSelect.options[boardSelect.selectedIndex].text;
+    };
+    boardSelect.addEventListener('change', syncBoardName);
+    syncBoardName();
+}
+</script>
+{% endif %}
+{% endblock %}

@@ -38,6 +38,13 @@ from app.api import workflows as wf_router
 from app.blocks.registry import discover_blocks
 from app.config import APP_VERSION, settings
 from app.database import backup_sqlite_database_once, init_db
+from app.services.pinterest_scheduler import (
+    start_scheduler as start_pinterest_scheduler,
+)
+from app.services.pinterest_scheduler import (
+    stop_scheduler as stop_pinterest_scheduler,
+)
+from app.web.pinterest_routes import router as pinterest_web_router
 from app.web.routes import router as web_router
 
 # Uvicorn only attaches handlers to its own loggers — without this, app.*
@@ -143,7 +150,11 @@ async def lifespan(application: FastAPI):
                 with suppress(ProcessLookupError, OSError):
                     os.kill(os.getppid(), signal.SIGUSR1)
         raise
-    yield
+    pin_scheduler = start_pinterest_scheduler()
+    try:
+        yield
+    finally:
+        await stop_pinterest_scheduler(pin_scheduler)
 
 
 app = FastAPI(
@@ -165,6 +176,7 @@ app.include_router(
     bg_removal_router.router, prefix="/api/remove-background", tags=["background-removal"]
 )
 app.include_router(web_router)  # serves HTML at /
+app.include_router(pinterest_web_router)  # Pinterest pages + OAuth
 
 
 # --- Static files ---

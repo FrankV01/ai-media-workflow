@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+
+{% block title %}Pinterest — AI Media Workflow{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold">Pinterest</h1>
+    <p class="text-sm text-gray-500 mt-1">
+        Schedule pins promoting your FourthWall products. Pins publish through
+        the official Pinterest API at the time you choose — one scheduled pin
+        per product, then a {{ cooldown_days }}-day cooldown after it posts.
+    </p>
+    {% if status %}
+    <div class="mt-3 p-3 rounded text-sm bg-emerald-900/30 border border-emerald-800/50 text-emerald-300">
+        {% if status == 'connected' %}Pinterest account connected.
+        {% elif status == 'disconnected' %}Pinterest account disconnected.
+        {% elif status == 'link-saved' %}Product link saved.
+        {% elif status == 'scheduled' %}Pin scheduled.
+        {% elif status == 'canceled' %}Pin canceled.
+        {% elif status == 'rescheduled' %}Pin re-queued for publishing.
+        {% else %}{{ status }}{% endif %}
+    </div>
+    {% endif %}
+    {% if error %}
+    <div class="mt-3 p-3 rounded text-sm bg-red-900/30 border border-red-800/50 text-red-300">
+        {{ error }}
+    </div>
+    {% endif %}
+</div>
+
+
+<section class="bg-gray-900 rounded-lg border border-gray-800 p-5 mb-8">
+    <h2 class="text-lg font-semibold mb-2">Account</h2>
+    {% if not credentials_configured %}
+    <p class="text-sm text-gray-400 leading-relaxed">
+        Pinterest isn't configured yet. Create an app at
+        <span class="font-mono text-xs">developers.pinterest.com</span> linked
+        to your Business account, set its redirect URI to
+        <code class="font-mono text-xs">…/pinterest/callback</code>, and add
+        <code class="font-mono text-xs">PINTEREST_CLIENT_ID</code> /
+        <code class="font-mono text-xs">PINTEREST_CLIENT_SECRET</code> to
+        <code class="font-mono text-xs">.env</code>, then restart.
+    </p>
+    {% elif connected %}
+    <div class="flex items-center justify-between flex-wrap gap-3">
+        <p class="text-sm text-gray-300">
+            Connected{% if pinterest_username %} as
+            <span class="font-medium">{{ pinterest_username }}</span>{% endif %}.
+        </p>
+        <form method="post" action="/pinterest/disconnect">
+            <button type="submit"
+                    class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">
+                Disconnect
+            </button>
+        </form>
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-400 mb-3">
+        App credentials are set. Connect your Pinterest account to enable
+        scheduling — you choose each pin; nothing posts automatically.
+    </p>
+    <a href="/pinterest/connect"
+       class="inline-block px-4 py-1.5 rounded bg-red-700 hover:bg-red-600 text-sm font-medium">
+        Connect Pinterest
+    </a>
+    {% endif %}
+</section>
+
+
+<section class="mb-8">
+    <h2 class="text-lg font-semibold mb-3">Products</h2>
+    {% if products %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="text-left text-xs text-gray-500 border-b border-gray-800">
+                <tr>
+                    <th class="px-4 py-2">Product</th>
+                    <th class="px-4 py-2">Job</th>
+                    <th class="px-4 py-2">Product link</th>
+                    <th class="px-4 py-2">Pin status</th>
+                    <th class="px-4 py-2"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for product in products %}
+                <tr class="border-b border-gray-800/60 last:border-0">
+                    <td class="px-4 py-2 text-gray-200">{{ product.name }}</td>
+                    <td class="px-4 py-2">
+                        <a href="/jobs/{{ product.job_id }}" class="text-indigo-400 hover:underline">
+                            {{ product.job_name }}
+                        </a>
+                    </td>
+                    <td class="px-4 py-2 text-gray-400">
+                        <div class="flex items-center gap-2">
+                            {% if product.product_link %}
+                            <a href="{{ product.product_link }}" target="_blank" rel="noopener"
+                               class="text-indigo-400 hover:underline max-w-xs truncate inline-block align-middle"
+                               title="{{ product.product_link }}">
+                                {{ product.product_link }}
+                            </a>
+                            {% if not product.link_is_stored %}
+                            <span class="text-[10px] text-gray-600" title="Auto-resolved — confirm with Edit link">(auto)</span>
+                            {% endif %}
+                            {% else %}
+                            <span class="text-amber-500/80 text-xs">No link — add one</span>
+                            {% endif %}
+                            <button type="button"
+                                    class="edit-link-btn px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 text-xs text-gray-300"
+                                    data-listing-id="{{ product.id }}"
+                                    data-product-name="{{ product.name }}"
+                                    data-product-url="{{ product.product_url or product.product_link }}">
+                                Edit link
+                            </button>
+                        </div>
+                    </td>
+                    <td class="px-4 py-2 text-gray-400">
+                        {{ product.pin_status }}
+                        {% if product.ineligibility %}
+                        <div class="text-[11px] text-amber-500/80 mt-0.5">{{ product.ineligibility }}</div>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-2 text-right">
+                        {% if product.can_schedule and connected %}
+                        <a href="/pinterest/schedule/{{ product.id }}"
+                           class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs font-medium">
+                            Schedule pin
+                        </a>
+                        {% elif not connected %}
+                        <span class="text-xs text-gray-600">Connect to schedule</span>
+                        {% else %}
+                        <span class="text-xs text-gray-600">Unavailable</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-500">
+        No published FourthWall products yet — a product becomes pinnable once
+        its <code class="font-mono text-xs">fourthwall_listing</code> step
+        completes successfully.
+    </p>
+    {% endif %}
+</section>
+
+
+<section>
+    <h2 class="text-lg font-semibold mb-3">Pins</h2>
+    <div hx-get="/pinterest/pins" hx-trigger="every 30s" hx-swap="outerHTML">
+        {% include "partials/pinterest_pins.html" %}
+    </div>
+</section>
+
+
+<!-- Floating product-link editor -->
+<div id="link-editor-overlay" class="hidden fixed inset-0 bg-black/60 z-40"></div>
+<div id="link-editor" class="hidden fixed z-50 top-1/3 left-1/2 -translate-x-1/2
+            bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-5 w-full max-w-lg">
+    <h3 class="text-sm font-semibold mb-1">Edit product link</h3>
+    <p id="link-editor-name" class="text-xs text-gray-500 mb-3"></p>
+    <form id="link-editor-form" method="post" action="">
+        <input name="product_url" id="link-editor-url" type="url" required
+               placeholder="https://syntheticmuse.ai/products/…"
+               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono">
+        <p class="text-[11px] text-gray-600 mt-2">
+            The public product page on your selling site — pins link here.
+        </p>
+        <div class="flex items-center gap-2 mt-4">
+            <button type="submit"
+                    class="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">
+                Save link
+            </button>
+            <button type="button" id="link-editor-cancel"
+                    class="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm">
+                Cancel
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+(function () {
+    var editor = document.getElementById('link-editor');
+    var overlay = document.getElementById('link-editor-overlay');
+    var form = document.getElementById('link-editor-form');
+    var nameEl = document.getElementById('link-editor-name');
+    var urlEl = document.getElementById('link-editor-url');
+
+    function open(btn) {
+        form.action = '/pinterest/products/' + btn.dataset.listingId + '/link';
+        nameEl.textContent = btn.dataset.productName || '';
+        urlEl.value = btn.dataset.productUrl || '';
+        editor.classList.remove('hidden');
+        overlay.classList.remove('hidden');
+        urlEl.focus();
+        urlEl.select();
+    }
+    function close() {
+        editor.classList.add('hidden');
+        overlay.classList.add('hidden');
+    }
+
+    document.querySelectorAll('.edit-link-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () { open(btn); });
+    });
+    document.getElementById('link-editor-cancel').addEventListener('click', close);
+    overlay.addEventListener('click', close);
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { close(); }
+    });
+})();
+</script>
+{% endblock %}

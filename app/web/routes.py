@@ -1456,12 +1456,18 @@ async def _general_settings_context(
     values: dict | None = None,
     storefront_values: dict | None = None,
     r2_values: dict | None = None,
+    pinterest_values: dict | None = None,
     status: str | None = None,
 ) -> dict:
     """Template context for /settings/general (saved values win over form replay)."""
+    from app.services.pinterest_auth import get_tokens
+    from app.services.pinterest_settings import get_pinterest_settings
+
     delivery = await get_delivery_settings(session)
     storefront = await get_storefront_settings(session)
     r2 = await get_r2_settings(session)
+    pinterest = await get_pinterest_settings(session)
+    pinterest_tokens = await get_tokens(session)
     has_signature = signature_path(delivery.signature_asset) is not None
     return {
         "delivery": values if values is not None else delivery.to_dict(),
@@ -1469,6 +1475,11 @@ async def _general_settings_context(
             storefront_values if storefront_values is not None else storefront.to_dict()
         ),
         "r2": r2_values if r2_values is not None else r2.to_dict(),
+        "pinterest": (
+            pinterest_values if pinterest_values is not None else pinterest.to_dict()
+        ),
+        "pinterest_connected": pinterest_tokens is not None,
+        "pinterest_username": pinterest_tokens.username if pinterest_tokens else "",
         "has_signature": has_signature,
         "errors": errors or [],
         "status": status,
