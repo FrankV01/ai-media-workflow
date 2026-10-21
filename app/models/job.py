@@ -51,6 +51,11 @@ class Job(Base):
     generated_assets: Mapped[str | None] = mapped_column(Text, nullable=True)
     # JSON list[str] of markdown report paths written by report blocks
     report_files: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON list[str | dict] — the effective step list captured at submission,
+    # so interrupted/queued runs can be reconstructed after a restart
+    steps_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON object — the caller-supplied run context (brief, backend overrides)
+    context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     workflow: Mapped["Workflow | None"] = relationship(back_populates="jobs")
     steps: Mapped[list["JobStep"]] = relationship(back_populates="job", cascade="all, delete")

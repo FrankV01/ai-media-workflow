@@ -41,7 +41,7 @@ from app.models.workflow import Workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "e2f5a1c9d7b4"
-HEAD_REVISION = "m0b5d8e2f4a6"
+HEAD_REVISION = "n7f1c3d5e9a2"
 
 SessionFactory = async_sessionmaker[AsyncSession]
 

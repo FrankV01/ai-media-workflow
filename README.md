@@ -50,7 +50,8 @@ automatically before starting. Set `AI_MEDIA_AUTO_MIGRATE=0` to skip the automat
 `alembic upgrade head`. You can override the bind host/port with `HOST`/`PORT` environment
 variables (`PORT=0` picks an available port). If a startup dependency check still fails
 after migration, the whole process exits with a non-zero status instead of leaving the reloader
-running.
+running. Once the checks pass, startup recovery relaunches any jobs the
+previous process left `PENDING` or `RUNNING` (see below).
 
 ## The Pipeline
 
@@ -104,6 +105,17 @@ the LLM and ComfyUI are never hit concurrently. A queued job's step list is
 captured at submit time, but its AI profiles resolve when it actually runs
 (editing a queued workflow's prompts takes effect; editing its steps does
 not), and disabling a workflow does not cancel jobs already queued.
+
+Jobs also survive restarts. The submission step list and context are
+persisted on the `Job` row, and startup recovery
+(`app/services/job_recovery.py`, run from the app lifespan) relaunches
+anything a previous process left behind: `PENDING` jobs requeue exactly as
+submitted, and `RUNNING` jobs resume at the interrupted step — the engine
+rebuilds the context from persisted `JobStep.input_context`/`output`
+snapshots, retries the killed step (noted in the job's warnings), and
+still resolves any pending routing branches. A run with no recoverable
+state is marked `FAILED` and, when its original brief survives, requeued
+as a fresh job.
 
 ### Workflows
 
@@ -402,6 +414,27 @@ settings are stored per-workflow under the Block Settings section of
 The ComfyUI backend runs an SDXL base → refiner → 2x/4x upscale workflow, so
 each prompt variant produces three files.
 
+### Pinterest scheduling (`/pinterest`)
+
+Ready FourthWall listings can be promoted with scheduled Pinterest pins.
+`/pinterest` lists READY `StorefrontListing` rows with per-product pin
+status and a schedule form prefilled from the Social Media Specialist's
+post copy; pin images are cover-cropped to 2:3 (1000×1500) and sent
+base64 — no public image hosting needed.
+
+Auth is OAuth 2.0 (`PINTEREST_CLIENT_ID` / `PINTEREST_CLIENT_SECRET` in
+`.env`, connect at `/pinterest/connect`); tokens live under the
+`social.pinterest.tokens` Setting row and refresh proactively. Because the
+Pinterest API publishes immediately, scheduling is app-side: an in-process
+scheduler (`app/services/pinterest_scheduler.py`, started in the lifespan)
+polls `scheduled_pins`, claims due rows, and publishes under the workload
+guard — pins due while the server was down publish on the next tick.
+
+Anti-spam rules: a resolvable product link is required, only one
+SCHEDULED/PUBLISHING pin per listing, a configurable `repin_cooldown_days`
+(default 30) after the last published pin, and a rolling daily pin limit —
+all under the `social.pinterest` settings edited on `/settings/general`.
+
 ## Architecture
 
 - **Blocks** — atomic processing units in `app/blocks/`. Subclass `Block`,
@@ -414,6 +447,9 @@ each prompt variant produces three files.
   step when the run is untitled).
 - **Workload guard** — `app/services/workload_guard.py`, a reentrant async
   lock backed by an OS file lock, serializes LLM and ComfyUI work.
+- **Restart recovery** — `app/services/job_recovery.py` relaunches queued
+  jobs and resumes interrupted ones at startup (mid-step resume via
+  persisted step snapshots; fail-and-requeue as fallback).
 - **Generation backends** — pluggable image generation in
   `app/services/generation/`. ComfyUI for production, placeholder for testing.
   Images are grouped under `IMAGE_OUTPUT_DIR/<yyyy-mm-dd>/<shoot-slug>/job<id>/`,
@@ -559,7 +595,8 @@ app/
   models/            → ORM models
     workflow.py      → Workflow (named pipeline definition: steps_json,
                        enable/disable, default flag, media model override)
-    job.py           → Job (incl. persisted warnings), JobStep, JobStatus
+    job.py           → Job (incl. persisted warnings + steps_json/context_json
+                       resume state), JobStep, JobStatus
     creative.py      → CreativeRole (identity), LlmRoleConfiguration (per-workflow/
                        role/model LLM profile), LlmConfigurationChange (audited
                        save/reset history), RoleExecution + Message (immutable
@@ -576,6 +613,8 @@ app/
                        archive identity, product id, status, errors)
     cloudflare.py    → CloudflareUpload (R2 upload attempt audit: object
                        key/URL, ETag, archive identity, status, errors)
+    pinterest.py     → ScheduledPin (pin attempt audit: listing, image,
+                       scheduled/published times, status, errors)
   blocks/            → workflow blocks
     base.py          → Abstract Block + BlockMeta
     registry.py      → auto-discovery & @register decorator
@@ -597,9 +636,12 @@ app/
     example_block.py → `echo` test block
   pipeline/
     engine.py        → sequential execution + conditional routing + job titling
+                       + mid-run resume for interrupted jobs
     naming.py        → photo shoot name normalization, slugs, output subdirs
   services/
     workload_guard.py → exclusive lock for LLM / ComfyUI work
+    job_recovery.py  → startup recovery: requeue PENDING jobs, resume
+                       RUNNING jobs interrupted by a restart
     workflows.py     → workflow CRUD/validation/clone + DEFAULT_WORKFLOW_STEPS
     configuration/   → typed config dataclasses + DatabaseConfigurationProvider
     generation/      → backend abstraction
@@ -623,6 +665,11 @@ app/
     link_document.py → buyer download document builder (PDF / Markdown)
     storefront_settings.py → global `storefronts.fourthwall` settings row
     general_settings.py → global delivery settings + signature upload handling
+    pinterest.py     → pin eligibility + scheduling rules
+    pinterest_scheduler.py → in-process due-pin publisher (lifespan task)
+    pinterest_settings.py → global `social.pinterest` settings rows
+    pinterest_auth.py → OAuth 2.0 connect/callback + token refresh
+    pinterest_images.py → 2:3 cover-crop + base64 pin media
   api/               → REST endpoints (/api/blocks, /api/workflows, /api/workflow-definitions, /api/configurations, /api/convert, /api/remove-background)
   web/               → routes.py (pages + HTMX partials), templates/, static/
 tests/               → pytest suite

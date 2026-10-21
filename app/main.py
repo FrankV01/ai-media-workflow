@@ -38,6 +38,7 @@ from app.api import workflows as wf_router
 from app.blocks.registry import discover_blocks
 from app.config import APP_VERSION, settings
 from app.database import backup_sqlite_database_once, init_db
+from app.services.job_recovery import recover_interrupted_jobs
 from app.services.pinterest_scheduler import (
     start_scheduler as start_pinterest_scheduler,
 )
@@ -141,6 +142,8 @@ async def lifespan(application: FastAPI):
         await init_db()
         discover_blocks()
         await _check_dependencies()
+        # Relaunch jobs left PENDING/RUNNING by a previous process
+        await recover_interrupted_jobs()
     except Exception:
         if _is_reloader_child():
             # A startup dependency failure here would normally leave the

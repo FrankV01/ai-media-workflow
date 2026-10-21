@@ -222,6 +222,57 @@ def _persist_job_warnings(job: Job, context: dict[str, Any]) -> None:
     job.warnings = json.dumps(deduped) if deduped else None
 
 
+class ResumeError(RuntimeError):
+    """Raised when an interrupted job cannot be resumed in place."""
+
+
+async def _apply_workflow_context(
+    session: Any,
+    workflow_id: int | None,
+    context: dict[str, Any],
+    *,
+    require_enabled: bool = True,
+) -> Workflow:
+    """Resolve the workflow container and stamp its keys onto context.
+
+    Sets context["_workflow_id"], context["_workflow_slug"], and
+    context["_workflow_media_model"]. With require_enabled=False (startup
+    recovery), a disabled workflow does not block an already-queued run.
+    """
+    if workflow_id is not None:
+        workflow = await session.get(Workflow, workflow_id)
+        if workflow is None:
+            raise WorkflowNotFoundError(f"Unknown workflow id {workflow_id}")
+        if require_enabled and not workflow.is_enabled:
+            raise WorkflowDisabledError(f"Workflow '{workflow.slug}' is disabled")
+    else:
+        workflow = await get_or_create_default_workflow(session)
+
+    context["_workflow_id"] = workflow.id
+    context["_workflow_slug"] = workflow.slug
+    effective_backend = context.get("_generation_backend") or settings.generation_backend
+    if workflow.media_model_name and effective_backend.lower() == (
+        settings.generation_backend.lower()
+    ):
+        active_media_model = workflow.media_model_name
+    else:
+        # Backend override (e.g. test run) or no workflow selection yet: use
+        # the default model for the effective backend.
+        from app.blocks.media_producer import selected_media_model
+
+        active_media_model = selected_media_model(effective_backend)
+        if workflow.media_model_name is None:
+            logger.warning(
+                "Workflow '%s' has no active media model; falling back to env default '%s'. "
+                "Select a profile at /settings/ai?workflow=%s.",
+                workflow.slug,
+                active_media_model,
+                workflow.slug,
+            )
+    context["_workflow_media_model"] = active_media_model
+    return workflow
+
+
 async def run_pipeline(
     workflow_name: str | None,
     block_names: list[str | dict] | None = None,
@@ -259,45 +310,16 @@ async def run_pipeline(
         job_name = workflow_name
 
     context = dict(context or {})
+    # Persisted on the Job row so a restart can requeue/resume the run
+    submitted_context = dict(context)
 
     # Resolve the workflow container before creating the job so unknown or
     # disabled workflows fail without leaving a PENDING row behind
     async with async_session() as session:
-        if workflow_id is not None:
-            workflow = await session.get(Workflow, workflow_id)
-            if workflow is None:
-                raise WorkflowNotFoundError(f"Unknown workflow id {workflow_id}")
-            if not workflow.is_enabled:
-                raise WorkflowDisabledError(f"Workflow '{workflow.slug}' is disabled")
-        else:
-            workflow = await get_or_create_default_workflow(session)
+        workflow = await _apply_workflow_context(session, workflow_id, context)
 
         if block_names is None:
             block_names = parse_steps_json(workflow.steps_json)
-
-        context["_workflow_id"] = workflow.id
-        context["_workflow_slug"] = workflow.slug
-        effective_backend = context.get("_generation_backend") or settings.generation_backend
-        if (
-            workflow.media_model_name
-            and effective_backend.lower() == settings.generation_backend.lower()
-        ):
-            active_media_model = workflow.media_model_name
-        else:
-            # Backend override (e.g. test run) or no workflow selection yet: use
-            # the default model for the effective backend.
-            from app.blocks.media_producer import selected_media_model
-
-            active_media_model = selected_media_model(effective_backend)
-            if workflow.media_model_name is None:
-                logger.warning(
-                    "Workflow '%s' has no active media model; falling back to env default '%s'. "
-                    "Select a profile at /settings/ai?workflow=%s.",
-                    workflow.slug,
-                    active_media_model,
-                    workflow.slug,
-                )
-        context["_workflow_media_model"] = active_media_model
 
         if workflow_name is not None:
             # Caller-supplied name wins — nothing may rename the shoot mid-run
@@ -313,7 +335,13 @@ async def run_pipeline(
             block_names = ["job_namer", *block_names]
 
         # Create the job row as PENDING — it transitions to RUNNING once the lock is acquired
-        job = Job(workflow_name=job_name, workflow_id=workflow.id, status=JobStatus.PENDING)
+        job = Job(
+            workflow_name=job_name,
+            workflow_id=workflow.id,
+            status=JobStatus.PENDING,
+            steps_json=json.dumps(block_names, default=str, ensure_ascii=False),
+            context_json=json.dumps(submitted_context, default=str, ensure_ascii=False),
+        )
         session.add(job)
         await session.commit()
         job_id = job.id
@@ -395,132 +423,367 @@ async def _execute_pipeline(
         if "brief" in context:
             context["_original_brief"] = context["brief"]
 
-        # Process blocks: linearly until a routing dict, then resolve the branch
-        executed = 0
+        await _drain_queue(session, job, queue, context, step_configs, executed=0)
+        await _finalize_job(session, job, context)
 
-        while queue:
-            item = queue.pop(0)
 
-            # Routing dict — resolve based on current verdict and prepend to pending
-            if isinstance(item, dict):
-                verdict = context.get("_verdict")
-                branch_blocks = _resolve_steps([item], verdict)
-                logger.info(
-                    "Routing: verdict=%s → %s",
-                    verdict,
-                    branch_blocks if branch_blocks else "(no blocks)",
-                )
-                # Restore original brief for re-routed blocks
-                if "_original_brief" in context:
-                    context["brief"] = context["_original_brief"]
-                # Create PENDING steps for newly-resolved blocks, preserving
-                # any block-config dicts from the branch.
-                branch_specs: list[tuple[str, dict[str, Any]]] = []
-                for branch_item in branch_blocks:
-                    if isinstance(branch_item, dict) and "block" in branch_item:
-                        branch_specs.append((branch_item["block"], branch_item.get("config", {})))
-                    else:
-                        branch_specs.append((branch_item, {}))
+async def _drain_queue(
+    session: Any,
+    job: Job,
+    queue: list[JobStep | dict],
+    context: dict[str, Any],
+    step_configs: dict[int, dict[str, Any]],
+    *,
+    executed: int,
+) -> None:
+    """Process the work queue: linearly until a routing dict, then resolve it."""
+    while queue:
+        item = queue.pop(0)
 
-                branch_steps: list[JobStep] = []
-                for offset, (bname, _) in enumerate(branch_specs):
-                    step = JobStep(
-                        job_id=job_id,
-                        block_name=bname,
-                        order=executed + offset,
-                        status=JobStatus.PENDING,
-                    )
-                    session.add(step)
-                    branch_steps.append(step)
-                for queued in queue:
-                    if isinstance(queued, JobStep):
-                        queued.order += len(branch_steps)
-                if branch_steps:
-                    await session.commit()
-                    for step, (_, config) in zip(branch_steps, branch_specs):
-                        step_configs[step.id] = config
-                queue = branch_steps + queue
-                continue
-
-            # Normal block execution — use existing pre-created step or the one
-            # just created by routing resolution above
-            step = item
-            name = step.block_name
-            context["_job_step_id"] = step.id
-            context["_step_config"] = step_configs.get(step.id) or {}
-
-            step.status = JobStatus.RUNNING
-            step.started_at = datetime.now(UTC)
-
-            # Snapshot the input context and commit before running so it's
-            # visible in status queries while the block executes
-            step.input_context = json.dumps(
-                _audit_snapshot(context), default=str, ensure_ascii=False
+        # Routing dict — resolve based on current verdict and prepend to pending
+        if isinstance(item, dict):
+            verdict = context.get("_verdict")
+            branch_blocks = _resolve_steps([item], verdict)
+            logger.info(
+                "Routing: verdict=%s → %s",
+                verdict,
+                branch_blocks if branch_blocks else "(no blocks)",
             )
-            execution_offset = len(context.setdefault("_executions", []))
-            media_offset = len(context.setdefault("_media_executions", []))
-            await session.commit()
+            # Restore original brief for re-routed blocks
+            if "_original_brief" in context:
+                context["brief"] = context["_original_brief"]
+            # Create PENDING steps for newly-resolved blocks, preserving
+            # any block-config dicts from the branch.
+            branch_specs: list[tuple[str, dict[str, Any]]] = []
+            for branch_item in branch_blocks:
+                if isinstance(branch_item, dict) and "block" in branch_item:
+                    branch_specs.append((branch_item["block"], branch_item.get("config", {})))
+                else:
+                    branch_specs.append((branch_item, {}))
 
-            try:
-                block_cls = get_block(name)
-                block = block_cls()
-
-                await block.validate(context)
-                result = await block.run(context)
-                context.update(result)
-
-                # A block may have named the shoot — retitle the job mid-run
-                name = context.get("photo_shoot_name")
-                if isinstance(name, str) and name.strip() and name != job.workflow_name:
-                    job.workflow_name = resolve_photo_shoot_name(name[:MAX_PHOTO_SHOOT_NAME_LENGTH])
-
-                # Store the block result; LLM executions are normalized separately
-                step.status = JobStatus.COMPLETED
-                step.output = json.dumps(_audit_snapshot(result), default=str, ensure_ascii=False)
-            except Exception as exc:
-                logger.exception("Block %s failed", name)
-                step.status = JobStatus.FAILED
-                step.error = str(exc)
-                step.error_type = type(exc).__name__
-                step.error_traceback = traceback.format_exc()
-                job.status = JobStatus.FAILED
-                job.error = f"Block '{name}' failed: {exc}"
-            finally:
-                step.finished_at = datetime.now(UTC)
-                await _persist_role_executions(
-                    session,
-                    step,
-                    context.get("_executions", [])[execution_offset:],
+            branch_steps: list[JobStep] = []
+            for offset, (bname, _) in enumerate(branch_specs):
+                step = JobStep(
+                    job_id=job.id,
+                    block_name=bname,
+                    order=executed + offset,
+                    status=JobStatus.PENDING,
                 )
-                await _persist_media_executions(
-                    session,
-                    step,
-                    context.get("_media_executions", [])[media_offset:],
-                )
-                _persist_job_warnings(job, context)
+                session.add(step)
+                branch_steps.append(step)
+            for queued in queue:
+                if isinstance(queued, JobStep):
+                    queued.order += len(branch_steps)
+            if branch_steps:
                 await session.commit()
-                executed += 1
+                for step, (_, config) in zip(branch_steps, branch_specs):
+                    step_configs[step.id] = config
+            queue = branch_steps + queue
+            continue
 
-            if job.status == JobStatus.FAILED:
-                break
+        # Normal block execution — use existing pre-created step or the one
+        # just created by routing resolution above
+        step = item
+        name = step.block_name
+        context["_job_step_id"] = step.id
+        context["_step_config"] = step_configs.get(step.id) or {}
 
-        else:
-            # All blocks succeeded
-            job.status = JobStatus.COMPLETED
+        step.status = JobStatus.RUNNING
+        step.started_at = datetime.now(UTC)
 
-        # Persist generated asset paths at the Job level for easy querying
-        generated_images = context.get("generated_images")
-        if generated_images:
-            job.generated_assets = json.dumps(
-                generated_images,
-                default=str,
-                ensure_ascii=False,
-            )
-
-        # Persist markdown report paths written by report blocks
-        report_files = context.get("report_files")
-        if report_files:
-            job.report_files = json.dumps(report_files, default=str, ensure_ascii=False)
-
-        job.finished_at = datetime.now(UTC)
+        # Snapshot the input context and commit before running so it's
+        # visible in status queries while the block executes
+        step.input_context = json.dumps(_audit_snapshot(context), default=str, ensure_ascii=False)
+        execution_offset = len(context.setdefault("_executions", []))
+        media_offset = len(context.setdefault("_media_executions", []))
         await session.commit()
+
+        try:
+            block_cls = get_block(name)
+            block = block_cls()
+
+            await block.validate(context)
+            result = await block.run(context)
+            context.update(result)
+
+            # A block may have named the shoot — retitle the job mid-run
+            shoot_name = context.get("photo_shoot_name")
+            if (
+                isinstance(shoot_name, str)
+                and shoot_name.strip()
+                and shoot_name != job.workflow_name
+            ):
+                job.workflow_name = resolve_photo_shoot_name(
+                    shoot_name[:MAX_PHOTO_SHOOT_NAME_LENGTH]
+                )
+
+            # Store the block result; LLM executions are normalized separately
+            step.status = JobStatus.COMPLETED
+            step.output = json.dumps(_audit_snapshot(result), default=str, ensure_ascii=False)
+        except Exception as exc:
+            logger.exception("Block %s failed", name)
+            step.status = JobStatus.FAILED
+            step.error = str(exc)
+            step.error_type = type(exc).__name__
+            step.error_traceback = traceback.format_exc()
+            job.status = JobStatus.FAILED
+            job.error = f"Block '{name}' failed: {exc}"
+        finally:
+            step.finished_at = datetime.now(UTC)
+            await _persist_role_executions(
+                session,
+                step,
+                context.get("_executions", [])[execution_offset:],
+            )
+            await _persist_media_executions(
+                session,
+                step,
+                context.get("_media_executions", [])[media_offset:],
+            )
+            _persist_job_warnings(job, context)
+            await session.commit()
+            executed += 1
+
+        if job.status == JobStatus.FAILED:
+            break
+
+    else:
+        # All blocks succeeded
+        job.status = JobStatus.COMPLETED
+
+
+async def _finalize_job(
+    session: Any,
+    job: Job,
+    context: dict[str, Any],
+) -> None:
+    """Persist job-level rollups (assets, reports) and the finish timestamp."""
+    generated_images = context.get("generated_images")
+    if generated_images:
+        job.generated_assets = json.dumps(
+            generated_images,
+            default=str,
+            ensure_ascii=False,
+        )
+
+    report_files = context.get("report_files")
+    if report_files:
+        job.report_files = json.dumps(report_files, default=str, ensure_ascii=False)
+
+    job.finished_at = datetime.now(UTC)
+    await session.commit()
+
+
+def _load_step_spec(job: Job, workflow: Workflow | None) -> list[str | dict]:
+    """Return the step spec stored on the job, falling back to the workflow's."""
+    if job.steps_json:
+        return json.loads(job.steps_json)
+    if workflow is not None and workflow.steps_json:
+        return parse_steps_json(workflow.steps_json)
+    return []
+
+
+def _rebuild_resume_context(
+    job: Job,
+    steps: list[JobStep],
+    resume_index: int,
+) -> dict[str, Any]:
+    """Rebuild the pipeline context for a resumed run.
+
+    Layers, oldest to newest:
+      1. the submitted context persisted on the job (context_json),
+      2. the freshest context snapshot — the resume step's input_context, or
+         (when the crash landed between steps) the last completed step's
+         input_context merged with its output.
+
+    Raises ResumeError when neither source can reconstruct the run.
+    """
+    context: dict[str, Any] = {}
+    if job.context_json:
+        context.update(json.loads(job.context_json))
+
+    resume_step = steps[resume_index]
+    snapshot: dict[str, Any] = {}
+    if resume_step.input_context:
+        snapshot = json.loads(resume_step.input_context)
+    elif resume_index > 0:
+        previous = steps[resume_index - 1]
+        if previous.input_context:
+            snapshot.update(json.loads(previous.input_context))
+        if previous.output:
+            snapshot.update(json.loads(previous.output))
+
+    if not snapshot and not context:
+        raise ResumeError(f"Job {job.id} has no persisted context or step snapshots to resume from")
+    context.update(snapshot)
+
+    # Normalized records and warnings are rebuilt from their own tables
+    context["_executions"] = []
+    context["_media_executions"] = []
+    context["_warnings"] = json.loads(job.warnings) if job.warnings else []
+
+    context["_job_id"] = job.id
+    context["_job_created_date"] = job.created_at.date().isoformat()
+    if "brief" in context and "_original_brief" not in context:
+        context["_original_brief"] = context["brief"]
+    return context
+
+
+async def _resume_pipeline(job_id: int) -> None:
+    """Continue an interrupted job from the step it stopped on.
+
+    Rebuilds the context from persisted snapshots, resets the interrupted
+    step to PENDING, and re-runs it plus everything after it. Unresolved
+    routing dicts from the stored step spec re-enter the queue so branches
+    resolve exactly as they would have originally.
+    """
+    async with async_session() as session:
+        result = await session.execute(select(Job).where(Job.id == job_id))
+        job = result.scalar_one()
+
+        steps = list(
+            (
+                await session.execute(
+                    select(JobStep)
+                    .where(JobStep.job_id == job_id)
+                    .order_by(JobStep.order, JobStep.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        workflow = (
+            await session.get(Workflow, job.workflow_id) if job.workflow_id is not None else None
+        )
+        spec = _load_step_spec(job, workflow)
+
+        job.status = JobStatus.RUNNING
+        job.finished_at = None
+
+        resume_index = next(
+            (i for i, s in enumerate(steps) if s.status != JobStatus.COMPLETED),
+            len(steps),
+        )
+
+        if not steps:
+            # Crash landed before the step rows were committed — recovery
+            # should treat this like a queued job, not a resume.
+            raise ResumeError(f"Job {job_id} has no step rows to resume from")
+
+        if resume_index == len(steps):
+            # Crash landed after the last step — nothing left to run.
+            context = _rebuild_resume_context(job, steps, len(steps) - 1)
+            if steps[-1].output:
+                context.update(json.loads(steps[-1].output))
+            job.status = JobStatus.COMPLETED
+            await _finalize_job(session, job, context)
+            return
+
+        context = _rebuild_resume_context(job, steps, resume_index)
+        if "_workflow_id" not in context:
+            # Older jobs predate context persistence — restamp workflow keys
+            try:
+                await _apply_workflow_context(
+                    session, job.workflow_id, context, require_enabled=False
+                )
+            except (WorkflowNotFoundError, WorkflowDisabledError) as exc:
+                raise ResumeError(f"Job {job_id} cannot resolve its workflow: {exc}")
+
+        # Pair spec step items to existing JobSteps, in order. Steps that
+        # match no spec item came from an already-resolved routing branch
+        # (or a prepended step like job_namer in legacy rows).
+        matched: dict[int, JobStep] = {}
+        used_step_ids: set[int] = set()
+        last = -1
+        for spec_index, item in enumerate(spec):
+            if isinstance(item, dict) and "block" not in item:
+                continue  # routing dict — no pre-created step
+            block_name = item if isinstance(item, str) else item["block"]
+            for j in range(last + 1, len(steps)):
+                if steps[j].id in used_step_ids:
+                    continue
+                if steps[j].block_name == block_name:
+                    matched[spec_index] = steps[j]
+                    used_step_ids.add(steps[j].id)
+                    last = j
+                    break
+            else:
+                logger.warning(
+                    "Resume job %s: no stored step matches spec item %r",
+                    job_id,
+                    block_name,
+                )
+
+        # A routing dict is "resolved" if unpaired steps sit between the
+        # matched steps around it; otherwise it re-enters the queue.
+        step_configs: dict[int, dict[str, Any]] = {}
+        pending_dicts: list[tuple[float, dict]] = []
+        matched_indexes = sorted(matched)
+        for spec_index, item in enumerate(spec):
+            if not isinstance(item, dict) or "block" in item:
+                step = matched.get(spec_index)
+                if step is not None and isinstance(item, dict):
+                    step_configs[step.id] = item.get("config", {})
+                continue
+            prev_order = max(
+                (matched[i].order for i in matched_indexes if i < spec_index),
+                default=-1,
+            )
+            next_order = min(
+                (matched[i].order for i in matched_indexes if i > spec_index),
+                default=max((s.order for s in steps), default=0) + 1,
+            )
+            branch_steps = [
+                s for s in steps if s.id not in used_step_ids and prev_order < s.order < next_order
+            ]
+            if branch_steps:
+                # Already resolved — recover per-step configs by replaying
+                # the branch selection against the rebuilt verdict.
+                used_step_ids.update(s.id for s in branch_steps)
+                branch_blocks = _resolve_steps([item], context.get("_verdict"))
+                for branch_step, branch_item in zip(branch_steps, branch_blocks):
+                    if isinstance(branch_item, dict) and "block" in branch_item:
+                        step_configs[branch_step.id] = branch_item.get("config", {})
+            else:
+                position = next_order - 0.5 if next_order > prev_order else prev_order + 0.5
+                pending_dicts.append((position, item))
+
+        # Reset the interrupted step and annotate the retry
+        resume_step = steps[resume_index]
+        if resume_step.status in (JobStatus.RUNNING, JobStatus.FAILED):
+            context["_warnings"].append(
+                f"Step '{resume_step.block_name}' was interrupted by an "
+                "application restart and is being retried"
+            )
+            resume_step.status = JobStatus.PENDING
+            resume_step.started_at = None
+            resume_step.finished_at = None
+            resume_step.error = None
+            resume_step.error_type = None
+            resume_step.error_traceback = None
+
+        # Build the queue: remaining steps in stored order, with unresolved
+        # routing dicts inserted at their spec positions.
+        queue_entries: list[tuple[float, JobStep | dict]] = [
+            (s.order, s) for s in steps[resume_index:] if s.status != JobStatus.COMPLETED
+        ]
+        queue_entries.extend(pending_dicts)
+        queue_entries.sort(key=lambda entry: entry[0])
+        queue: list[JobStep | dict] = [payload for _, payload in queue_entries]
+
+        await session.commit()
+        logger.info(
+            "Resuming job %s at step '%s' (%d queue entries)",
+            job_id,
+            resume_step.block_name,
+            len(queue),
+        )
+
+        await _drain_queue(session, job, queue, context, step_configs, executed=resume_index)
+        await _finalize_job(session, job, context)
+
+
+async def resume_interrupted_job(job_id: int) -> None:
+    """Acquire the workload guard and resume a crashed RUNNING job."""
+    async with workload_guard.hold(f"pipeline-job-{job_id}-resume"):
+        await _resume_pipeline(job_id)
