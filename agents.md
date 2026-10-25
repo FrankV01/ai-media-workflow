@@ -331,6 +331,34 @@ archive has no READY listing yet.
 
 ### Pinterest scheduling (`/pinterest`)
 
+OAuth requests `boards:write` alongside the read/Pin scopes. Granted scope
+metadata is stored with tokens and retained across refreshes. Legacy tokens
+without that metadata pause publishing until the operator selects Reauthorize
+Pinterest. Reauthorization cannot switch accounts with pending pins; cancel
+pending pins before disconnecting. Failed attempts are displayed in product
+rows rather than labeled Never pinned.
+
+The dashboard and its shared 30-second refresh use five SELECTs regardless of
+product count (with products present), group pins in memory, and resolve links
+from local metadata only — no FourthWall HTTP requests during rendering.
+After rendering, the browser sequentially POSTs missing links to
+`/pinterest/products/{listing_id}/resolve-link`. Each lookup has a 20-second
+budget and caches confirmed URLs in `StorefrontListing.product_url` without
+overwriting a concurrent manual edit. Table updates are triggered as links
+arrive. Failed lookups are attempted once per page load; Retry lookup allows
+another attempt, and Edit link remains available. The polling wrapper uses
+innerHTML and link-editor handlers are delegated to survive repeated refreshes.
+
+The scheduler acquires the global workload lock before atomically claiming one
+pin at a time. Interrupted PUBLISHING rows become FAILED with
+`PublicationOutcomeUnknown`, never automatically reposted. Retrying these
+requires confirming that the board was checked. A publish needs a valid
+Pinterest pin ID; outbound product links are not treated as Pinterest pin URLs.
+Rotated OAuth tokens are committed before sending images so a publish failure
+does not discard the refresh. Verification: `pytest tests/test_pinterest.py
+ tests/test_pinterest_recovery.py` covers permission failure, recovery,
+concurrency, daily caps, and dashboard query counts with mocked external calls.
+
 Pinterest pins promoting FourthWall products are composed per product and
 scheduled for a future time — the Pinterest API publishes immediately, so
 scheduling is app-side. `/pinterest` lists READY `StorefrontListing` rows
