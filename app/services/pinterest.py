@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -225,7 +225,15 @@ async def pin_ineligibility(
         return "No product link for this product — add it with Edit link."
 
     pins = await list_pins(session, storefront_listing_id)
+    return evaluate_pin_eligibility(pins, pinterest_settings, now, link)
 
+
+def evaluate_pin_eligibility(
+    pins: list[ScheduledPin], pinterest_settings: PinterestSettings,
+    now: datetime, link: str,
+) -> str | None:
+    if not link.strip():
+        return "No product link for this product — add it with Edit link."
     pending = [
         p
         for p in pins
@@ -365,7 +373,8 @@ async def cancel_pin(session: AsyncSession, pin_id: int) -> ScheduledPin:
 
 
 async def reschedule_failed_pin(
-    session: AsyncSession, pin_id: int, *, now: datetime | None = None
+    session: AsyncSession, pin_id: int, *, now: datetime | None = None,
+    board_checked: bool = False,
 ) -> ScheduledPin:
     """Re-queue a FAILED pin for immediate publishing (new attempt on the row)."""
     pin = await session.get(ScheduledPin, pin_id)
@@ -373,6 +382,8 @@ async def reschedule_failed_pin(
         raise PinScheduleError("Pin not found.")
     if pin.status != ScheduledPinStatus.FAILED:
         raise PinScheduleError(f"Pin {pin_id} is {pin.status.value}, not failed.")
+    if pin.error_type == "PublicationOutcomeUnknown" and not board_checked:
+        raise PinScheduleError("Check the Pinterest board and confirm before retrying this pin.")
     now = now or datetime.now(UTC)
     reason = await pin_ineligibility(
         session, pin.storefront_listing_id, now=now
@@ -422,25 +433,31 @@ async def published_last_24h(session: AsyncSession, *, now: datetime | None = No
 
 async def claim_pin(session: AsyncSession, pin_id: int) -> bool:
     """Transition SCHEDULED → PUBLISHING; False when already claimed."""
-    pin = await session.get(ScheduledPin, pin_id)
-    if pin is None or pin.status != ScheduledPinStatus.SCHEDULED:
-        return False
-    pin.status = ScheduledPinStatus.PUBLISHING
-    pin.started_at = datetime.now(UTC)
-    await session.flush()
-    return True
+    result = await session.execute(
+        update(ScheduledPin).where(
+            ScheduledPin.id == pin_id,
+            ScheduledPin.status == ScheduledPinStatus.SCHEDULED,
+        ).values(status=ScheduledPinStatus.PUBLISHING, started_at=datetime.now(UTC))
+    )
+    return result.rowcount == 1
 
 
-async def publish_pin(pin_id: int) -> None:
+async def publish_pin(pin_id: int) -> bool:
     """Publish a claimed pin; outcome written to the row in a fresh session."""
+    sending = False
     try:
         async with app.database.async_session() as session:
             pin = await session.get(ScheduledPin, pin_id)
-            if pin is None:
-                return
+            if pin is None or pin.status != ScheduledPinStatus.PUBLISHING:
+                return False
+            from app.services.pinterest_auth import require_publish_permissions
+
+            await require_publish_permissions(session)
             token = await get_valid_token(session)
+            await session.commit()
             image_b64, content_type = prepare_pin_image(pin.image_path)
             async with PinterestClient(token) as client:
+                sending = True
                 payload = await client.create_pin(
                     board_id=pin.board_id,
                     title=pin.title,
@@ -449,10 +466,10 @@ async def publish_pin(pin_id: int) -> None:
                     image_b64=image_b64,
                     content_type=content_type,
                 )
-            pin.pinterest_pin_id = str(payload.get("id")) if payload.get("id") else None
-            pin.pinterest_pin_url = (
-                str(payload.get("link") or payload.get("url")) or None
-            )
+            if not isinstance(payload, dict) or not str(payload.get("id") or "").isdigit():
+                raise PinterestError("Pinterest did not return a valid pin ID.")
+            pin.pinterest_pin_id = str(payload["id"])
+            pin.pinterest_pin_url = f"https://www.pinterest.com/pin/{pin.pinterest_pin_id}/"
             pin.status = ScheduledPinStatus.PUBLISHED
             pin.published_at = datetime.now(UTC)
             pin.finished_at = pin.published_at
@@ -460,16 +477,24 @@ async def publish_pin(pin_id: int) -> None:
             pin.error_type = None
             await session.commit()
             logger.info("Published scheduled pin %s → Pinterest %s", pin_id, pin.pinterest_pin_id)
+            return True
     except Exception as exc:
         logger.exception("Scheduled pin %s failed to publish", pin_id)
         async with app.database.async_session() as session:
             pin = await session.get(ScheduledPin, pin_id)
             if pin is not None:
                 pin.status = ScheduledPinStatus.FAILED
-                pin.error = str(exc)
-                pin.error_type = type(exc).__name__
+                uncertain = sending and not (
+                    isinstance(exc, PinterestApiError) and exc.status_code < 500
+                )
+                pin.error = (
+                    "Publication outcome unknown. Check the Pinterest board before retrying. "
+                    if uncertain else ""
+                ) + str(exc)
+                pin.error_type = "PublicationOutcomeUnknown" if uncertain else type(exc).__name__
                 pin.finished_at = datetime.now(UTC)
                 await session.commit()
+        return False
 
 
 # ── Pin-copy suggestion & product link resolution ───────────────────────
@@ -517,6 +542,26 @@ async def suggest_pin_content(
     }
 
 
+def local_product_link(listing: StorefrontListing, config: PinterestSettings) -> str:
+    if listing.product_url and listing.product_url.strip():
+        return listing.product_url.strip()
+    try:
+        detail = json.loads(listing.detail_json or "{}")
+    except ValueError:
+        return ""
+    if not isinstance(detail, dict):
+        return ""
+    for key in ("url", "productUrl", "product_url", "storefrontUrl", "permalink"):
+        url = detail.get(key)
+        if isinstance(url, str) and url.startswith(("https://", "http://")):
+            return url
+    if detail.get("slug"):
+        return config.product_url_template.format(
+            slug=detail["slug"], product_id=listing.product_id or ""
+        )
+    return ""
+
+
 async def resolve_product_link(
     session: AsyncSession, listing: StorefrontListing
 ) -> str:
@@ -527,6 +572,9 @@ async def resolve_product_link(
     resolves — the template slug is only a schedule-form guess
     (`suggest_product_link`), never a resolved answer.
     """
+    local = local_product_link(listing, await get_pinterest_settings(session))
+    if local:
+        return local
     url_keys = ("url", "productUrl", "product_url", "storefrontUrl", "permalink")
 
     if listing.product_url and listing.product_url.strip():
@@ -567,6 +615,26 @@ async def resolve_product_link(
             )
 
     return ""
+
+
+async def resolve_and_cache_product_link(session: AsyncSession, listing_id: int) -> str:
+    listing = await session.get(StorefrontListing, listing_id)
+    if listing is None or listing.status != StorefrontListingStatus.READY:
+        raise PinScheduleError("Product not found or not ready.")
+    if listing.product_url and listing.product_url.strip():
+        return listing.product_url.strip()
+    link = await asyncio.wait_for(resolve_product_link(session, listing), timeout=20)
+    if not link:
+        return ""
+    if not link.startswith(("https://", "http://")):
+        raise PinScheduleError("FourthWall did not return an absolute product URL.")
+    await session.execute(update(StorefrontListing).where(
+        StorefrontListing.id == listing_id,
+        or_(StorefrontListing.product_url.is_(None), StorefrontListing.product_url == ""),
+    ).values(product_url=link))
+    await session.commit()
+    await session.refresh(listing)
+    return listing.product_url or ""
 
 
 async def suggest_product_link(

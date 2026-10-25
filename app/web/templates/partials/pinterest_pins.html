@@ -49,6 +49,12 @@
                     </form>
                     {% elif pin.retryable %}
                     <form method="post" action="/pinterest/pins/{{ pin.id }}/retry" class="inline">
+                        {% if pin.outcome_unknown %}
+                        <label class="block text-xs text-amber-400 mb-2">
+                            <input type="checkbox" name="board_checked" required>
+                            I checked the board; this pin was not published.
+                        </label>
+                        {% endif %}
                         <button type="submit"
                                 class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-xs">
                             Retry now

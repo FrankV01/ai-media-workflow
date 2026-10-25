@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,12 +42,13 @@ from app.services.pinterest import (
     PinScheduleError,
     PinterestClient,
     cancel_pin,
+    evaluate_pin_eligibility,
     list_pinnable_listings,
     list_pins,
+    local_product_link,
     pin_ineligibility,
-    pins_by_listing,
     reschedule_failed_pin,
-    resolve_product_link,
+    resolve_and_cache_product_link,
     save_product_url,
     schedule_pin,
     suggest_pin_content,
@@ -60,6 +61,8 @@ from app.services.pinterest_auth import (
     disconnect,
     exchange_code,
     get_tokens,
+    permission_warning,
+    require_publish_permissions,
 )
 from app.services.pinterest_settings import (
     PinterestSettingsError,
@@ -92,6 +95,7 @@ def _pin_row(pin) -> dict:
         "status": pin.status.value,
         "title": pin.title,
         "board_name": pin.board_name,
+        "board_id": pin.board_id,
         "link": pin.link,
         "scheduled_for": _fmt_dt(pin.scheduled_for),
         "published_at": _fmt_dt(pin.published_at),
@@ -99,6 +103,7 @@ def _pin_row(pin) -> dict:
         "error": pin.error,
         "cancelable": pin.status == ScheduledPinStatus.SCHEDULED,
         "retryable": pin.status == ScheduledPinStatus.FAILED,
+        "outcome_unknown": pin.error_type == "PublicationOutcomeUnknown",
     }
 
 
@@ -122,14 +127,38 @@ async def _boards_for(session: AsyncSession) -> list[dict]:
 # ── Pages ────────────────────────────────────────────────────────────────
 
 
-@router.get("/pinterest", response_class=HTMLResponse)
-async def pinterest_page(request: Request, session: AsyncSession = Depends(get_session)):
+def product_pin_status(pins, now: datetime) -> str:
+    pending = next((p for p in pins if p.status in (
+        ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING,
+    )), None)
+    if pending:
+        if pending.status == ScheduledPinStatus.PUBLISHING:
+            return "Publishing"
+        when = pending.scheduled_for
+        when = when.replace(tzinfo=UTC) if when.tzinfo is None else when
+        label = "Overdue — waiting to publish" if when <= now else "Scheduled"
+        return f"{label} for {_fmt_dt(when)}"
+    if not pins:
+        return "Never scheduled"
+    latest = pins[0]
+    if latest.status == ScheduledPinStatus.FAILED:
+        return "Failed to publish: " + (latest.error or "Unknown error")
+    if latest.status == ScheduledPinStatus.CANCELED:
+        return "Canceled"
+    return f"Last pinned {_fmt_dt(latest.published_at)}"
+
+
+async def dashboard_context(request: Request, session: AsyncSession) -> dict:
     pinterest_settings = await get_pinterest_settings(session)
     tokens = await get_tokens(session)
     credentials = configured_credentials() is not None
 
     listings = await list_pinnable_listings(session)
-    grouped = await pins_by_listing(session)
+    all_pins = await list_pins(session)
+    grouped = {}
+    for pin in all_pins:
+        grouped.setdefault(pin.storefront_listing_id, []).append(pin)
+    warning = permission_warning(tokens)
     job_ids = {listing.job_id for listing in listings}
     job_names: dict[int, str] = {}
     if job_ids:
@@ -140,24 +169,9 @@ async def pinterest_page(request: Request, session: AsyncSession = Depends(get_s
     products = []
     for listing in listings:
         pins = grouped.get(listing.id, [])
-        link = await resolve_product_link(session, listing)
-        reason = await pin_ineligibility(
-            session,
-            listing.id,
-            pinterest_settings=pinterest_settings,
-            now=now,
-            resolved_link=link,
-            _link_resolved=True,
-        )
-        pending = next(
-            (p for p in pins if p.status in (
-                ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING)),
-            None,
-        )
-        published = [p for p in pins if p.status == ScheduledPinStatus.PUBLISHED]
-        last_published = max(
-            (p.published_at for p in published if p.published_at), default=None
-        )
+        link = local_product_link(listing, pinterest_settings)
+        reason = evaluate_pin_eligibility(pins, pinterest_settings, now, link)
+        reason = reason or warning
         products.append(
             {
                 "id": listing.id,
@@ -168,26 +182,15 @@ async def pinterest_page(request: Request, session: AsyncSession = Depends(get_s
                 "product_url": listing.product_url or "",
                 "product_link": link,
                 "link_is_stored": bool(listing.product_url and listing.product_url.strip()),
-                "pin_status": (
-                    f"Scheduled for {_fmt_dt(pending.scheduled_for)}"
-                    if pending
-                    else (
-                        f"Last pinned {_fmt_dt(last_published)}"
-                        if last_published
-                        else "Never pinned"
-                    )
-                ),
+                "pin_status": product_pin_status(pins, now),
                 "ineligibility": reason,
                 "can_schedule": reason is None,
             }
         )
 
-    pins = [_pin_row(p) for p in await list_pins(session)]
+    pins = [_pin_row(p) for p in all_pins]
 
-    return templates.TemplateResponse(
-        request,
-        "pinterest.html",
-        {
+    return {
             "connected": tokens is not None,
             "pinterest_username": tokens.username if tokens else "",
             "credentials_configured": credentials,
@@ -196,7 +199,14 @@ async def pinterest_page(request: Request, session: AsyncSession = Depends(get_s
             "status": request.query_params.get("status"),
             "error": request.query_params.get("error"),
             "cooldown_days": pinterest_settings.repin_cooldown_days,
-        },
+            "permission_warning": warning,
+        }
+
+
+@router.get("/pinterest", response_class=HTMLResponse)
+async def pinterest_page(request: Request, session: AsyncSession = Depends(get_session)):
+    return templates.TemplateResponse(
+        request, "pinterest.html", await dashboard_context(request, session)
     )
 
 
@@ -290,8 +300,13 @@ async def pinterest_callback(
 
 @router.post("/pinterest/disconnect")
 async def pinterest_disconnect(session: AsyncSession = Depends(get_session)):
-    await disconnect(session)
-    await session.commit()
+    try:
+        await disconnect(session)
+        await session.commit()
+    except PinterestError as exc:
+        return RedirectResponse(
+            f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
+        )
     return RedirectResponse("/pinterest?status=disconnected", status_code=303)
 
 
@@ -320,6 +335,7 @@ async def pinterest_schedule_submit(
         when = None
 
     try:
+        await require_publish_permissions(session)
         if when is None:
             raise PinScheduleError("Scheduled time is required (YYYY-MM-DD HH:MM).")
         await schedule_pin(
@@ -334,12 +350,29 @@ async def pinterest_schedule_submit(
             scheduled_for=when,
         )
         await session.commit()
-    except PinScheduleError as exc:
+    except (PinScheduleError, PinterestError) as exc:
         return RedirectResponse(
             f"/pinterest/schedule/{listing_id}?{urlencode({'error': str(exc)})}",
             status_code=303,
         )
     return RedirectResponse("/pinterest?status=scheduled", status_code=303)
+
+
+@router.post("/pinterest/products/{listing_id}/resolve-link")
+async def pinterest_product_link_resolve(
+    listing_id: int, session: AsyncSession = Depends(get_session),
+):
+    try:
+        link = await resolve_and_cache_product_link(session, listing_id)
+    except TimeoutError:
+        return JSONResponse({"error": "FourthWall lookup timed out. Retry or edit the link."}, 504)
+    except PinScheduleError as exc:
+        return JSONResponse({"error": str(exc)}, 422)
+    if not link:
+        return JSONResponse(
+            {"error": "No URL found. Check FourthWall setup or edit the link."}, 404
+        )
+    return {"product_url": link}
 
 
 @router.post("/pinterest/products/{listing_id}/link")
@@ -352,7 +385,7 @@ async def pinterest_product_link_save(
     try:
         await save_product_url(session, listing_id, product_url)
         await session.commit()
-    except PinScheduleError as exc:
+    except (PinScheduleError, PinterestError) as exc:
         return RedirectResponse(
             f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
         )
@@ -364,7 +397,7 @@ async def pinterest_pin_cancel(pin_id: int, session: AsyncSession = Depends(get_
     try:
         await cancel_pin(session, pin_id)
         await session.commit()
-    except PinScheduleError as exc:
+    except (PinScheduleError, PinterestError) as exc:
         return RedirectResponse(
             f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
         )
@@ -372,11 +405,15 @@ async def pinterest_pin_cancel(pin_id: int, session: AsyncSession = Depends(get_
 
 
 @router.post("/pinterest/pins/{pin_id}/retry")
-async def pinterest_pin_retry(pin_id: int, session: AsyncSession = Depends(get_session)):
+async def pinterest_pin_retry(
+    pin_id: int, board_checked: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
     try:
-        await reschedule_failed_pin(session, pin_id)
+        await require_publish_permissions(session)
+        await reschedule_failed_pin(session, pin_id, board_checked=board_checked == "on")
         await session.commit()
-    except PinScheduleError as exc:
+    except (PinScheduleError, PinterestError) as exc:
         return RedirectResponse(
             f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
         )
@@ -408,9 +445,8 @@ async def pinterest_image(path: str = ""):
 
 @router.get("/pinterest/pins", response_class=HTMLResponse)
 async def partial_pins(request: Request, session: AsyncSession = Depends(get_session)):
-    pins = [_pin_row(p) for p in await list_pins(session)]
     return templates.TemplateResponse(
-        request, "partials/pinterest_pins.html", {"pins": pins}
+        request, "partials/pinterest_dashboard.html", await dashboard_context(request, session)
     )
 
 

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 PINTEREST_TOKENS_KEY = "social.pinterest.tokens"
 PINTEREST_AUTHORIZE_URL = "https://www.pinterest.com/oauth/"
-PINTEREST_SCOPES = "boards:read,pins:read,pins:write,user_accounts:read"
+PINTEREST_SCOPES = "boards:read,boards:write,pins:read,pins:write,user_accounts:read"
 # Refresh a day before expiry so the scheduler rarely hits a dead token.
 REFRESH_MARGIN = timedelta(days=1)
 
@@ -71,6 +71,7 @@ class PinterestTokens:
     refresh_token: str
     expires_at: datetime  # UTC; access-token expiry
     username: str = ""
+    scopes: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,6 +79,7 @@ class PinterestTokens:
             "refresh_token": self.refresh_token,
             "expires_at": self.expires_at.isoformat(),
             "username": self.username,
+            "scopes": self.scopes,
         }
 
     @classmethod
@@ -92,6 +94,7 @@ class PinterestTokens:
                 refresh_token=str(data["refresh_token"]),
                 expires_at=expires_at,
                 username=str(data.get("username") or ""),
+                scopes=data.get("scopes"),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -171,12 +174,19 @@ async def _fetch_username(access_token: str) -> str:
 
 
 async def _store_tokens(
-    session: AsyncSession, payload: dict[str, Any], username: str = ""
+    session: AsyncSession, payload: dict[str, Any], username: str = "",
+    *, preserve_scopes: bool = True,
 ) -> PinterestTokens:
     access_token = str(payload.get("access_token") or "")
     refresh_token = str(payload.get("refresh_token") or "")
     if not access_token or not refresh_token:
         raise PinterestError("Pinterest token response lacked access/refresh tokens")
+    previous = await get_tokens(session)
+    raw_scope = payload.get("scope")
+    scopes = (
+        sorted(set(str(raw_scope).replace(",", " ").split()))
+        if raw_scope is not None else previous.scopes if previous and preserve_scopes else None
+    )
     expires_in = int(payload.get("expires_in") or payload.get("access_token_expires_in") or 0)
     expires_at = datetime.now(UTC) + timedelta(seconds=max(expires_in, 60))
     tokens = PinterestTokens(
@@ -184,6 +194,7 @@ async def _store_tokens(
         refresh_token=refresh_token,
         expires_at=expires_at,
         username=username,
+        scopes=scopes,
     )
     row = (
         await session.execute(select(Setting).where(Setting.key == PINTEREST_TOKENS_KEY))
@@ -219,7 +230,21 @@ async def exchange_code(
         transport=transport,
     )
     username = await _fetch_username(str(payload.get("access_token") or ""))
-    return await _store_tokens(session, payload, username)
+    previous = await get_tokens(session)
+    if previous:
+        from app.models.pinterest import ScheduledPin, ScheduledPinStatus
+
+        pending = await session.scalar(select(ScheduledPin.id).where(
+            ScheduledPin.status.in_([
+                ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING,
+            ])
+        ).limit(1))
+        if pending and (not username or not previous.username or username != previous.username):
+            raise PinterestError(
+                "Cannot change or verify the Pinterest account while pins are pending. "
+                "Reconnect the original account or cancel its schedules first."
+            )
+    return await _store_tokens(session, payload, username, preserve_scopes=False)
 
 
 async def get_tokens(session: AsyncSession) -> PinterestTokens | None:
@@ -254,11 +279,36 @@ async def get_valid_token(
         },
         transport=transport,
     )
+    payload.setdefault("refresh_token", tokens.refresh_token)
     stored = await _store_tokens(session, payload, tokens.username)
     return stored.access_token
 
 
+def permission_warning(tokens: PinterestTokens | None) -> str | None:
+    if tokens is None:
+        return "Pinterest is not connected."
+    if tokens.scopes is None:
+        return "Pinterest permissions are unverified. Reauthorize Pinterest before publishing."
+    missing = set(PINTEREST_SCOPES.split(",")) - set(tokens.scopes)
+    if missing:
+        return "Reauthorize Pinterest. Missing permissions: " + ", ".join(sorted(missing))
+    return None
+
+
+async def require_publish_permissions(session: AsyncSession) -> None:
+    warning = permission_warning(await get_tokens(session))
+    if warning:
+        raise PinterestNotConnectedError(warning)
+
+
 async def disconnect(session: AsyncSession) -> None:
     """Drop the stored token row (Pinterest-side revocation is best-effort)."""
+    from app.models.pinterest import ScheduledPin, ScheduledPinStatus
+
+    pending = await session.scalar(select(ScheduledPin.id).where(
+        ScheduledPin.status.in_([ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING])
+    ).limit(1))
+    if pending:
+        raise PinterestError("Cancel pending pins before disconnecting this Pinterest account.")
     await session.execute(delete(Setting).where(Setting.key == PINTEREST_TOKENS_KEY))
     await session.flush()

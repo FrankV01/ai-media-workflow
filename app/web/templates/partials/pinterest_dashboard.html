@@ -1,0 +1,50 @@
+<section class="mb-8">
+    <h2 class="text-lg font-semibold mb-3">Products</h2>
+    {% if permission_warning %}
+    <p class="text-amber-400 mb-3">{{ permission_warning }}
+        <a href="/pinterest/connect" class="underline">Reauthorize Pinterest</a>
+    </p>
+    {% endif %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="text-left text-gray-500"><tr>
+                <th class="p-3">Product</th><th class="p-3">Job</th>
+                <th class="p-3">Product link</th><th class="p-3">Pin status</th><th></th>
+            </tr></thead>
+            <tbody>
+            {% for product in products %}
+            <tr class="border-t border-gray-800">
+                <td class="p-3">{{ product.name }}</td>
+                <td class="p-3"><a href="/jobs/{{ product.job_id }}" class="text-indigo-400">{{ product.job_name }}</a></td>
+                <td class="p-3">
+                    {% if product.product_link %}
+                    <a href="{{ product.product_link }}" target="_blank" rel="noopener" class="text-indigo-400 max-w-xs truncate inline-block">{{ product.product_link }}</a>
+                    {% if not product.link_is_stored %}<span class="text-gray-500">(auto)</span>{% endif %}
+                    {% else %}
+                    <span class="link-resolution-status text-amber-400" data-listing-id="{{ product.id }}" aria-live="polite">Waiting for FourthWall lookup…</span>
+                    <button type="button" class="retry-link-btn text-indigo-400 underline" data-listing-id="{{ product.id }}">Retry lookup</button>
+                    {% endif %}
+                    <button type="button" class="edit-link-btn bg-gray-800 rounded p-2"
+                            data-listing-id="{{ product.id }}" data-product-name="{{ product.name }}"
+                            data-product-url="{{ product.product_url or product.product_link }}">Edit link</button>
+                </td>
+                <td class="p-3 max-w-sm">
+                    {{ product.pin_status }}
+                    {% if product.ineligibility %}<p class="text-xs text-amber-400">{{ product.ineligibility }}</p>{% endif %}
+                    {% if 'Failed to publish' in product.pin_status %}<a href="#pin-history" class="text-indigo-400 underline">Review attempt / retry</a>{% endif %}
+                </td>
+                <td class="p-3">
+                    {% if product.can_schedule and connected %}
+                    <a href="/pinterest/schedule/{{ product.id }}" class="bg-indigo-600 rounded px-3 py-1 inline-block whitespace-nowrap">Schedule pin</a>
+                    {% else %}<span class="text-gray-500">Unavailable</span>{% endif %}
+                </td>
+            </tr>
+            {% else %}<tr><td class="p-3" colspan="5">No FourthWall products ready yet.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+<section id="pin-history">
+    <h2 class="text-lg font-semibold mb-3">Pins</h2>
+    {% include "partials/pinterest_pins.html" %}
+</section>
