@@ -2,11 +2,22 @@
 {% block title %}Pinterest — AI Media Workflow{% endblock %}
 {% block content %}
 <h1 class="text-2xl font-bold mb-4">Pinterest</h1>
-<p class="text-gray-400 mb-4">Schedule individual product pins. After publishing, a {{ cooldown_days }}-day cooldown applies.</p>
+<details id="pinterest-help-panel" class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
+    <summary id="pinterest-help" class="text-lg font-semibold cursor-pointer">How this works</summary>
+    <ul class="list-disc pl-5 mt-3 space-y-2 text-sm text-gray-400">
+        <li><strong class="text-gray-200">Available products:</strong> Only successful Fourthwall listings (READY) appear, across all workflows. A completed job alone is not enough; jobs without a successful listing, including skipped or failed listing attempts, do not appear.</li>
+        <li><strong class="text-gray-200">Check visibility:</strong> A successful listing may still be hidden in Fourthwall. Confirm the product is publicly published before promoting it; this page does not check live storefront visibility.</li>
+        <li><strong class="text-gray-200">Schedule a pin:</strong> Connect or reauthorize Pinterest and ensure the product link is known. Missing links are looked up automatically; use Retry lookup or Edit link if needed. Select Schedule pin, then review the board, image, copy, and future time. Copy and image choices are prefilled from the job where available.</li>
+        <li><strong class="text-gray-200">Keep the app running:</strong> Scheduling happens here, not on Pinterest. Overdue pins are picked up after restart; active workflow work and the rolling daily limit can delay publishing.</li>
+        <li><strong class="text-gray-200">Repeat pins:</strong> Only one scheduled or publishing pin is allowed per listing. After publication, a {{ cooldown_days }}-day cooldown applies. Adjust Pinterest limits in <a href="/settings/general" class="text-indigo-400 underline">General Settings</a>.</li>
+        <li><strong class="text-gray-200">Review attempts:</strong> Check the Pins section for status, cancel scheduled pins, or retry failed attempts. If the publication outcome is unknown, check the Pinterest board before confirming a retry to avoid duplicates.</li>
+    </ul>
+</details>
 {% if status %}<p class="text-emerald-400 mb-4">{{ status }}</p>{% endif %}
 {% if error %}<p class="text-red-400 mb-4">{{ error }}</p>{% endif %}
-<section class="bg-gray-900 border border-gray-800 rounded p-5 mb-6">
-    <h2 class="text-lg font-semibold">Account</h2>
+<details id="pinterest-account-panel" class="bg-gray-900 border border-gray-800 rounded p-5 mb-6"{% if not connected or not credentials_configured %} open{% endif %}>
+    <summary class="text-lg font-semibold cursor-pointer">Account{% if connected %} <span class="text-sm font-normal text-emerald-400">— Connected{% if pinterest_username %} as {{ pinterest_username }}{% endif %}</span>{% endif %}</summary>
+    <div class="mt-3">
     {% if not credentials_configured %}
     <p>Set PINTEREST_CLIENT_ID and PINTEREST_CLIENT_SECRET in .env, then restart.</p>
     {% elif connected %}
@@ -14,7 +25,8 @@
     <a href="/pinterest/connect" class="text-indigo-400 underline">Reauthorize Pinterest</a>
     <form method="post" action="/pinterest/disconnect" class="inline ml-4"><button type="submit">Disconnect</button></form>
     {% else %}<a href="/pinterest/connect" class="text-indigo-400 underline">Connect Pinterest</a>{% endif %}
-</section>
+    </div>
+</details>
 <div id="pinterest-dashboard" hx-get="/pinterest/pins" hx-trigger="every 30s, linksResolved" hx-swap="innerHTML">
     {% include "partials/pinterest_dashboard.html" %}
 </div>

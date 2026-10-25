@@ -61,6 +61,59 @@ def _make_listing_sync(session_factory) -> int:
     return asyncio.run(_insert())
 
 
+@pytest.mark.parametrize("cooldown_days", [0, 14, 30])
+def test_pinterest_help_without_products_or_connection(cooldown_days):
+    from app.web.pinterest_routes import templates
+
+    html = templates.env.get_template("pinterest.html").render(
+        connected=False,
+        credentials_configured=True,
+        products=[],
+        pins=[],
+        cooldown_days=cooldown_days,
+    )
+
+    assert "How this works" in html
+    assert "Only successful Fourthwall listings (READY) appear" in html
+    assert "A completed job alone is not enough" in html
+    assert "A successful listing may still be hidden" in html
+    assert "this page does not check live storefront visibility" in html
+    assert f"a {cooldown_days}-day cooldown applies" in html
+    assert 'href="/settings/general"' in html
+    assert "Overdue pins are picked up after restart" in html
+    assert "check the Pinterest board before confirming a retry" in html
+    assert "No FourthWall products ready yet." in html
+    assert "Connect Pinterest" in html
+    assert html.index('id="pinterest-help"') < html.index('id="pinterest-dashboard"')
+
+
+@pytest.mark.parametrize(
+    ("connected", "credentials_configured", "account_open"),
+    [(True, True, False), (False, True, True), (False, False, True), (True, False, True)],
+)
+def test_pinterest_collapsible_panels(connected, credentials_configured, account_open):
+    from app.web.pinterest_routes import templates
+
+    html = templates.env.get_template("pinterest.html").render(
+        connected=connected,
+        credentials_configured=credentials_configured,
+        pinterest_username="test-user",
+        products=[],
+        pins=[],
+        cooldown_days=30,
+    )
+
+    help_tag = html.split('<details id="pinterest-help-panel"', 1)[1].split(">", 1)[0]
+    account_tag = html.split('<details id="pinterest-account-panel"', 1)[1].split(">", 1)[0]
+    assert " open" not in help_tag
+    assert (" open" in account_tag) is account_open
+    if connected:
+        account_summary = html.split('<details id="pinterest-account-panel"', 1)[1].split(
+            "</summary>", 1
+        )[0]
+        assert "Connected as test-user" in account_summary
+
+
 def _future(days: int = 1) -> datetime:
     return datetime.now(UTC) + timedelta(days=days)
 
