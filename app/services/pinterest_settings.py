@@ -87,16 +87,12 @@ def _validate(
     if not isinstance(product_url_template, str):
         errors.append("product_url_template must be text")
     elif len(product_url_template) > MAX_URL_TEMPLATE_CHARS:
-        errors.append(
-            f"product_url_template must be {MAX_URL_TEMPLATE_CHARS} characters or fewer"
-        )
+        errors.append(f"product_url_template must be {MAX_URL_TEMPLATE_CHARS} characters or fewer")
     elif product_url_template.strip():
         try:
             product_url_template.format(slug="x", product_id="x")
         except (KeyError, IndexError, ValueError):
-            errors.append(
-                "product_url_template may only use {slug} and {product_id} placeholders"
-            )
+            errors.append("product_url_template may only use {slug} and {product_id} placeholders")
     else:
         errors.append("product_url_template must not be empty")
     return errors

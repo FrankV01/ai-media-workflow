@@ -81,9 +81,7 @@ async def summarize_description(
         async with workload_guard.hold("fourthwall-description-summary"):
             summary = await caller(system_prompt, brief)
     except Exception:
-        logger.exception(
-            "Storefront description summarization failed; falling back to truncation"
-        )
+        logger.exception("Storefront description summarization failed; falling back to truncation")
         return brief[:max_chars].strip()
 
     if not summary or not str(summary).strip():

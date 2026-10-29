@@ -163,9 +163,7 @@ async def create_cloudflare_upload(
         workflow_id = job.workflow_id
         r2 = await get_r2_settings(session)
         archive = await latest_ready_archive(session, job_id)
-        existing = (
-            await latest_ready_upload(session, archive.id) if archive is not None else None
-        )
+        existing = await latest_ready_upload(session, archive.id) if archive is not None else None
 
     credentials = configured_credentials()
     if credentials is None:
@@ -176,8 +174,7 @@ async def create_cloudflare_upload(
         return _result("skipped", note=note, warning=note)
     if archive is None:
         note = (
-            "Cloudflare R2 upload skipped: no ready delivery archive — "
-            "run delivery_archive first"
+            "Cloudflare R2 upload skipped: no ready delivery archive — run delivery_archive first"
         )
         return _result("skipped", note=note, warning=note)
     if existing is not None:
@@ -205,9 +202,7 @@ async def create_cloudflare_upload(
     async with app.database.async_session() as session:
         attempt = (
             await session.execute(
-                select(func.max(CloudflareUpload.attempt)).where(
-                    CloudflareUpload.job_id == job_id
-                )
+                select(func.max(CloudflareUpload.attempt)).where(CloudflareUpload.job_id == job_id)
             )
         ).scalar() or 0
         attempt += 1
@@ -289,8 +284,7 @@ def upload_retry_ineligibility(
     if archive is None:
         return "job has no ready delivery archive to upload"
     if any(
-        upload.status == CloudflareUploadStatus.READY
-        and upload.delivery_archive_id == archive.id
+        upload.status == CloudflareUploadStatus.READY and upload.delivery_archive_id == archive.id
         for upload in uploads
     ):
         return "the latest archive is already uploaded"

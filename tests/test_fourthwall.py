@@ -128,8 +128,8 @@ async def _seed_job(
             art_director_output = (
                 art_director_output
                 or "A moody editorial shoot on rain-slick neon "
-                   "streets — **magenta rim light**, cinematic "
-                   "haze."
+                "streets — **magenta rim light**, cinematic "
+                "haze."
             )
             session.add(
                 JobStep(
@@ -137,9 +137,7 @@ async def _seed_job(
                     block_name="art_director",
                     order=-1,
                     status=JobStatus.COMPLETED,
-                    output=json.dumps(
-                        {"art_director_output": art_director_output}
-                    ),
+                    output=json.dumps({"art_director_output": art_director_output}),
                 )
             )
             session.add(
@@ -622,9 +620,7 @@ async def test_listing_no_images_still_attaches_document(output_dir, listable):
     assert "Digital artwork collection: Neon Shoot" in listing.description
 
 
-async def test_listing_description_respects_fourthwall_character_limit(
-    output_dir, listable
-):
+async def test_listing_description_respects_fourthwall_character_limit(output_dir, listable):
     """A very long Art Director brief must still produce a description under 4k chars."""
     long_brief = "A neon street scene. " * 300  # ~6,000 characters
     job, _, _ = await _seed_job(output_dir, art_director_output=long_brief)
@@ -644,20 +640,22 @@ async def test_listing_description_respects_fourthwall_character_limit(
 
 async def test_render_inventory_html_individual_files():
     """Files <=8 are listed individually with friendly names and sizes."""
-    manifest = json.dumps({
-        "schema_version": 1,
-        "entries": [
-            {"path": "_delivery/", "type": "directory"},
-            {"path": "_delivery/README.md", "type": "file", "size": 512},
-            {"path": "_delivery/creative_process.md", "type": "file", "size": 2048},
-            {"path": "_delivery/manifest.json", "type": "file", "size": 1024},
-            {"path": "_delivery/LICENSE.md", "type": "file", "size": 300},
-            {"path": "_delivery/signature.png", "type": "file", "size": 4096},
-            {"path": "aimw_main_refined_1x_00001_.png", "type": "file", "size": 2_100_000},
-            {"path": "aimw_main_upscaled_4x_00001_.png", "type": "file", "size": 8_400_000},
-            {"path": "art_critic_report.md", "type": "file", "size": 1200},
-        ],
-    })
+    manifest = json.dumps(
+        {
+            "schema_version": 1,
+            "entries": [
+                {"path": "_delivery/", "type": "directory"},
+                {"path": "_delivery/README.md", "type": "file", "size": 512},
+                {"path": "_delivery/creative_process.md", "type": "file", "size": 2048},
+                {"path": "_delivery/manifest.json", "type": "file", "size": 1024},
+                {"path": "_delivery/LICENSE.md", "type": "file", "size": 300},
+                {"path": "_delivery/signature.png", "type": "file", "size": 4096},
+                {"path": "aimw_main_refined_1x_00001_.png", "type": "file", "size": 2_100_000},
+                {"path": "aimw_main_upscaled_4x_00001_.png", "type": "file", "size": 8_400_000},
+                {"path": "art_critic_report.md", "type": "file", "size": 1200},
+            ],
+        }
+    )
     html = fw._render_inventory_html(manifest)
     assert "<strong>What's Included</strong>" in html
     assert "Archive Guide" in html
@@ -673,8 +671,7 @@ async def test_render_inventory_html_individual_files():
 
 async def test_render_inventory_html_summary_mode():
     """More than 8 files triggers summary mode."""
-    entries = [{"path": f"image_{i}.png", "type": "file", "size": 1_000_000}
-               for i in range(10)]
+    entries = [{"path": f"image_{i}.png", "type": "file", "size": 1_000_000} for i in range(10)]
     manifest = json.dumps({"schema_version": 1, "entries": entries})
     html = fw._render_inventory_html(manifest)
     assert "<strong>What's Included</strong>" in html
@@ -693,17 +690,19 @@ async def test_listing_description_includes_inventory(output_dir, listable):
     """When the archive has a manifest, the description includes a What's Included section."""
     job, source, archive = await _seed_job(output_dir)
     # Attach a manifest to the archive
-    manifest = json.dumps({
-        "schema_version": 1,
-        "entries": [
-            {"path": "aimw_main_refined_1x_00001_.png", "type": "file", "size": 2_100_000},
-            {"path": "aimw_main_upscaled_4x_00001_.png", "type": "file", "size": 8_400_000},
-            {"path": "_delivery/", "type": "directory"},
-            {"path": "_delivery/README.md", "type": "file", "size": 512},
-            {"path": "_delivery/creative_process.md", "type": "file", "size": 2048},
-            {"path": "_delivery/manifest.json", "type": "file", "size": 1024},
-        ],
-    })
+    manifest = json.dumps(
+        {
+            "schema_version": 1,
+            "entries": [
+                {"path": "aimw_main_refined_1x_00001_.png", "type": "file", "size": 2_100_000},
+                {"path": "aimw_main_upscaled_4x_00001_.png", "type": "file", "size": 8_400_000},
+                {"path": "_delivery/", "type": "directory"},
+                {"path": "_delivery/README.md", "type": "file", "size": 512},
+                {"path": "_delivery/creative_process.md", "type": "file", "size": 2048},
+                {"path": "_delivery/manifest.json", "type": "file", "size": 1024},
+            ],
+        }
+    )
     async with app.database.async_session() as session:
         archive_row = await session.get(DeliveryArchive, archive.id)
         archive_row.manifest = manifest

@@ -174,8 +174,11 @@ async def _fetch_username(access_token: str) -> str:
 
 
 async def _store_tokens(
-    session: AsyncSession, payload: dict[str, Any], username: str = "",
-    *, preserve_scopes: bool = True,
+    session: AsyncSession,
+    payload: dict[str, Any],
+    username: str = "",
+    *,
+    preserve_scopes: bool = True,
 ) -> PinterestTokens:
     access_token = str(payload.get("access_token") or "")
     refresh_token = str(payload.get("refresh_token") or "")
@@ -185,7 +188,10 @@ async def _store_tokens(
     raw_scope = payload.get("scope")
     scopes = (
         sorted(set(str(raw_scope).replace(",", " ").split()))
-        if raw_scope is not None else previous.scopes if previous and preserve_scopes else None
+        if raw_scope is not None
+        else previous.scopes
+        if previous and preserve_scopes
+        else None
     )
     expires_in = int(payload.get("expires_in") or payload.get("access_token_expires_in") or 0)
     expires_at = datetime.now(UTC) + timedelta(seconds=max(expires_in, 60))
@@ -234,11 +240,18 @@ async def exchange_code(
     if previous:
         from app.models.pinterest import ScheduledPin, ScheduledPinStatus
 
-        pending = await session.scalar(select(ScheduledPin.id).where(
-            ScheduledPin.status.in_([
-                ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING,
-            ])
-        ).limit(1))
+        pending = await session.scalar(
+            select(ScheduledPin.id)
+            .where(
+                ScheduledPin.status.in_(
+                    [
+                        ScheduledPinStatus.SCHEDULED,
+                        ScheduledPinStatus.PUBLISHING,
+                    ]
+                )
+            )
+            .limit(1)
+        )
         if pending and (not username or not previous.username or username != previous.username):
             raise PinterestError(
                 "Cannot change or verify the Pinterest account while pins are pending. "
@@ -305,9 +318,13 @@ async def disconnect(session: AsyncSession) -> None:
     """Drop the stored token row (Pinterest-side revocation is best-effort)."""
     from app.models.pinterest import ScheduledPin, ScheduledPinStatus
 
-    pending = await session.scalar(select(ScheduledPin.id).where(
-        ScheduledPin.status.in_([ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING])
-    ).limit(1))
+    pending = await session.scalar(
+        select(ScheduledPin.id)
+        .where(
+            ScheduledPin.status.in_([ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING])
+        )
+        .limit(1)
+    )
     if pending:
         raise PinterestError("Cancel pending pins before disconnecting this Pinterest account.")
     await session.execute(delete(Setting).where(Setting.key == PINTEREST_TOKENS_KEY))

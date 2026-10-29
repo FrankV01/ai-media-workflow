@@ -229,15 +229,15 @@ async def pin_ineligibility(
 
 
 def evaluate_pin_eligibility(
-    pins: list[ScheduledPin], pinterest_settings: PinterestSettings,
-    now: datetime, link: str,
+    pins: list[ScheduledPin],
+    pinterest_settings: PinterestSettings,
+    now: datetime,
+    link: str,
 ) -> str | None:
     if not link.strip():
         return "No product link for this product — add it with Edit link."
     pending = [
-        p
-        for p in pins
-        if p.status in (ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING)
+        p for p in pins if p.status in (ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING)
     ]
     if pending:
         when = _fmt_dt(pending[0].scheduled_for)
@@ -291,9 +291,7 @@ def _validate_pin_payload(
     if scheduled_for <= now:
         errors.append("Scheduled time must be in the future.")
     elif scheduled_for > now + timedelta(days=MAX_SCHEDULE_HORIZON_DAYS):
-        errors.append(
-            f"Scheduled time can't be more than {MAX_SCHEDULE_HORIZON_DAYS} days out."
-        )
+        errors.append(f"Scheduled time can't be more than {MAX_SCHEDULE_HORIZON_DAYS} days out.")
     if not image_path.strip():
         errors.append("A pin image is required.")
     return errors
@@ -373,7 +371,10 @@ async def cancel_pin(session: AsyncSession, pin_id: int) -> ScheduledPin:
 
 
 async def reschedule_failed_pin(
-    session: AsyncSession, pin_id: int, *, now: datetime | None = None,
+    session: AsyncSession,
+    pin_id: int,
+    *,
+    now: datetime | None = None,
     board_checked: bool = False,
 ) -> ScheduledPin:
     """Re-queue a FAILED pin for immediate publishing (new attempt on the row)."""
@@ -385,9 +386,7 @@ async def reschedule_failed_pin(
     if pin.error_type == "PublicationOutcomeUnknown" and not board_checked:
         raise PinScheduleError("Check the Pinterest board and confirm before retrying this pin.")
     now = now or datetime.now(UTC)
-    reason = await pin_ineligibility(
-        session, pin.storefront_listing_id, now=now
-    )
+    reason = await pin_ineligibility(session, pin.storefront_listing_id, now=now)
     # The failed row itself is neither pending nor published, so only a
     # different row could block — surfacing that reason is correct.
     if reason:
@@ -434,10 +433,12 @@ async def published_last_24h(session: AsyncSession, *, now: datetime | None = No
 async def claim_pin(session: AsyncSession, pin_id: int) -> bool:
     """Transition SCHEDULED → PUBLISHING; False when already claimed."""
     result = await session.execute(
-        update(ScheduledPin).where(
+        update(ScheduledPin)
+        .where(
             ScheduledPin.id == pin_id,
             ScheduledPin.status == ScheduledPinStatus.SCHEDULED,
-        ).values(status=ScheduledPinStatus.PUBLISHING, started_at=datetime.now(UTC))
+        )
+        .values(status=ScheduledPinStatus.PUBLISHING, started_at=datetime.now(UTC))
     )
     return result.rowcount == 1
 
@@ -489,7 +490,8 @@ async def publish_pin(pin_id: int) -> bool:
                 )
                 pin.error = (
                     "Publication outcome unknown. Check the Pinterest board before retrying. "
-                    if uncertain else ""
+                    if uncertain
+                    else ""
                 ) + str(exc)
                 pin.error_type = "PublicationOutcomeUnknown" if uncertain else type(exc).__name__
                 pin.finished_at = datetime.now(UTC)
@@ -514,9 +516,7 @@ def _merged_step_outputs(steps: list[JobStep]) -> dict[str, Any]:
     return merged
 
 
-async def suggest_pin_content(
-    session: AsyncSession, listing: StorefrontListing
-) -> dict[str, Any]:
+async def suggest_pin_content(session: AsyncSession, listing: StorefrontListing) -> dict[str, Any]:
     """Seed title/description/image options for the schedule form.
 
     Copy comes from the Social Media Specialist's marketplace post (same
@@ -562,9 +562,7 @@ def local_product_link(listing: StorefrontListing, config: PinterestSettings) ->
     return ""
 
 
-async def resolve_product_link(
-    session: AsyncSession, listing: StorefrontListing
-) -> str:
+async def resolve_product_link(session: AsyncSession, listing: StorefrontListing) -> str:
     """Best-effort public product URL for the pin's link field.
 
     Order: stored product_url (manual value wins) → detail_json URL/slug →
@@ -628,18 +626,20 @@ async def resolve_and_cache_product_link(session: AsyncSession, listing_id: int)
         return ""
     if not link.startswith(("https://", "http://")):
         raise PinScheduleError("FourthWall did not return an absolute product URL.")
-    await session.execute(update(StorefrontListing).where(
-        StorefrontListing.id == listing_id,
-        or_(StorefrontListing.product_url.is_(None), StorefrontListing.product_url == ""),
-    ).values(product_url=link))
+    await session.execute(
+        update(StorefrontListing)
+        .where(
+            StorefrontListing.id == listing_id,
+            or_(StorefrontListing.product_url.is_(None), StorefrontListing.product_url == ""),
+        )
+        .values(product_url=link)
+    )
     await session.commit()
     await session.refresh(listing)
     return listing.product_url or ""
 
 
-async def suggest_product_link(
-    session: AsyncSession, listing: StorefrontListing
-) -> str:
+async def suggest_product_link(session: AsyncSession, listing: StorefrontListing) -> str:
     """The resolved link, or a best-guess from product_url_template.
 
     Used to prefill the schedule form's link field — the guess is

@@ -128,9 +128,18 @@ async def _boards_for(session: AsyncSession) -> list[dict]:
 
 
 def product_pin_status(pins, now: datetime) -> str:
-    pending = next((p for p in pins if p.status in (
-        ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING,
-    )), None)
+    pending = next(
+        (
+            p
+            for p in pins
+            if p.status
+            in (
+                ScheduledPinStatus.SCHEDULED,
+                ScheduledPinStatus.PUBLISHING,
+            )
+        ),
+        None,
+    )
     if pending:
         if pending.status == ScheduledPinStatus.PUBLISHING:
             return "Publishing"
@@ -191,16 +200,16 @@ async def dashboard_context(request: Request, session: AsyncSession) -> dict:
     pins = [_pin_row(p) for p in all_pins]
 
     return {
-            "connected": tokens is not None,
-            "pinterest_username": tokens.username if tokens else "",
-            "credentials_configured": credentials,
-            "products": products,
-            "pins": pins,
-            "status": request.query_params.get("status"),
-            "error": request.query_params.get("error"),
-            "cooldown_days": pinterest_settings.repin_cooldown_days,
-            "permission_warning": warning,
-        }
+        "connected": tokens is not None,
+        "pinterest_username": tokens.username if tokens else "",
+        "credentials_configured": credentials,
+        "products": products,
+        "pins": pins,
+        "status": request.query_params.get("status"),
+        "error": request.query_params.get("error"),
+        "cooldown_days": pinterest_settings.repin_cooldown_days,
+        "permission_warning": warning,
+    }
 
 
 @router.get("/pinterest", response_class=HTMLResponse)
@@ -223,9 +232,7 @@ async def pinterest_schedule_page(
     boards = await _boards_for(session)
     suggestion = await suggest_pin_content(session, listing)
     link = await suggest_product_link(session, listing)
-    reason = await pin_ineligibility(
-        session, listing_id, pinterest_settings=pinterest_settings
-    )
+    reason = await pin_ineligibility(session, listing_id, pinterest_settings=pinterest_settings)
 
     now = datetime.now().astimezone()
     tomorrow_9am = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0)
@@ -269,9 +276,7 @@ async def pinterest_connect():
     try:
         url, state = build_authorize_url()
     except PinterestError as exc:
-        return RedirectResponse(
-            f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
-        )
+        return RedirectResponse(f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303)
     _pending_states[state] = time.time() + _STATE_TTL_SECONDS
     return RedirectResponse(url, status_code=303)
 
@@ -285,16 +290,12 @@ async def pinterest_callback(
 ):
     expiry = _pending_states.pop(state, None)
     if not code or expiry is None or expiry < time.time():
-        return RedirectResponse(
-            "/pinterest?error=Invalid+or+expired+OAuth+state", status_code=303
-        )
+        return RedirectResponse("/pinterest?error=Invalid+or+expired+OAuth+state", status_code=303)
     try:
         await exchange_code(session, code)
         await session.commit()
     except PinterestError as exc:
-        return RedirectResponse(
-            f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
-        )
+        return RedirectResponse(f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303)
     return RedirectResponse("/pinterest?status=connected", status_code=303)
 
 
@@ -304,9 +305,7 @@ async def pinterest_disconnect(session: AsyncSession = Depends(get_session)):
         await disconnect(session)
         await session.commit()
     except PinterestError as exc:
-        return RedirectResponse(
-            f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
-        )
+        return RedirectResponse(f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303)
     return RedirectResponse("/pinterest?status=disconnected", status_code=303)
 
 
@@ -360,7 +359,8 @@ async def pinterest_schedule_submit(
 
 @router.post("/pinterest/products/{listing_id}/resolve-link")
 async def pinterest_product_link_resolve(
-    listing_id: int, session: AsyncSession = Depends(get_session),
+    listing_id: int,
+    session: AsyncSession = Depends(get_session),
 ):
     try:
         link = await resolve_and_cache_product_link(session, listing_id)
@@ -386,9 +386,7 @@ async def pinterest_product_link_save(
         await save_product_url(session, listing_id, product_url)
         await session.commit()
     except (PinScheduleError, PinterestError) as exc:
-        return RedirectResponse(
-            f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
-        )
+        return RedirectResponse(f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303)
     return RedirectResponse("/pinterest?status=link-saved", status_code=303)
 
 
@@ -398,15 +396,14 @@ async def pinterest_pin_cancel(pin_id: int, session: AsyncSession = Depends(get_
         await cancel_pin(session, pin_id)
         await session.commit()
     except (PinScheduleError, PinterestError) as exc:
-        return RedirectResponse(
-            f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
-        )
+        return RedirectResponse(f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303)
     return RedirectResponse("/pinterest?status=canceled", status_code=303)
 
 
 @router.post("/pinterest/pins/{pin_id}/retry")
 async def pinterest_pin_retry(
-    pin_id: int, board_checked: str = Form(""),
+    pin_id: int,
+    board_checked: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
     try:
@@ -414,9 +411,7 @@ async def pinterest_pin_retry(
         await reschedule_failed_pin(session, pin_id, board_checked=board_checked == "on")
         await session.commit()
     except (PinScheduleError, PinterestError) as exc:
-        return RedirectResponse(
-            f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303
-        )
+        return RedirectResponse(f"/pinterest?{urlencode({'error': str(exc)})}", status_code=303)
     return RedirectResponse("/pinterest?status=rescheduled", status_code=303)
 
 
@@ -491,8 +486,6 @@ async def pinterest_settings_save(
         from app.web.routes import templates as _tpl
 
         context = await _general_settings_context(session, errors=exc.errors)
-        return _tpl.TemplateResponse(
-            request, "general_settings.html", context, status_code=422
-        )
+        return _tpl.TemplateResponse(request, "general_settings.html", context, status_code=422)
     await session.commit()
     return RedirectResponse("/settings/general?status=pinterest", status_code=303)

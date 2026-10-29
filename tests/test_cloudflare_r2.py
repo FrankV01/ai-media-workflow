@@ -46,9 +46,7 @@ def credentials(monkeypatch):
 async def uploadable(output_dir, credentials):
     """Credentials + a public base URL — everything an upload needs."""
     async with app.database.async_session() as session:
-        await rs.save_r2_settings(
-            session, public_base_url="https://pub-abc.r2.dev"
-        )
+        await rs.save_r2_settings(session, public_base_url="https://pub-abc.r2.dev")
         await session.commit()
 
 
@@ -141,9 +139,7 @@ class _FakeStorage:
         )
         if self._error is not None:
             raise self._error
-        return R2UploadResult(
-            etag="deadbeef", byte_size=Path(path).stat().st_size
-        )
+        return R2UploadResult(etag="deadbeef", byte_size=Path(path).stat().st_size)
 
 
 # ── Settings service ──────────────────────────────────────────────────────
@@ -253,9 +249,7 @@ async def test_upload_happy_path(output_dir, uploadable):
     job, _, archive = await _seed_job(output_dir)
     storage = _FakeStorage()
 
-    result = await r2.create_cloudflare_upload(
-        job.id, job_step_id=11, storage=storage
-    )
+    result = await r2.create_cloudflare_upload(job.id, job_step_id=11, storage=storage)
 
     assert result["cloudflare_upload_status"] == "ready"
     assert result["cloudflare_r2_url"].startswith("https://pub-abc.r2.dev/")
@@ -315,10 +309,14 @@ async def test_upload_is_idempotent(output_dir, uploadable):
     assert second["cloudflare_upload_id"] == first["cloudflare_upload_id"]
     async with app.database.async_session() as session:
         count = (
-            await session.execute(
-                select(CloudflareUpload).where(CloudflareUpload.job_id == job.id)
+            (
+                await session.execute(
+                    select(CloudflareUpload).where(CloudflareUpload.job_id == job.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(count) == 1
 
 
@@ -539,9 +537,7 @@ def test_link_document_pdf():
 
 
 def test_link_document_minimal_fields():
-    doc = build_link_document(
-        "markdown", title="X", url="https://u", archive_name="a.zip"
-    )
+    doc = build_link_document("markdown", title="X", url="https://u", archive_name="a.zip")
     text = doc.data.decode()
     assert "https://u" in text
     assert "SHA-256" not in text

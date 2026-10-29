@@ -268,9 +268,7 @@ def _job_image_groups(job: Job) -> list[tuple[str, list[Path]]]:
     except (json.JSONDecodeError, TypeError):
         return []
     paths = (
-        [Path(path) for path in assets if isinstance(path, str)]
-        if isinstance(assets, list)
-        else []
+        [Path(path) for path in assets if isinstance(path, str)] if isinstance(assets, list) else []
     )
     return [("Generated image", paths)] if paths else []
 
@@ -460,9 +458,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
                 "comment_html": Markup(
                     render_quality_comment(job_raw.quality_control.comment_markdown)
                 ),
-                "updated_at": job_raw.quality_control.updated_at.strftime(
-                    "%b %d, %Y %H:%M:%S"
-                ),
+                "updated_at": job_raw.quality_control.updated_at.strftime("%b %d, %Y %H:%M:%S"),
             }
             if job_raw.quality_control
             else None
@@ -1316,9 +1312,7 @@ async def partial_job_images(
 
 
 @router.get("/jobs/{job_id}/images/{image_index}")
-async def job_image(
-    job_id: int, image_index: int, session: AsyncSession = Depends(get_session)
-):
+async def job_image(job_id: int, image_index: int, session: AsyncSession = Depends(get_session)):
     job = await _job_with_steps(session, job_id)
     images = _job_images(job)
     if image_index < 0 or image_index >= len(images):
@@ -1475,9 +1469,7 @@ async def _general_settings_context(
             storefront_values if storefront_values is not None else storefront.to_dict()
         ),
         "r2": r2_values if r2_values is not None else r2.to_dict(),
-        "pinterest": (
-            pinterest_values if pinterest_values is not None else pinterest.to_dict()
-        ),
+        "pinterest": (pinterest_values if pinterest_values is not None else pinterest.to_dict()),
         "pinterest_connected": pinterest_tokens is not None,
         "pinterest_username": pinterest_tokens.username if pinterest_tokens else "",
         "has_signature": has_signature,

@@ -55,9 +55,7 @@ def _sqlite_database_path(database_url: str) -> Path | None:
 
 def _backup_path(database_path: Path, created_at: datetime) -> Path:
     timestamp = created_at.astimezone(UTC).strftime(_BACKUP_TIMESTAMP_FORMAT)
-    return database_path.with_name(
-        f"{database_path.stem}.backup-{timestamp}{database_path.suffix}"
-    )
+    return database_path.with_name(f"{database_path.stem}.backup-{timestamp}{database_path.suffix}")
 
 
 def _prune_sqlite_backups(

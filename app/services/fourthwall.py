@@ -335,6 +335,7 @@ def _render_inventory_html(manifest_json: str | None) -> str:
     else:
         # Summarize by extension
         from collections import Counter
+
         ext_counts: Counter[str] = Counter()
         total_size = 0
         for name, size in files:
@@ -342,8 +343,10 @@ def _render_inventory_html(manifest_json: str | None) -> str:
             dot = name.rsplit(".", 1)
             ext = dot[-1].upper() if len(dot) > 1 else "file"
             ext_counts[ext] += 1
-        summary_parts = [f"{count} {ext} file{'s' if count != 1 else ''}"
-                         for ext, count in ext_counts.most_common()]
+        summary_parts = [
+            f"{count} {ext} file{'s' if count != 1 else ''}"
+            for ext, count in ext_counts.most_common()
+        ]
         parts.append(", ".join(summary_parts))
         parts.append(f" — {_humanize_size(total_size)} total")
 
@@ -423,9 +426,7 @@ async def _compose_description(
         try:
             seed = await fw_description.summarize_description(brief, max_chars=budget)
         except Exception:
-            logger.exception(
-                "Storefront description summarizer raised; falling back to truncation"
-            )
+            logger.exception("Storefront description summarizer raised; falling back to truncation")
             seed = brief[:budget].strip()
     else:
         seed = f"Digital artwork collection: {job_name}"

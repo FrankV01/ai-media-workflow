@@ -23,9 +23,7 @@ async def _job(session_factory, name: str, status: JobStatus, workflow_id: int |
             status=status,
             created_at=datetime.now(UTC),
             finished_at=(
-                datetime.now(UTC)
-                if status in {JobStatus.COMPLETED, JobStatus.FAILED}
-                else None
+                datetime.now(UTC) if status in {JobStatus.COMPLETED, JobStatus.FAILED} else None
             ),
         )
         session.add(job)
@@ -110,9 +108,7 @@ async def test_quality_control_web_form_rejects_running_job(client, temp_config_
     assert response.status_code == 409
 
 
-async def test_job_list_partial_distinguishes_empty_states_and_shows_count(
-    client, temp_config_db
-):
+async def test_job_list_partial_distinguishes_empty_states_and_shows_count(client, temp_config_db):
     empty = client.get("/partials/jobs")
     assert empty.status_code == 200
     assert "No jobs yet" in empty.text

@@ -192,9 +192,7 @@ async def get_job(job_id: int, session: AsyncSession = Depends(get_session)):
             executions_by_step.setdefault(execution.job_step_id, []).append(execution)
 
     archives = [_archive_metadata(a) for a in await list_archives(session, job_id)]
-    listings = [
-        _listing_metadata(listing) for listing in await list_listings(session, job_id)
-    ]
+    listings = [_listing_metadata(listing) for listing in await list_listings(session, job_id)]
     uploads = [_upload_metadata(u) for u in await list_uploads(session, job_id)]
 
     return {
@@ -381,9 +379,7 @@ async def list_job_listings(job_id: int, session: AsyncSession = Depends(get_ses
     job = await session.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
-    return [
-        _listing_metadata(listing) for listing in await list_listings(session, job_id)
-    ]
+    return [_listing_metadata(listing) for listing in await list_listings(session, job_id)]
 
 
 @router.post("/jobs/{job_id}/listings/retry", status_code=202)

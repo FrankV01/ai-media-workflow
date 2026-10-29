@@ -98,9 +98,7 @@ def _pdf(
     from fpdf.enums import XPos, YPos
 
     def line(pdf: FPDF, height: float, text: str, *, link: str = "") -> None:
-        pdf.multi_cell(
-            0, height, text, link=link, new_x=XPos.LMARGIN, new_y=YPos.NEXT
-        )
+        pdf.multi_cell(0, height, text, link=link, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
