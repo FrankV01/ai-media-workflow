@@ -580,6 +580,30 @@ block context as `_step_config` so the step can override profile selections.
 - LLM calls are mocked by monkeypatching `app.blocks.role_block.AsyncOpenAI`; see `_fake_llm_client` in `test_blocks.py`
 - Tests that generate files monkeypatch `settings.image_output_dir` to `tmp_path` — never write into the real output dir
 - Narrow regression pass for archive/engine work: `pytest tests/test_delivery_archive.py tests/test_general_settings.py tests/test_pipeline.py tests/test_database.py`
+- Migration tests run Alembic's `fileConfig()`, which disables already-created loggers; tests asserting on `caplog` for an `app.*` logger should `monkeypatch.setattr(<module>.logger, "disabled", False)`
+- Byte-for-byte fixture comparisons must be deterministic — e.g. build ZIPs with fixed `zipfile.ZipInfo(name, date_time)`; `writestr(name, …)` stamps the current time
+
+## Commits
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) with a scope:
+
+```
+<type>(<scope>): <imperative, lowercase summary, ≤72 chars, no period>
+
+<Body: why the change was needed, then what changed. Wrap at ~72 columns.
+Prose paragraphs and/or "- " bullets; name key files/functions.>
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+```
+
+- **Types**: `feat`, `fix`, `refactor`, `test`, `docs`, `style` (formatting only), `chore` (deps/tooling)
+- **Scopes**: the feature area — e.g. `pipeline`, `workflows`, `jobs`, `media`, `comfyui`, `pinterest`, `r2`, `fourthwall`, `database`, `server`, `errors`, `social-media`. Omit only for repo-wide changes (`style: apply ruff format …`)
+- **Batching**: one logical change per commit. Keep formatting-only passes (`style:`), unrelated test fixes (`test(<scope>):`), and docs-only updates (`docs:`) in separate commits from feature work
+- **Trailer**: include the Devin lines above only for agent-assisted commits
+- **Before committing**: `pytest`, `ruff check app tests`, `ruff format --check app tests`. Never stage DB backups or `.env`
+- **Shell tip**: macOS's default bash 3.2 can't parse apostrophes inside `$(cat <<'EOF' … EOF)`; write the message to a temp file and use `git commit -F <file>`
 
 ## Guiding Questions
 
