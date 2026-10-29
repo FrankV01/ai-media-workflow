@@ -51,10 +51,12 @@ async def uploadable(output_dir, credentials):
 
 
 def _zip_bytes() -> bytes:
+    # Fixed entry timestamps: writestr(name, ...) stamps the current time, so two
+    # calls straddling a 2-second DOS-time boundary would produce different bytes
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("img.png", b"\x89PNG fake")
-        archive.writestr("report.md", "# Report\n")
+        archive.writestr(zipfile.ZipInfo("img.png", (2026, 1, 15, 0, 0, 0)), b"\x89PNG fake")
+        archive.writestr(zipfile.ZipInfo("report.md", (2026, 1, 15, 0, 0, 0)), "# Report\n")
     return buffer.getvalue()
 
 
