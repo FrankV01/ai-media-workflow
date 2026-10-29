@@ -37,6 +37,7 @@ from app.models.pinterest import ScheduledPin, ScheduledPinStatus
 from app.models.storefront import StorefrontListing, StorefrontListingStatus
 from app.services.fourthwall import FourthwallClient, configured_credentials
 from app.services.pinterest_auth import (
+    PINTEREST_HINTS,
     PinterestApiError,
     PinterestError,
     PinterestNotConfiguredError,
@@ -48,6 +49,7 @@ from app.services.pinterest_settings import (
     PinterestSettings,
     get_pinterest_settings,
 )
+from app.services.service_errors import wrap_service_error
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +95,8 @@ class PinterestClient:
             try:
                 response = await self._client.request(method, path, **kwargs)
             except httpx.HTTPError as exc:
-                raise PinterestError(f"Pinterest request failed: {exc}") from exc
+                friendly = wrap_service_error("Pinterest API", exc, hints=PINTEREST_HINTS)
+                raise PinterestError(str(friendly or f"Pinterest request failed: {exc}")) from exc
             if response.status_code == 429 and attempt == 0:
                 retry_after = response.headers.get("Retry-After")
                 delay = float(retry_after) if retry_after else 5.0

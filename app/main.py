@@ -23,6 +23,7 @@ import signal
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
@@ -44,6 +45,12 @@ from app.services.pinterest_scheduler import (
 )
 from app.services.pinterest_scheduler import (
     stop_scheduler as stop_pinterest_scheduler,
+)
+from app.services.service_errors import (
+    StartupCheckError,
+    comfyui_service_error,
+    llm_service_error,
+    output_dir_error_message,
 )
 from app.web.pinterest_routes import router as pinterest_web_router
 from app.web.routes import router as web_router
@@ -74,32 +81,33 @@ async def _check_dependencies() -> None:
 
     # LLM endpoint (LM Studio / OpenAI)
     try:
-        import httpx
-
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{settings.llm_base_url}/models")
-            if resp.status_code == 200:
-                logger.info("✓ LLM endpoint OK — %s", settings.llm_base_url)
-            else:
-                errors.append(
-                    f"LLM endpoint returned {resp.status_code} at {settings.llm_base_url}"
-                )
+            resp.raise_for_status()
+        logger.info("✓ LLM endpoint OK — %s", settings.llm_base_url)
+        model_ids = _model_ids(resp)
+        if model_ids is not None and settings.llm_model not in model_ids:
+            logger.warning(
+                "LLM_MODEL '%s' is not among the models LM Studio reports (%s). "
+                "Roles using it will fail unless the model is downloaded.",
+                settings.llm_model,
+                ", ".join(sorted(model_ids)) or "none",
+            )
     except Exception as exc:
-        errors.append(f"LLM endpoint unreachable at {settings.llm_base_url}: {exc}")
+        friendly = llm_service_error(exc)
+        errors.append(str(friendly) if friendly else f"LLM endpoint check failed: {exc}")
 
     # Image generation backend
     backend_name = settings.generation_backend.lower()
     if backend_name == "comfyui":
         try:
-            from app.services.generation import get_backend
+            from app.services.generation.comfyui import ComfyUIBackend
 
-            backend = get_backend()
-            if await backend.is_available():
-                logger.info("✓ ComfyUI OK — %s", settings.comfyui_url)
-            else:
-                errors.append(f"ComfyUI not responding at {settings.comfyui_url}")
+            await ComfyUIBackend().ensure_available()
+            logger.info("✓ ComfyUI OK — %s", settings.comfyui_url)
         except Exception as exc:
-            errors.append(f"ComfyUI check failed: {exc}")
+            friendly = comfyui_service_error(exc)
+            errors.append(str(friendly) if friendly else f"ComfyUI check failed: {exc}")
     else:
         logger.info("✓ Generation backend: %s (no external service needed)", backend_name)
 
@@ -112,21 +120,49 @@ async def _check_dependencies() -> None:
         test_file.unlink()
         logger.info("✓ Image output dir writable — %s", output_dir)
     except Exception as exc:
-        errors.append(f"Cannot write to IMAGE_OUTPUT_DIR ({output_dir}): {exc}")
+        errors.append(output_dir_error_message(output_dir, exc))
 
     # Report results
     if errors:
         logger.error("=" * 60)
-        logger.error("STARTUP DEPENDENCY CHECK FAILED:")
+        logger.error("STARTUP DEPENDENCY CHECK FAILED — the server was not started:")
         for err in errors:
             logger.error("  ✗ %s", err)
+        logger.error("Fix the issue(s) above, then start the server again.")
         logger.error("=" * 60)
-        raise RuntimeError(
+        raise StartupCheckError(
             f"Startup dependency check failed with {len(errors)} error(s). "
             "See log output above for details."
         )
 
     logger.info("All dependency checks passed")
+
+
+def _model_ids(resp: httpx.Response) -> set[str] | None:
+    """Model ids from an OpenAI-style /models response, or None if unparseable."""
+    try:
+        return {str(m["id"]) for m in resp.json()["data"]}
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+class _StartupFailureLogFilter(logging.Filter):
+    """Collapse the framework traceback for StartupCheckError into one line.
+
+    Starlette reports lifespan failures to uvicorn as a full formatted
+    traceback. For dependency-check failures the actionable details are
+    already logged, so the traceback is only noise.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if "Traceback" in message and f"{StartupCheckError.__name__}:" in message:
+            record.msg = message.strip().splitlines()[-1].split(": ", 1)[-1]
+            record.args = ()
+        return True
+
+
+logging.getLogger("uvicorn.error").addFilter(_StartupFailureLogFilter())
 
 
 @asynccontextmanager

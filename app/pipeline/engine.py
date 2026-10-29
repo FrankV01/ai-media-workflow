@@ -62,6 +62,7 @@ from app.models.job import Job, JobStatus, JobStep
 from app.models.media import MediaGenerationExecution
 from app.models.workflow import Workflow
 from app.pipeline.naming import MAX_PHOTO_SHOOT_NAME_LENGTH, resolve_photo_shoot_name
+from app.services.service_errors import ExternalServiceError
 from app.services.workflows import (
     WorkflowDisabledError,
     WorkflowNotFoundError,
@@ -521,7 +522,11 @@ async def _drain_queue(
             step.status = JobStatus.COMPLETED
             step.output = json.dumps(_audit_snapshot(result), default=str, ensure_ascii=False)
         except Exception as exc:
-            logger.exception("Block %s failed", name)
+            if isinstance(exc, ExternalServiceError):
+                # Actionable message; full traceback still lands in step.error_traceback
+                logger.error("Block %s failed: %s", name, exc)
+            else:
+                logger.exception("Block %s failed", name)
             step.status = JobStatus.FAILED
             step.error = str(exc)
             step.error_type = type(exc).__name__

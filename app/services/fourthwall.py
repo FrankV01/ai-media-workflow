@@ -57,6 +57,7 @@ from app.services.delivery_archive import latest_ready_archive
 from app.services.general_settings import get_delivery_settings
 from app.services.image_convert import ImageConversionError, convert_png_bytes
 from app.services.link_document import build_link_document
+from app.services.service_errors import ErrorKind, kind_for_status, wrap_service_error
 from app.services.storefront_settings import (
     StorefrontSettings,
     get_storefront_settings,
@@ -67,6 +68,12 @@ logger = logging.getLogger(__name__)
 
 LISTING_BLOCK_NAME = "fourthwall_listing"
 _MARKETPLACE_PLATFORM = re.compile(r"market|stock|licens|store|shop", re.IGNORECASE)
+_FOURTHWALL_HINTS: dict[ErrorKind, str] = {
+    ErrorKind.UNREACHABLE: "Check your internet connection and FOURTHWALL_BASE_URL in .env.",
+    ErrorKind.TIMEOUT: "Raise FOURTHWALL_TIMEOUT in .env or retry the listing later.",
+    ErrorKind.AUTH: "Check FOURTHWALL_API_USER / FOURTHWALL_API_PASSWORD in .env.",
+    ErrorKind.SERVER_ERROR: "FourthWall is having problems — retry the listing later.",
+}
 
 
 class FourthwallError(RuntimeError):
@@ -76,9 +83,10 @@ class FourthwallError(RuntimeError):
 class FourthwallApiError(FourthwallError):
     """The FourthWall API (or signed storage) rejected a request."""
 
-    def __init__(self, status_code: int, detail: str) -> None:
+    def __init__(self, status_code: int, detail: str, hint: str | None = None) -> None:
         self.status_code = status_code
-        super().__init__(f"FourthWall API {status_code}: {detail}")
+        message = f"FourthWall API {status_code}: {detail}"
+        super().__init__(f"{message} — {hint}" if hint else message)
 
 
 class ListingRetryError(RuntimeError):
@@ -123,9 +131,16 @@ class FourthwallClient:
         try:
             response = await self._client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
-            raise FourthwallError(f"FourthWall request failed: {exc}") from exc
+            friendly = wrap_service_error(
+                "FourthWall API", exc, url=str(self._client.base_url), hints=_FOURTHWALL_HINTS
+            )
+            raise FourthwallError(str(friendly or f"FourthWall request failed: {exc}")) from exc
         if response.status_code >= 400:
-            raise FourthwallApiError(response.status_code, response.text[:500])
+            raise FourthwallApiError(
+                response.status_code,
+                response.text[:500],
+                hint=_FOURTHWALL_HINTS.get(kind_for_status(response.status_code)),
+            )
         if not response.content:
             return None
         try:
@@ -150,7 +165,8 @@ class FourthwallClient:
                     },
                 )
         except httpx.HTTPError as exc:
-            raise FourthwallError(f"storage upload failed: {exc}") from exc
+            friendly = wrap_service_error("FourthWall file storage", exc)
+            raise FourthwallError(str(friendly or f"storage upload failed: {exc}")) from exc
         if response.status_code >= 400:
             raise FourthwallApiError(response.status_code, response.text[:500])
 

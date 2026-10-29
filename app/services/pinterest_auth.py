@@ -33,8 +33,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.setting import Setting
+from app.services.service_errors import ErrorKind, wrap_service_error
 
 logger = logging.getLogger(__name__)
+
+PINTEREST_HINTS: dict[ErrorKind, str] = {
+    ErrorKind.UNREACHABLE: "Check your internet connection.",
+    ErrorKind.TIMEOUT: "Pinterest did not answer in time — the scheduler will retry.",
+    ErrorKind.AUTH: "Reconnect Pinterest from the Pinterest page.",
+}
 
 PINTEREST_TOKENS_KEY = "social.pinterest.tokens"
 PINTEREST_AUTHORIZE_URL = "https://www.pinterest.com/oauth/"
@@ -148,7 +155,8 @@ async def _token_request(
         ) as client:
             response = await client.post("/oauth/token", data=payload)
     except httpx.HTTPError as exc:
-        raise PinterestError(f"Pinterest token request failed: {exc}") from exc
+        friendly = wrap_service_error("Pinterest OAuth", exc, hints=PINTEREST_HINTS)
+        raise PinterestError(str(friendly or f"Pinterest token request failed: {exc}")) from exc
     if response.status_code >= 400:
         raise PinterestApiError(response.status_code, response.text[:500])
     try:

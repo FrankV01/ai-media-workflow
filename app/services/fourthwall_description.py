@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from openai import AsyncOpenAI
 
 from app.config import settings
+from app.services.service_errors import llm_service_error
 from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
@@ -80,8 +81,17 @@ async def summarize_description(
     try:
         async with workload_guard.hold("fourthwall-description-summary"):
             summary = await caller(system_prompt, brief)
-    except Exception:
-        logger.exception("Storefront description summarization failed; falling back to truncation")
+    except Exception as exc:
+        friendly = llm_service_error(exc)
+        if friendly is None:
+            logger.exception(
+                "Storefront description summarization failed; falling back to truncation"
+            )
+        else:
+            logger.warning(
+                "Storefront description summarization failed; falling back to truncation. %s",
+                friendly,
+            )
         return brief[:max_chars].strip()
 
     if not summary or not str(summary).strip():

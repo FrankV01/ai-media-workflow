@@ -39,6 +39,7 @@ from app.services.configuration.base import (
     LlmRoleDefaults,
     ResolvedLlmConfiguration,
 )
+from app.services.service_errors import llm_service_error
 from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
@@ -248,16 +249,19 @@ class RoleBlock(Block):
                     f"completion_tokens={usage.completion_tokens if usage else 0}){hint}"
                 )
         except Exception as exc:
+            friendly = llm_service_error(exc, model=model)
             execution_record.update(
                 {
                     "status": "failed",
                     "error_type": type(exc).__name__,
-                    "error": str(exc),
+                    "error": str(friendly or exc),
                     "finished_at": datetime.now(UTC),
                 }
             )
             executions.append(execution_record)
-            raise
+            if friendly is None:
+                raise
+            raise friendly from exc
 
         execution_record.update({"status": "completed", "finished_at": datetime.now(UTC)})
         executions.append(execution_record)
