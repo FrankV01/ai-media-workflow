@@ -30,6 +30,7 @@ from app.models.storefront import StorefrontListing
 from app.models.workflow import Workflow
 from app.pipeline.engine import run_pipeline
 from app.pipeline.naming import PhotoShootNameError, resolve_photo_shoot_name
+from app.services import product_descriptions as product_service
 from app.services.cloudflare_r2 import (
     UploadRetryError,
     list_uploads,
@@ -51,7 +52,7 @@ from app.services.fourthwall import (
     reserve_listing_retry,
     schedule_listing_retry,
 )
-from app.services.workflows import get_workflow_by_slug, validate_steps
+from app.services.workflows import get_workflow_by_slug, parse_steps_json, validate_steps
 
 router = APIRouter()
 
@@ -109,6 +110,23 @@ async def run_workflow(req: RunRequest, session: AsyncSession = Depends(get_sess
             raise HTTPException(404, f"Unknown workflow '{req.workflow}'")
         if not workflow.is_enabled:
             raise HTTPException(409, f"Workflow '{req.workflow}' is disabled")
+    effective_steps = (
+        req.block_names
+        if req.block_names is not None
+        else (parse_steps_json(workflow.steps_json) if workflow else [])
+    )
+    if product_service.description_steps(effective_steps):
+        if workflow is None:
+            raise HTTPException(422, "Select a stored description-only workflow.")
+        try:
+            return await product_service.submit_description(
+                req.context.get("source_job_id"),
+                workflow.slug,
+                regenerate=req.context.get("regenerate") is True,
+                brief=str(req.context.get("brief") or ""),
+            )
+        except product_service.ProductDescriptionError as exc:
+            raise HTTPException(422, str(exc)) from exc
     job_id = await run_pipeline(
         workflow_name=req.job_name,
         block_names=req.block_names,
@@ -117,6 +135,34 @@ async def run_workflow(req: RunRequest, session: AsyncSession = Depends(get_sess
         start_in_background=True,
     )
     return {"job_id": job_id, "status": "pending"}
+
+
+class DescriptionRequest(BaseModel):
+    workflow: str
+    regenerate: bool = False
+    brief: str = ""
+
+
+@router.post("/jobs/{job_id}/product-descriptions", status_code=202)
+async def create_description(job_id: int, body: DescriptionRequest):
+    try:
+        return await product_service.submit_description(
+            job_id, body.workflow, regenerate=body.regenerate, brief=body.brief
+        )
+    except product_service.ProductDescriptionError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/jobs/{job_id}/product-descriptions")
+async def get_descriptions(
+    job_id: int, page: int = 1, session: AsyncSession = Depends(get_session)
+):
+    try:
+        state = await product_service.description_state(session, job_id, page)
+    except product_service.ProductDescriptionError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    state["workflows"] = [{"slug": w.slug, "name": w.name} for w in state["workflows"]]
+    return state
 
 
 @router.get("/jobs")

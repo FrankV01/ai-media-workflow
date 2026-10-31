@@ -1,0 +1,82 @@
+{% macro version_card(version) %}
+<article class="rounded border border-gray-700 bg-gray-800/40 p-4 mb-3" data-output-panel>
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <p class="text-sm text-gray-300">{% if version.version %}Version {{ version.version }}{% else %}Legacy description{% endif %} · {{ version.created_label }}
+            <a href="/jobs/{{ version.job_id }}" class="text-indigo-400">Generation run #{{ version.job_id }}</a>
+        </p>
+        <div class="flex gap-2">
+            <button type="button" data-copy-output="markdown" class="text-xs rounded bg-gray-700 px-2 py-1 hover:bg-gray-600">Copy</button>
+            <button type="button" data-copy-output="html" class="text-xs rounded bg-gray-700 px-2 py-1 hover:bg-gray-600">Copy as HTML</button>
+        </div>
+    </div>
+    {% if version.configuration %}<p class="text-xs text-gray-500 mb-2">{{ version.configuration.get('model_used', 'Unknown model') }} · {{ version.configuration.get('workflow_slug', 'Legacy workflow') }}</p>{% endif %}
+    <p data-copy-status role="status" aria-live="polite" class="text-xs text-gray-400"></p>
+    <div class="markdown-preview text-sm text-gray-300">{{ version.content|description_markdown }}</div>
+    <div data-output-text hidden>{{ version.content }}</div>
+    {% if version.export_error %}<p class="text-sm text-amber-300 mt-2">{{ version.export_error }}</p>{% endif %}
+    <details class="mt-3 text-xs">
+        <summary class="cursor-pointer text-indigo-300">System prompt used</summary>
+        <pre class="whitespace-pre-wrap bg-gray-900 rounded p-3 mt-2 max-h-80 overflow-y-auto">{{ version.system_prompt if version.system_prompt is not none else 'Not recorded (legacy version)' }}</pre>
+        {% if version.configuration %}
+        <dl class="mt-2 grid grid-cols-2 gap-1 text-gray-400">
+            {% for key, value in version.configuration.items() %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}
+        </dl>
+        {% endif %}
+    </details>
+</article>
+{% endmacro %}
+{% set active = descriptions.request and descriptions.request.status in ['pending', 'running'] %}
+<section id="product-descriptions" class="bg-gray-900 rounded-lg p-6 border border-gray-800 mb-6"
+         {% if active %}hx-get="/partials/jobs/{{ descriptions.source_job_id }}/product-descriptions?page={{ descriptions.page }}" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+    <h2 class="text-lg font-semibold mb-3">Product description</h2>
+    {% if descriptions.origin_source_job_id %}
+    <p class="text-sm text-gray-400">This run describes <a class="text-indigo-400 underline" href="/jobs/{{ descriptions.origin_source_job_id }}#product-descriptions">source job #{{ descriptions.origin_source_job_id }}</a>. View its description and version history there.</p>
+    {% else %}
+    {% if description_message %}<p role="status" class="text-sm text-indigo-300 mb-3">{{ description_message }}</p>{% endif %}
+    {% if description_error %}<p role="alert" class="text-sm text-red-300 mb-3">{{ description_error }}</p>{% endif %}
+    {% if descriptions.latest %}
+        <p class="text-xs text-gray-500 mb-2">Latest successful description</p>
+        {{ version_card(descriptions.latest) }}
+        {% if descriptions.latest.export_error %}
+        <button type="button" hx-post="/partials/jobs/{{ descriptions.source_job_id }}/product-descriptions/export"
+                hx-target="#product-descriptions" hx-swap="outerHTML" hx-disabled-elt="this"
+                class="text-xs text-indigo-300 underline mb-3">Retry Markdown export (no LLM call)</button>
+        {% endif %}
+    {% else %}<p class="text-sm text-gray-400 mb-4">No product description has been generated for this job yet.</p>{% endif %}
+    {% if descriptions.request %}
+    <p role="status" class="text-sm text-gray-400 mb-3">Generation {{ descriptions.request.status }} · <a class="text-indigo-400 underline" href="/jobs/{{ descriptions.request.job_id }}">Run #{{ descriptions.request.job_id }}</a></p>
+    {% if descriptions.request.error %}<p class="text-sm text-red-300 mb-3">{{ descriptions.request.error }}</p>{% endif %}
+    {% endif %}
+    {% if descriptions.ineligible_reason %}
+    <p class="text-sm text-gray-500">{{ descriptions.ineligible_reason }}</p>
+    {% elif not descriptions.workflows %}
+    <p class="text-sm text-gray-400">Create or enable a workflow with only the <code>product_describer</code> step on the <a href="/workflows" class="text-indigo-400 underline">Workflows</a> page.</p>
+    {% else %}
+    <form hx-post="/partials/jobs/{{ descriptions.source_job_id }}/product-descriptions" hx-target="#product-descriptions" hx-swap="outerHTML" hx-disabled-elt="find button" class="space-y-3 mt-4">
+        <label for="description-workflow" class="block text-xs text-gray-400">Description workflow</label>
+        <select name="workflow" id="description-workflow" required class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm" {% if active %}disabled{% endif %}>
+            {% if descriptions.workflows|length > 1 %}<option value="">Choose a workflow…</option>{% endif %}
+            {% for workflow in descriptions.workflows %}<option value="{{ workflow.slug }}">{{ workflow.name }}</option>{% endfor %}
+        </select>
+        <label for="description-guidance" class="block text-xs text-gray-400">Copywriting guidance (optional)</label>
+        <textarea id="description-guidance" name="brief" rows="2" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-sm" {% if active %}disabled{% endif %}></textarea>
+        {% if descriptions.latest %}<input type="hidden" name="regenerate" value="true">{% endif %}
+        <p class="text-xs text-gray-500">Uses the selected workflow's current AI profile when the queued run starts. Previous versions and their prompts are preserved. Edit profiles in <a href="/settings/ai" class="text-indigo-400 underline">AI Settings</a>.</p>
+        <button type="submit" {% if active %}disabled{% endif %} class="bg-indigo-600 hover:bg-indigo-500 rounded px-4 py-2 text-sm disabled:opacity-40">{% if descriptions.latest %}Regenerate description{% else %}Generate product description{% endif %}</button>
+    </form>
+    {% endif %}
+    {% if descriptions.versions %}
+    <details class="mt-5" {% if descriptions.page > 1 %}open{% endif %}>
+        <summary class="cursor-pointer text-sm text-indigo-300">Version history</summary>
+        <div class="mt-3">
+        {% for version in descriptions.versions %}{% if not descriptions.latest or version.id != descriptions.latest.id %}{{ version_card(version) }}{% endif %}{% endfor %}
+        <div class="flex gap-3 text-xs">
+            {% if descriptions.page > 1 %}<button hx-get="/partials/jobs/{{ descriptions.source_job_id }}/product-descriptions?page={{ descriptions.page - 1 }}" hx-target="#product-descriptions" hx-swap="outerHTML" class="text-indigo-400">Previous</button>{% endif %}
+            <span class="text-gray-500">Page {{ descriptions.page }} of {{ descriptions.pages }}</span>
+            {% if descriptions.page < descriptions.pages %}<button hx-get="/partials/jobs/{{ descriptions.source_job_id }}/product-descriptions?page={{ descriptions.page + 1 }}" hx-target="#product-descriptions" hx-swap="outerHTML" class="text-indigo-400">Next</button>{% endif %}
+        </div>
+        </div>
+    </details>
+    {% endif %}
+    {% endif %}
+</section>

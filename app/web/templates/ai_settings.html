@@ -14,7 +14,7 @@
                            focus:outline-none focus:border-indigo-500">
                 {% for w in workflows %}
                 <option value="{{ w.slug }}" {% if workflow and w.id == workflow.id %}selected{% endif %}>
-                    {{ w.name }}{% if not w.is_enabled %} (disabled){% endif %}
+                    {% if not w.is_enabled %}[disabled] {% endif %}{{ w.name }}
                 </option>
                 {% endfor %}
             </select>

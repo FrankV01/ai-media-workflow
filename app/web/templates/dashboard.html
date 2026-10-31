@@ -12,13 +12,17 @@
         onchange="window.location.href = '/?workflow=' + encodeURIComponent(this.value) + '{{ anchor }}'"
         class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white
                focus:outline-none focus:border-indigo-500">
-    {% for w in workflows %}
+    {% for w in workflows if w.is_enabled %}
     <option value="{{ w.slug }}" {% if selected_workflow and w.id == selected_workflow.id %}selected{% endif %}>
-        {{ w.name }}{% if not w.is_enabled %} (disabled){% endif %}
+        {{ w.name }}
     </option>
     {% endfor %}
+    {% if selected_workflow and not selected_workflow.is_enabled %}
+    <option value="{{ selected_workflow.slug }}" selected>[disabled] {{ selected_workflow.name }}</option>
+    {% endif %}
 </select>
 {% endmacro %}
+{% set workflow_runnable = selected_workflow and selected_workflow.is_enabled %}
 
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-2xl font-bold">Dashboard</h1>
@@ -57,7 +61,7 @@
             <select name="workflow" aria-label="Filter by workflow"
                     class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
                 <option value="">All workflows</option>
-                {% for w in workflows %}<option value="{{ w.slug }}">{{ w.name }}</option>{% endfor %}
+                {% for w in workflows %}<option value="{{ w.slug }}">{% if not w.is_enabled %}[disabled] {% endif %}{{ w.name }}</option>{% endfor %}
             </select>
             <select name="status" aria-label="Filter by status"
                     class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
@@ -130,12 +134,13 @@
     </p>
     {% endif %}
     <p class="text-xs text-gray-500 mb-4">
-        Describe a concept below to run the full creative agency pipeline.
+        Enter a creative brief, or select a completed source job for a Product Describer workflow.
         The job is queued in the background — check status in <span class="font-mono text-gray-400">Recent Jobs</span>.
     </p>
     <form hx-post="/partials/run-pipeline"
           hx-target="#pipeline-result"
           hx-swap="innerHTML"
+          oninput="document.getElementById('run-pipeline-btn').disabled = {% if workflow_runnable %}{% if description_workflow %}!this.elements.source_job_id.value.trim(){% else %}!this.elements.brief.value.trim(){% endif %}{% else %}true{% endif %}"
           class="space-y-3">
         {% if selected_workflow %}<input type="hidden" name="workflow" value="{{ selected_workflow.slug }}">{% endif %}
         <div>
@@ -144,9 +149,12 @@
                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white
                              focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30
                              placeholder-gray-600 resize-y"
-                      placeholder="Describe your concept…"
-                      oninput="document.getElementById('run-pipeline-btn').disabled = !this.value.trim()"></textarea>
+                      placeholder="Describe your concept (optional guidance for Product Describer)…"></textarea>
         </div>
+        {% if description_workflow %}
+        {% set field_id = 'source-job' %}
+        {% include 'partials/product_description_picker.html' %}
+        {% endif %}
         <button id="run-pipeline-btn" type="submit" disabled
                 class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700
                        text-white text-sm px-5 py-1.5 rounded font-medium
@@ -180,6 +188,7 @@
     <form hx-post="/partials/run-test-pipeline"
           hx-target="#test-pipeline-result"
           hx-swap="innerHTML"
+          oninput="document.getElementById('run-test-btn').disabled = {% if workflow_runnable %}{% if description_workflow %}!this.elements.source_job_id.value.trim(){% else %}!this.elements.brief.value.trim(){% endif %}{% else %}true{% endif %}"
           class="space-y-3">
         {% if selected_workflow %}<input type="hidden" name="workflow" value="{{ selected_workflow.slug }}">{% endif %}
         <div>
@@ -188,9 +197,13 @@
                       class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white
                              focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30
                              placeholder-gray-600 resize-y"
-                      placeholder="Describe your concept…"
-                      oninput="document.getElementById('run-test-btn').disabled = !this.value.trim()"></textarea>
+                      placeholder="Describe your concept (optional guidance for Product Describer)…"></textarea>
         </div>
+        {% if description_workflow %}
+        {% set field_id = 'test-source-job' %}
+        {% include 'partials/product_description_picker.html' %}
+        <p class="text-xs text-amber-300">Product Describer still calls the real vision LLM in test mode.</p>
+        {% endif %}
         <button id="run-test-btn" type="submit" disabled
                 class="bg-amber-600 hover:bg-amber-500 active:bg-amber-700
                        text-white text-sm px-5 py-1.5 rounded font-medium

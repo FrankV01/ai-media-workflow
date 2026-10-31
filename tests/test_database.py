@@ -41,7 +41,7 @@ from app.models.workflow import Workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIOUS_REVISION = "e2f5a1c9d7b4"
-HEAD_REVISION = "n7f1c3d5e9a2"
+HEAD_REVISION = "p4b9f2a6d8e1"
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
@@ -753,6 +753,73 @@ def test_storefront_size_limit_is_scrubbed_and_restored(
             ).fetchone()
             is None
         )
+
+
+def test_product_description_migration_preserves_legacy_history(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+
+    from app.services.open_folder import job_output_dir
+
+    path = tmp_path / "legacy-products.db"
+    monkeypatch.setattr(settings, "image_output_dir", tmp_path / "images")
+    _upgrade(path, "o3a8e6f1c4b7", monkeypatch)
+    sync_engine = create_engine(f"sqlite:///{path}")
+    with Session(sync_engine) as session:
+        source = Job(workflow_name="Source", status=JobStatus.COMPLETED)
+        generation = Job(workflow_name="Description", status=JobStatus.COMPLETED)
+        role = CreativeRole(name="product_describer")
+        session.add_all([source, generation, role])
+        session.flush()
+        step = JobStep(job_id=generation.id, block_name="product_describer", order=0)
+        session.add(step)
+        session.flush()
+        audit = RoleExecution(
+            job_step_id=step.id,
+            role_id=role.id,
+            input_brief="Describe",
+            output_deliverable="Original copy",
+            system_prompt="Historical prompt A",
+        )
+        session.add(audit)
+        session.flush()
+        source_id = source.id
+        audit_id = audit.id
+        root = str(job_output_dir(source))
+        for directory, content in [
+            (root, "Original copy"),
+            (str(tmp_path / "unmatched"), "Legacy copy"),
+        ]:
+            session.execute(
+                text(
+                    "INSERT INTO product_descriptions (job_id, job_step_id, "
+                    "directory_path, image_paths, "
+                    "file_path, content, status, created_at, updated_at) "
+                    "VALUES (:job, :step, :dir, '[]', :file, :content, 'completed', :now, :now)"
+                ),
+                {
+                    "job": generation.id,
+                    "step": step.id,
+                    "dir": directory,
+                    "file": directory + "/product_description.md",
+                    "content": content,
+                    "now": datetime.now(UTC),
+                },
+            )
+        session.commit()
+    _upgrade(path, "head", monkeypatch)
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute(
+            "SELECT source_job_id, version, system_prompt, role_execution_id, content "
+            "FROM product_descriptions ORDER BY id"
+        ).fetchall()
+    assert rows[0] == (source_id, 1, "Historical prompt A", audit_id, "Original copy")
+    assert rows[1] == (None, None, None, None, "Legacy copy")
+    command.downgrade(_alembic_config(), "o3a8e6f1c4b7")
+    _upgrade(path, "head", monkeypatch)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM product_descriptions").fetchone()[0] == 2
+    sync_engine.dispose()
 
 
 def test_upgrade_database_is_idempotent(

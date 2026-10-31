@@ -1,0 +1,17 @@
+<ul class="space-y-1 text-xs">
+{% for choice in choices %}
+    <li class="flex justify-between gap-2 rounded bg-gray-800 p-2">
+        <button type="button" class="text-left text-indigo-300 hover:text-indigo-200"
+                onclick="const input = document.getElementById('{{ field_id }}'); input.value = '{{ choice.id }}'; input.dispatchEvent(new Event('input', {bubbles: true}));">
+            #{{ choice.id }} — {{ choice.name }} · {{ choice.created_at.strftime('%Y-%m-%d') }}
+            <span class="block text-gray-400">{% if choice.version %}Description v{{ choice.version }} exists — select Regenerate to create another.{% else %}No product description yet{% endif %}</span>
+        </button>
+        <a href="/jobs/{{ choice.id }}" class="text-indigo-400 underline">View job</a>
+    </li>
+{% else %}<li class="text-gray-500 p-2">No completed jobs match.</li>{% endfor %}
+</ul>
+<div class="flex gap-3 mt-2 text-xs">
+    {% if source_page.page > 1 %}<button type="button" hx-get="/partials/product-description-sources?field_id={{ field_id }}&amp;page={{ source_page.page - 1 }}&amp;q={{ q|urlencode }}" hx-target="#{{ field_id }}-choices" class="text-indigo-400">Previous</button>{% endif %}
+    <span class="text-gray-500">Page {{ source_page.page }} of {{ source_page.pages }}</span>
+    {% if source_page.page < source_page.pages %}<button type="button" hx-get="/partials/product-description-sources?field_id={{ field_id }}&amp;page={{ source_page.page + 1 }}&amp;q={{ q|urlencode }}" hx-target="#{{ field_id }}-choices" class="text-indigo-400">Next</button>{% endif %}
+</div>

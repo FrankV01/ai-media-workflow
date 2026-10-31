@@ -2,6 +2,10 @@
 
 {% block title %}Job #{{ job.id }} — {{ job.workflow_name }}{% endblock %}
 
+{% block head %}
+<script src="/static/output_copy.js?v=1" defer></script>
+{% endblock %}
+
 {% block content %}
 <!-- Breadcrumb -->
 <div class="flex items-center gap-2 text-sm text-gray-500 mb-6">
@@ -247,6 +251,10 @@
                     <code class="font-mono text-[10px] text-indigo-300">product {{ listing.product_id }}</code>
                     {% endif %}
                 </div>
+                {% if listing.product_url %}
+                <a href="{{ listing.product_url }}" target="_blank" rel="noopener"
+                   class="text-indigo-400 hover:text-indigo-300 break-all">{{ listing.product_url }}</a>
+                {% endif %}
                 {% if listing.status == 'ready' and listing.product_id %}
                 <p class="text-gray-600 mt-0.5">Set the product category in the Fourthwall admin — Fourthwall uses it to calculate sales tax.</p>
                 {% endif %}
@@ -281,6 +289,12 @@
     {% if not job.quality_editable %}
     <p class="mb-3 text-sm text-amber-300">Quality control can be edited after the job has finished.</p>
     {% endif %}
+    <details class="mb-4 rounded border border-gray-700 bg-gray-800/60"{% if job.quality_control and job.quality_control.comment_markdown %} open{% endif %}>
+        <summary class="cursor-pointer px-3 py-2 text-xs uppercase tracking-wide text-gray-500 select-none">Rendered comment</summary>
+        <div id="quality-preview" class="markdown-preview min-h-16 p-3 border-t border-gray-700 text-sm text-gray-300">
+            {% if job.quality_control %}{{ job.quality_control.comment_html }}{% else %}<p class="text-gray-600 italic">Nothing to preview.</p>{% endif %}
+        </div>
+    </details>
     <form method="post" action="/jobs/{{ job.id }}/quality-control" class="space-y-4">
         <fieldset {% if not job.quality_editable %}disabled{% endif %}>
             <legend class="text-xs text-gray-500 mb-2">Rating</legend>
@@ -307,18 +321,17 @@
                       placeholder="Add review notes…">{{ job.quality_control.comment_markdown if job.quality_control else '' }}</textarea>
             <p class="text-[11px] text-gray-600 mt-1">20,000 character maximum.</p>
         </fieldset>
-        <div>
-            <p class="text-xs text-gray-500 mb-1">Preview</p>
-            <div id="quality-preview" class="markdown-preview min-h-16 rounded border border-gray-700 bg-gray-800/60 p-3 text-sm text-gray-300">
-                {% if job.quality_control %}{{ job.quality_control.comment_html }}{% else %}<p class="text-gray-600 italic">Nothing to preview.</p>{% endif %}
-            </div>
-        </div>
         <button type="submit" {% if not job.quality_editable %}disabled{% endif %}
                 class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-5 py-1.5 rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed">
             Save quality control
         </button>
     </form>
 </section>
+
+{% if job.product_descriptions %}
+{% set descriptions = job.product_descriptions %}
+{% include 'partials/product_descriptions.html' %}
+{% endif %}
 
 <!-- Steps -->
 <h2 class="text-lg font-semibold mb-4">Steps</h2>
@@ -391,13 +404,24 @@
             </div>
 
             <!-- Output -->
-            <div class="p-4">
-                <p class="text-xs uppercase tracking-wide text-gray-500 mb-2 flex items-center gap-2">
-                    <span class="text-amber-400">↑</span> Output
-                </p>
+            <div class="p-4" data-output-panel>
+                <div class="flex items-center justify-between gap-2 mb-2">
+                    <p class="text-xs uppercase tracking-wide text-gray-500 flex items-center gap-2">
+                        <span class="text-amber-400">↑</span> Output
+                    </p>
+                    {% if step.output_brief %}
+                    <div class="flex items-center gap-2">
+                        <button type="button" data-copy-output="markdown"
+                                class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">Copy</button>
+                        <button type="button" data-copy-output="html"
+                                class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200">Copy as HTML</button>
+                    </div>
+                    {% endif %}
+                </div>
+                <p data-copy-status role="status" aria-live="polite" class="text-xs text-gray-400 mb-2"></p>
                 {% if step.output_brief %}
                 <div class="bg-gray-800/60 rounded p-3 max-h-96 overflow-y-auto">
-                    <div class="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{{ step.output_brief }}</div>
+                    <div data-output-text class="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{{ step.output_brief }}</div>
                 </div>
                 {% else %}
                 <p class="text-xs text-gray-600 italic">No output recorded</p>
