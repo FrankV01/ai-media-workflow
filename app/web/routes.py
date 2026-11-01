@@ -83,6 +83,7 @@ from app.models.delivery import DeliveryArchiveStatus
 from app.models.job import Job
 from app.models.workflow import Workflow
 from app.pipeline.engine import run_pipeline
+from app.services import product_descriptions as product_service
 from app.services.cloudflare_r2 import (
     UploadRetryError,
     list_uploads,
@@ -147,6 +148,8 @@ from app.services.open_folder import (
     job_output_dir,
     open_folder,
 )
+from app.services.pinterest import local_product_link
+from app.services.pinterest_settings import get_pinterest_settings
 from app.services.storefront_settings import (
     StorefrontSettingsError,
     get_storefront_settings,
@@ -188,6 +191,9 @@ _BLOCK_TITLES = {
 }
 
 templates = Jinja2Templates(directory="app/web/templates")
+templates.env.filters["description_markdown"] = lambda value: Markup(
+    product_service.render_description(value)
+)
 templates.env.globals.update(
     app_version=APP_VERSION,
     build_number=settings.build_number,
@@ -268,9 +274,7 @@ def _job_image_groups(job: Job) -> list[tuple[str, list[Path]]]:
     except (json.JSONDecodeError, TypeError):
         return []
     paths = (
-        [Path(path) for path in assets if isinstance(path, str)]
-        if isinstance(assets, list)
-        else []
+        [Path(path) for path in assets if isinstance(path, str)] if isinstance(assets, list) else []
     )
     return [("Generated image", paths)] if paths else []
 
@@ -321,6 +325,9 @@ async def dashboard(request: Request, session: AsyncSession = Depends(get_sessio
     if not workflows:
         workflows = [await get_or_create_default_workflow(session)]
         await session.commit()
+    # Enabled first so filter dropdowns list disabled workflows last (stable
+    # sort preserves the default-first/alphabetical order within each group)
+    workflows.sort(key=lambda w: not w.is_enabled)
     slug = request.query_params.get("workflow")
     selected = next((w for w in workflows if w.slug == slug), None)
     if selected is None:
@@ -328,7 +335,13 @@ async def dashboard(request: Request, session: AsyncSession = Depends(get_sessio
     return templates.TemplateResponse(
         request,
         "dashboard.html",
-        {"workflows": workflows, "selected_workflow": selected},
+        {
+            "workflows": workflows,
+            "selected_workflow": selected,
+            "description_workflow": product_service.description_steps(
+                parse_steps_json(selected.steps_json)
+            ),
+        },
     )
 
 
@@ -390,6 +403,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         for a in await list_archives(session, job_raw.id)
     ]
 
+    pinterest_config = await get_pinterest_settings(session)
     listings = [
         {
             "id": listing.id,
@@ -397,6 +411,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
             "status": listing.status.value,
             "storefront": listing.storefront,
             "product_id": listing.product_id,
+            "product_url": local_product_link(listing, pinterest_config),
             "name": listing.name,
             "price_usd": listing.price_usd,
             "created_at": (
@@ -460,9 +475,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
                 "comment_html": Markup(
                     render_quality_comment(job_raw.quality_control.comment_markdown)
                 ),
-                "updated_at": job_raw.quality_control.updated_at.strftime(
-                    "%b %d, %Y %H:%M:%S"
-                ),
+                "updated_at": job_raw.quality_control.updated_at.strftime("%b %d, %Y %H:%M:%S"),
             }
             if job_raw.quality_control
             else None
@@ -471,6 +484,7 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         "quality_saved": request.query_params.get("quality_saved") == "1",
         "quality_error": request.query_params.get("quality_error"),
         "folder_path": str(job_output_dir(job_raw)),
+        "product_descriptions": await product_service.description_state(session, job_id),
         "steps": [
             {
                 "block_name": s.block_name,
@@ -507,6 +521,108 @@ async def job_detail(request: Request, job_id: int, session: AsyncSession = Depe
         ],
     }
     return templates.TemplateResponse(request, "job_detail.html", {"job": job})
+
+
+@router.get("/partials/jobs/{job_id}/product-descriptions")
+async def partial_product_descriptions(
+    request: Request, job_id: int, page: int = 1, session: AsyncSession = Depends(get_session)
+):
+    try:
+        state = await product_service.description_state(session, job_id, page)
+    except product_service.ProductDescriptionError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return templates.TemplateResponse(
+        request, "partials/product_descriptions.html", {"descriptions": state}
+    )
+
+
+@router.post("/partials/jobs/{job_id}/product-descriptions")
+async def generate_product_description(
+    request: Request,
+    job_id: int,
+    workflow: str = Form(""),
+    brief: str = Form(""),
+    regenerate: bool = Form(False),
+    session: AsyncSession = Depends(get_session),
+):
+    message = None
+    error = None
+    try:
+        result = await product_service.submit_description(
+            job_id, workflow, regenerate=regenerate, brief=brief
+        )
+        message = (
+            "A description already exists. Use Regenerate to create a new version."
+            if result["status"] == "exists"
+            else "Description generation queued."
+        )
+    except product_service.ProductDescriptionError as exc:
+        error = str(exc)
+    await session.rollback()
+    state = await product_service.description_state(session, job_id)
+    return templates.TemplateResponse(
+        request,
+        "partials/product_descriptions.html",
+        {"descriptions": state, "description_message": message, "description_error": error},
+    )
+
+
+@router.post("/partials/jobs/{job_id}/product-descriptions/export")
+async def retry_product_description_export(
+    request: Request, job_id: int, session: AsyncSession = Depends(get_session)
+):
+    error = None
+    try:
+        error = await product_service.retry_description_export(job_id)
+    except product_service.ProductDescriptionError as exc:
+        error = str(exc)
+    state = await product_service.description_state(session, job_id)
+    return templates.TemplateResponse(
+        request,
+        "partials/product_descriptions.html",
+        {
+            "descriptions": state,
+            "description_error": error,
+            "description_message": None if error else "Latest description exported.",
+        },
+    )
+
+
+@router.get("/partials/product-description-sources")
+async def product_description_sources(
+    request: Request,
+    q: str = "",
+    page: int = 1,
+    field_id: str = "source-job",
+    session: AsyncSession = Depends(get_session),
+):
+    if field_id not in {"source-job", "test-source-job"}:
+        raise HTTPException(422, "Invalid input field")
+    try:
+        result = await list_job_page(session, status="completed", query=q, page=page)
+    except JobFilterError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    choices = []
+    for job in result.jobs:
+        latest = await product_service.latest_description(session, job.id)
+        choices.append(
+            {
+                "id": job.id,
+                "name": job.workflow_name,
+                "created_at": job.created_at,
+                "version": latest.version if latest else None,
+            }
+        )
+    return templates.TemplateResponse(
+        request,
+        "partials/product_description_sources.html",
+        {
+            "choices": choices,
+            "source_page": result,
+            "field_id": field_id,
+            "q": q,
+        },
+    )
 
 
 @router.post("/jobs/{job_id}/quality-control")
@@ -688,7 +804,7 @@ async def ai_settings_page(
                 "media_producer", backend_name, media_model
             ).settings,
             "block_profiles": block_profiles,
-            "workflows": await list_workflows(session),
+            "workflows": sorted(await list_workflows(session), key=lambda w: not w.is_enabled),
             "workflow": wf,
             "status": request.query_params.get("status"),
             "status_kind": request.query_params.get("kind"),
@@ -1316,9 +1432,7 @@ async def partial_job_images(
 
 
 @router.get("/jobs/{job_id}/images/{image_index}")
-async def job_image(
-    job_id: int, image_index: int, session: AsyncSession = Depends(get_session)
-):
+async def job_image(job_id: int, image_index: int, session: AsyncSession = Depends(get_session)):
     job = await _job_with_steps(session, job_id)
     images = _job_images(job)
     if image_index < 0 or image_index >= len(images):
@@ -1381,26 +1495,62 @@ async def _runnable_workflow(session: AsyncSession, slug: str) -> Workflow:
     return wf
 
 
+async def _queue_description_form(
+    request: Request, source: str, workflow: str, brief: str, regenerate: bool
+):
+    try:
+        result = await product_service.submit_description(
+            source, workflow, brief=brief, regenerate=regenerate
+        )
+        if result["status"] == "exists":
+            return templates.TemplateResponse(
+                request,
+                "partials/pipeline_queued.html",
+                {
+                    "error": f"Job #{source} already has a product description. "
+                    "Select Regenerate, or view its job page."
+                },
+            )
+        return templates.TemplateResponse(
+            request, "partials/pipeline_queued.html", {"job_id": result["job_id"], "error": None}
+        )
+    except product_service.ProductDescriptionError as exc:
+        return templates.TemplateResponse(
+            request, "partials/pipeline_queued.html", {"error": str(exc)}
+        )
+
+
 @router.post("/partials/run-pipeline")
 async def partial_run_pipeline(
     request: Request,
     brief: str = Form(""),
+    source_job_id: str = Form(""),
+    regenerate: bool = Form(False),
     workflow: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
     """Queue the selected workflow's pipeline (queued-confirmation fragment)."""
     brief = brief.strip()
-    if not brief:
+    source_job_id = source_job_id.strip()
+    if not brief and not source_job_id:
         return templates.TemplateResponse(
             request,
             "partials/pipeline_queued.html",
-            {"error": "Brief cannot be empty."},
+            {"error": "Enter a creative brief or select a completed source job."},
         )
     try:
         wf = await _runnable_workflow(session, workflow)
     except WorkflowError as exc:
         return templates.TemplateResponse(
             request, "partials/pipeline_queued.html", {"error": str(exc)}
+        )
+    if product_service.description_steps(parse_steps_json(wf.steps_json)):
+        return await _queue_description_form(request, source_job_id, wf.slug, brief, regenerate)
+    if not brief:
+        return templates.TemplateResponse(
+            request,
+            "partials/pipeline_queued.html",
+            {"error": "Enter a creative brief for this workflow."},
         )
     job_id = await run_pipeline(
         workflow_name=None,
@@ -1419,22 +1569,33 @@ async def partial_run_pipeline(
 async def partial_run_test_pipeline(
     request: Request,
     brief: str = Form(""),
+    source_job_id: str = Form(""),
+    regenerate: bool = Form(False),
     workflow: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
     """Queue the selected workflow with the placeholder backend for testing."""
     brief = brief.strip()
-    if not brief:
+    source_job_id = source_job_id.strip()
+    if not brief and not source_job_id:
         return templates.TemplateResponse(
             request,
             "partials/pipeline_queued.html",
-            {"error": "Brief cannot be empty."},
+            {"error": "Enter a creative brief or select a completed source job."},
         )
     try:
         wf = await _runnable_workflow(session, workflow)
     except WorkflowError as exc:
         return templates.TemplateResponse(
             request, "partials/pipeline_queued.html", {"error": str(exc)}
+        )
+    if product_service.description_steps(parse_steps_json(wf.steps_json)):
+        return await _queue_description_form(request, source_job_id, wf.slug, brief, regenerate)
+    if not brief:
+        return templates.TemplateResponse(
+            request,
+            "partials/pipeline_queued.html",
+            {"error": "Enter a creative brief for this workflow."},
         )
     job_id = await run_pipeline(
         workflow_name=None,
@@ -1475,9 +1636,7 @@ async def _general_settings_context(
             storefront_values if storefront_values is not None else storefront.to_dict()
         ),
         "r2": r2_values if r2_values is not None else r2.to_dict(),
-        "pinterest": (
-            pinterest_values if pinterest_values is not None else pinterest.to_dict()
-        ),
+        "pinterest": (pinterest_values if pinterest_values is not None else pinterest.to_dict()),
         "pinterest_connected": pinterest_tokens is not None,
         "pinterest_username": pinterest_tokens.username if pinterest_tokens else "",
         "has_signature": has_signature,

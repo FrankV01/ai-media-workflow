@@ -129,9 +129,12 @@ ComfyUI checkpoint than "Main".
 - Create/clone/edit/enable/disable on the `/workflows` page (JSON steps
   editor with a rendered preview); the default workflow can't be disabled.
 - The dashboard's Run Pipeline and Test Pipeline selectors are connected and
-  choose the active workflow for new runs and the pipeline visual. Recent Jobs
+  choose the active workflow for new runs and the pipeline visual. Only
+  enabled workflows are listed; opening `/?workflow=<slug>` for a disabled
+  workflow is a preview — the run buttons stay disabled. Recent Jobs
   is independent: it is paginated across all workflows and can be filtered by
-  workflow, run status, operator QC rating, and shoot name or job ID.
+  workflow (disabled ones sorted last, marked `[disabled]`), run status,
+  operator QC rating, and shoot name or job ID.
   `/settings/ai?workflow=<slug>` edits that workflow's profiles and selects its
   active media profile (checkpoint/model). `media_model_name` is the workflow's
   persisted active selection; `COMFYUI_CHECKPOINT` now only seeds the default
@@ -373,6 +376,65 @@ name/hash, product id, status, error). The job detail page and
 listing** button) runs a listing-only retry under the workload guard
 without rerunning any creative steps — the job's prior terminal status is
 restored regardless of outcome.
+
+Each non-empty step output on the job detail page has **Copy** and
+**Copy as HTML** buttons at the top right. Copy preserves the raw Markdown;
+Copy as HTML copies basic HTML source converted from it (without app styling).
+Clipboard access requires HTTPS or localhost and browser permission.
+
+### Product descriptions (`product_describer`)
+
+`product_describer` is a vision-capable follow-up block for a **previously
+completed source job**. It accepts `source_job_id`, derives the image folder
+from that job, recursively discovers PNG/JPEG files, and generates Markdown.
+Directory-path inputs and automatic description of the currently running job
+are no longer supported.
+
+**Recommended UI:** open the completed image job's detail page, find **Product
+description**, choose an enabled workflow containing only `product_describer`
+(such as "Create Product Description"), optionally enter copywriting guidance,
+and click **Generate product description**. If one exists, the latest version
+is displayed with **Regenerate description**, **Copy**, and **Copy as HTML**.
+Expandable history preserves older versions and each version's exact **System
+prompt used**. Queued/running status updates automatically; failed regeneration
+leaves the previous successful description intact.
+
+The dashboard also provides a searchable completed-job picker when a
+single-step Product Describer workflow is selected. Choose a source job or
+enter its numeric ID. Existing descriptions are indicated; explicitly select
+Regenerate to create another version. Test mode still calls the real vision LLM.
+
+Each request runs as a separate pipeline job under the chosen description
+workflow's configuration scope. The current system prompt, temperature,
+max_tokens, and thinking settings resolve **when execution starts**, so edits
+made while queued apply. Successful versions retain immutable actual prompt
+and parameter snapshots, not pointers to today's editable settings. Configure
+the vision-capable model/profile in `/settings/ai?workflow=<description-slug>`.
+`PRODUCT_DESCRIBER_MAX_IMAGES` (default 8) and
+`PRODUCT_DESCRIBER_IMAGE_MAX_EDGE` (default 1024) bound the vision payload.
+
+The database stores all successful versions. `product_description.md` beside
+the source images exports the latest successful version and joins the source
+job's report collection. Export failures are reported without discarding the
+saved version; **Retry Markdown export** retries the file write without an LLM call.
+Existing ZIPs, uploads, and storefront listings are not rebuilt
+or republished. Legacy records are preserved; historical prompts that cannot
+be recovered unambiguously are labeled "Not recorded (legacy version)".
+
+```http
+POST /api/workflows/jobs/123/product-descriptions
+Content-Type: application/json
+
+{"workflow": "create-product-description", "regenerate": false,
+ "brief": "Optional copywriting guidance"}
+```
+
+Set `regenerate` to `true` for another version. Repeated submissions while a
+request is pending/running return the existing run instead of enqueueing another.
+`GET /api/workflows/jobs/123/product-descriptions?page=1` returns latest,
+history, actual prompts, and generation status. Generic `/api/workflows/run`
+also supports a description-only workflow with the usual `photo_shoot_name`
+field and `context: {"source_job_id": 123, "regenerate": true}`.
 
 The `/convert` page hosts two standalone converter tabs (no pipeline
 involved). The default **PNG → JPEG** tab is a drag-and-drop tool: drop one

@@ -258,7 +258,8 @@ async def test_pipeline_persists_failed_llm_execution(session_factory, monkeypat
 
     assert execution.status == "failed"
     assert execution.error_type == "ConnectionError"
-    assert execution.error == "LLM unavailable"
+    assert execution.error.startswith("LLM server (LM Studio) is not reachable")
+    assert execution.error.endswith("[details: LLM unavailable]")
     assert execution.output_deliverable is None
     assert [message.role.value for message in messages] == ["system", "user"]
 

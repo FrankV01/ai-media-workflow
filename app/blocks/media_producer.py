@@ -31,6 +31,8 @@ Input:  context["prompt_architect_output"] — JSON string from Prompt Architect
         context["photo_shoot_name"], context["_job_id"] — for the output subdir
         context["_generation_backend"] — optional per-run backend override
 Output: context["generated_images"], context["generation_metadata"],
+        context["image_directory"] — the resolved output root dir (lets
+        directory-scanning blocks like product_describer find the images),
         context["media_producer_output"] / context["brief"] — delivery summary
 
 Suggested next: art_critic
@@ -198,7 +200,7 @@ class MediaProducer(Block):
         version="0.1.0",
         category="production",
         inputs=["prompt_architect_output", "photo_shoot_name"],
-        outputs=["generated_images", "generation_metadata"],
+        outputs=["generated_images", "generation_metadata", "image_directory"],
     )
 
     suggested_next: str | None = "art_critic"
@@ -438,6 +440,9 @@ class MediaProducer(Block):
             "brief": summary,  # Keeps the chain readable
             "generated_images": all_image_paths,
             "generation_metadata": all_metadata,
+            # Root output directory — lets directory-scanning blocks
+            # (e.g. product_describer) discover the generated images
+            "image_directory": str(settings.image_output_dir / subdir),
             "media_producer_output": summary,
             "_media_executions": media_executions,
         }

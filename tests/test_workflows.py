@@ -682,6 +682,62 @@ def api_client(monkeypatch, session_factory):
     yield client, spy
 
 
+@pytest.mark.parametrize("endpoint", ["run-pipeline", "run-test-pipeline"])
+def test_web_run_accepts_source_job(api_client, monkeypatch, endpoint):
+    import app.web.routes as routes
+
+    client, _ = api_client
+    client.post(
+        "/api/workflow-definitions/", json={"name": "Descriptions", "steps": ["product_describer"]}
+    )
+    submit = AsyncMock(return_value={"job_id": 123, "status": "pending"})
+    monkeypatch.setattr(routes.product_service, "submit_description", submit)
+    response = client.post(
+        f"/partials/{endpoint}",
+        data={"source_job_id": " 42 ", "workflow": "descriptions"},
+    )
+    assert response.status_code == 200
+    submit.assert_awaited_once_with("42", "descriptions", brief="", regenerate=False)
+    page = client.get("/?workflow=descriptions")
+    assert page.text.count('name="source_job_id"') == 2
+    assert 'name="image_directory"' not in page.text
+
+
+@pytest.mark.parametrize("endpoint", ["run-pipeline", "run-test-pipeline"])
+def test_web_run_rejects_empty_inputs(api_client, monkeypatch, endpoint):
+    import app.web.routes as routes
+
+    client, _ = api_client
+    run = AsyncMock()
+    monkeypatch.setattr(routes, "run_pipeline", run)
+    response = client.post(f"/partials/{endpoint}", data={"brief": " ", "image_directory": " "})
+    assert "Enter a creative brief or select a completed source job." in response.text
+    run.assert_not_called()
+
+
+def test_job_output_copy_controls_escape_markdown():
+    from app.web.routes import templates
+
+    markdown = '# Product\n\n**Bold** <script>alert("x")</script>'
+    rendered = templates.get_template("job_detail.html").render(
+        job={
+            "id": 1,
+            "workflow_name": "Copy test",
+            "status": "completed",
+            "steps": [
+                {"order": 0, "status": "completed", "output_brief": markdown},
+                {"order": 1, "status": "completed", "output_brief": ""},
+            ],
+        }
+    )
+    assert rendered.count('data-copy-output="markdown"') == 1
+    assert rendered.count('data-copy-output="html"') == 1
+    assert 'src="/static/output_copy.js?v=1"' in rendered
+    assert "# Product\n\n**Bold** &lt;script&gt;" in rendered
+    assert '<script>alert("x")</script>' not in rendered
+    assert "No output recorded" in rendered
+
+
 def test_api_workflow_definitions_crud(api_client):
     client, _ = api_client
 
@@ -831,6 +887,7 @@ def test_workflows_pages_render(api_client):
     assert 'id="job-filters"' in dashboard.text
     assert '<script src="/static/dashboard.js?v=1" defer></script>' in dashboard.text
     assert 'hx-include="#job-filters"' in dashboard.text
+    assert 'name="image_directory"' not in dashboard.text
     assert dashboard.text.count("Active workflow") == 2
     assert "independently of the active workflow" in dashboard.text
 

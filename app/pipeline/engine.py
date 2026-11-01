@@ -62,6 +62,7 @@ from app.models.job import Job, JobStatus, JobStep
 from app.models.media import MediaGenerationExecution
 from app.models.workflow import Workflow
 from app.pipeline.naming import MAX_PHOTO_SHOOT_NAME_LENGTH, resolve_photo_shoot_name
+from app.services.service_errors import ExternalServiceError
 from app.services.workflows import (
     WorkflowDisabledError,
     WorkflowNotFoundError,
@@ -303,6 +304,30 @@ async def run_pipeline(
 
     Returns the job ID (int).
     """
+    async with async_session() as session:
+        job, steps, prepared_context = await prepare_pipeline_run(
+            session, workflow_name, block_names, context, workflow_id=workflow_id
+        )
+        await session.commit()
+    if start_in_background:
+        schedule_pipeline(job.id, steps, prepared_context)
+    else:
+        await _guarded_execute(job.id, steps, prepared_context)
+    return job.id
+
+
+def schedule_pipeline(job_id: int, steps: list[str | dict], context: dict[str, Any]) -> None:
+    asyncio.create_task(_guarded_execute(job_id, steps, context), name=f"pipeline-job-{job_id}")
+
+
+async def prepare_pipeline_run(
+    session: Any,
+    workflow_name: str | None,
+    block_names: list[str | dict] | None = None,
+    context: dict[str, Any] | None = None,
+    *,
+    workflow_id: int | None = None,
+) -> tuple[Job, list[str | dict], dict[str, Any]]:
     if workflow_name is None:
         # Untitled — a block (e.g. Art Director) may name the shoot mid-run
         job_name = UNTITLED_SHOOT
@@ -315,46 +340,35 @@ async def run_pipeline(
 
     # Resolve the workflow container before creating the job so unknown or
     # disabled workflows fail without leaving a PENDING row behind
-    async with async_session() as session:
-        workflow = await _apply_workflow_context(session, workflow_id, context)
+    workflow = await _apply_workflow_context(session, workflow_id, context)
 
-        if block_names is None:
-            block_names = parse_steps_json(workflow.steps_json)
+    if block_names is None:
+        block_names = parse_steps_json(workflow.steps_json)
 
-        if workflow_name is not None:
-            # Caller-supplied name wins — nothing may rename the shoot mid-run
-            context.setdefault("photo_shoot_name", workflow_name)
+    if workflow_name is not None:
+        # Caller-supplied name wins — nothing may rename the shoot mid-run
+        context.setdefault("photo_shoot_name", workflow_name)
 
-        if (
-            workflow_name is None
-            and not context.get("photo_shoot_name")
-            and str(context.get("brief") or "").strip()
-        ):
-            # Engine-owned titling: the namer names the shoot at run start
-            # (its JobStep makes the LLM call audited like any other step)
-            block_names = ["job_namer", *block_names]
+    if (
+        workflow_name is None
+        and not context.get("photo_shoot_name")
+        and str(context.get("brief") or "").strip()
+    ):
+        # Engine-owned titling: the namer names the shoot at run start
+        # (its JobStep makes the LLM call audited like any other step)
+        block_names = ["job_namer", *block_names]
 
-        # Create the job row as PENDING — it transitions to RUNNING once the lock is acquired
-        job = Job(
-            workflow_name=job_name,
-            workflow_id=workflow.id,
-            status=JobStatus.PENDING,
-            steps_json=json.dumps(block_names, default=str, ensure_ascii=False),
-            context_json=json.dumps(submitted_context, default=str, ensure_ascii=False),
-        )
-        session.add(job)
-        await session.commit()
-        job_id = job.id
-
-    if start_in_background:
-        asyncio.create_task(
-            _guarded_execute(job_id, block_names, context),
-            name=f"pipeline-job-{job_id}",
-        )
-    else:
-        await _guarded_execute(job_id, block_names, context)
-
-    return job_id
+    # Create the job row as PENDING — it transitions to RUNNING once the lock is acquired
+    job = Job(
+        workflow_name=job_name,
+        workflow_id=workflow.id,
+        status=JobStatus.PENDING,
+        steps_json=json.dumps(block_names, default=str, ensure_ascii=False),
+        context_json=json.dumps(submitted_context, default=str, ensure_ascii=False),
+    )
+    session.add(job)
+    await session.flush()
+    return job, block_names, context
 
 
 async def _guarded_execute(
@@ -521,7 +535,11 @@ async def _drain_queue(
             step.status = JobStatus.COMPLETED
             step.output = json.dumps(_audit_snapshot(result), default=str, ensure_ascii=False)
         except Exception as exc:
-            logger.exception("Block %s failed", name)
+            if isinstance(exc, ExternalServiceError):
+                # Actionable message; full traceback still lands in step.error_traceback
+                logger.error("Block %s failed: %s", name, exc)
+            else:
+                logger.exception("Block %s failed", name)
             step.status = JobStatus.FAILED
             step.error = str(exc)
             step.error_type = type(exc).__name__

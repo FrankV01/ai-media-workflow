@@ -13,4 +13,6 @@ Delivery audit: DeliveryArchive, DeliveryArchiveEntry (app/models/delivery.py)
 Storefront audit: StorefrontListing (app/models/storefront.py)
 Cloud upload audit: CloudflareUpload (app/models/cloudflare.py)
 Scheduled pins: ScheduledPin (app/models/pinterest.py)
+Product descriptions: ProductDescription (immutable successful versions + prompt snapshots),
+ProductDescriptionRequest (source job / generation run binding; app/models/product.py)
 """

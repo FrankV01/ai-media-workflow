@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     social_media_max_images: int = 4  # cap on images attached per call
     social_media_image_max_edge: int = 1024  # longest edge sent to the VLM
 
+    # Product Describer vision input: images discovered by scanning
+    # image_directory are attached to its LLM call (requires a
+    # vision-capable profile model).
+    product_describer_max_images: int = 8  # cap on images attached per call
+    product_describer_image_max_edge: int = 1024  # longest edge sent to the VLM
+
     # Image generation settings. generation_backend selects the backend;
     # comfyui_checkpoint seeds the DEFAULT MediaModelConfiguration profile for
     # new workflows. Runtime model selection is DB-owned (workflow.media_model_name

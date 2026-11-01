@@ -1,0 +1,17 @@
+<div class="space-y-2">
+    <label for="{{ field_id }}" class="block text-xs text-gray-400">Completed source job</label>
+    <input id="{{ field_id }}" name="source_job_id" type="number" min="1" required
+           placeholder="Select below or enter a job ID"
+           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white">
+    <label for="{{ field_id }}-search" class="block text-xs text-gray-500">Find a completed job by name or ID</label>
+    <input id="{{ field_id }}-search" name="q" type="search" maxlength="200"
+           hx-get="/partials/product-description-sources?field_id={{ field_id }}"
+           hx-trigger="input changed delay:400ms" hx-target="#{{ field_id }}-choices"
+           class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm">
+    <div id="{{ field_id }}-choices" hx-get="/partials/product-description-sources?field_id={{ field_id }}"
+         hx-trigger="load" class="max-h-64 overflow-y-auto"></div>
+    <label class="flex items-center gap-2 text-xs text-gray-400">
+        <input type="checkbox" name="regenerate" value="true">
+        Regenerate if a description already exists (previous versions are preserved).
+    </label>
+</div>

@@ -34,9 +34,7 @@ def _make_listing_sync(session_factory) -> int:
 
     async def _insert() -> int:
         async with session_factory() as session:
-            workflow = Workflow(
-                name="Main", slug="main", steps_json="[]", is_default=True
-            )
+            workflow = Workflow(name="Main", slug="main", steps_json="[]", is_default=True)
             session.add(workflow)
             await session.flush()
             job = Job(
@@ -125,7 +123,9 @@ def test_settings_defaults_and_validation(temp_config_db):
             assert defaults.repin_cooldown_days == 30
             assert defaults.daily_pin_limit == 10
             saved = await save_pinterest_settings(
-                session, repin_cooldown_days="14", daily_pin_limit="5",
+                session,
+                repin_cooldown_days="14",
+                daily_pin_limit="5",
                 product_url_template="https://shop.example.com/p/{slug}",
             )
             assert saved.repin_cooldown_days == 14
@@ -150,9 +150,13 @@ def test_schedule_and_pending_block(temp_config_db):
             pin = await pin_svc.schedule_pin(
                 session,
                 storefront_listing_id=listing_id,
-                board_id="b1", board_name="Art", title="T", description="d",
+                board_id="b1",
+                board_name="Art",
+                title="T",
+                description="d",
                 link="https://syntheticmuse.ai/products/x",
-                image_path="/tmp/x.png", scheduled_for=_future(),
+                image_path="/tmp/x.png",
+                scheduled_for=_future(),
             )
             assert pin.status == ScheduledPinStatus.SCHEDULED
             await session.commit()
@@ -162,10 +166,15 @@ def test_schedule_and_pending_block(temp_config_db):
             assert reason and "already scheduled" in reason
             with pytest.raises(pin_svc.PinScheduleError):
                 await pin_svc.schedule_pin(
-                    session, storefront_listing_id=listing_id,
-                    board_id="b1", board_name="Art", title="T2",
-                    description="", link="https://x.co",
-                    image_path="/tmp/x.png", scheduled_for=_future(2),
+                    session,
+                    storefront_listing_id=listing_id,
+                    board_id="b1",
+                    board_name="Art",
+                    title="T2",
+                    description="",
+                    link="https://x.co",
+                    image_path="/tmp/x.png",
+                    scheduled_for=_future(2),
                 )
 
     asyncio.run(scenario())
@@ -178,11 +187,16 @@ def test_cooldown_blocks_then_allows(temp_config_db):
     async def scenario():
         async with temp_config_db() as session:
             pin = ScheduledPin(
-                storefront_listing_id=listing_id, job_id=1, attempt=1,
+                storefront_listing_id=listing_id,
+                job_id=1,
+                attempt=1,
                 status=ScheduledPinStatus.PUBLISHED,
                 scheduled_for=now - timedelta(days=10),
                 published_at=now - timedelta(days=10),
-                board_id="b", title="t", link="https://x.co", image_path="/x.png",
+                board_id="b",
+                title="t",
+                link="https://x.co",
+                image_path="/x.png",
             )
             session.add(pin)
             await session.commit()
@@ -205,23 +219,38 @@ def test_payload_validation(temp_config_db):
         async with temp_config_db() as session:
             with pytest.raises(pin_svc.PinScheduleError, match="future"):
                 await pin_svc.schedule_pin(
-                    session, storefront_listing_id=listing_id,
-                    board_id="b", board_name="", title="t", description="",
-                    link="https://x.co", image_path="/x.png",
+                    session,
+                    storefront_listing_id=listing_id,
+                    board_id="b",
+                    board_name="",
+                    title="t",
+                    description="",
+                    link="https://x.co",
+                    image_path="/x.png",
                     scheduled_for=datetime.now(UTC) - timedelta(minutes=1),
                 )
             with pytest.raises(pin_svc.PinScheduleError, match="Title"):
                 await pin_svc.schedule_pin(
-                    session, storefront_listing_id=listing_id,
-                    board_id="b", board_name="", title="", description="",
-                    link="https://x.co", image_path="/x.png",
+                    session,
+                    storefront_listing_id=listing_id,
+                    board_id="b",
+                    board_name="",
+                    title="",
+                    description="",
+                    link="https://x.co",
+                    image_path="/x.png",
                     scheduled_for=_future(),
                 )
             with pytest.raises(pin_svc.PinScheduleError, match="http"):
                 await pin_svc.schedule_pin(
-                    session, storefront_listing_id=listing_id,
-                    board_id="b", board_name="", title="t", description="",
-                    link="not-a-url", image_path="/x.png",
+                    session,
+                    storefront_listing_id=listing_id,
+                    board_id="b",
+                    board_name="",
+                    title="t",
+                    description="",
+                    link="not-a-url",
+                    image_path="/x.png",
                     scheduled_for=_future(),
                 )
 
@@ -234,9 +263,15 @@ def test_cancel_and_retry(temp_config_db):
     async def scenario():
         async with temp_config_db() as session:
             pin = await pin_svc.schedule_pin(
-                session, storefront_listing_id=listing_id,
-                board_id="b", board_name="B", title="t", description="",
-                link="https://x.co", image_path="/x.png", scheduled_for=_future(),
+                session,
+                storefront_listing_id=listing_id,
+                board_id="b",
+                board_name="B",
+                title="t",
+                description="",
+                link="https://x.co",
+                image_path="/x.png",
+                scheduled_for=_future(),
             )
             await session.commit()
             await pin_svc.cancel_pin(session, pin.id)
@@ -246,9 +281,15 @@ def test_cancel_and_retry(temp_config_db):
 
             # A canceled pin doesn't block scheduling
             pin2 = await pin_svc.schedule_pin(
-                session, storefront_listing_id=listing_id,
-                board_id="b", board_name="B", title="t2", description="",
-                link="https://x.co", image_path="/x.png", scheduled_for=_future(),
+                session,
+                storefront_listing_id=listing_id,
+                board_id="b",
+                board_name="B",
+                title="t2",
+                description="",
+                link="https://x.co",
+                image_path="/x.png",
+                scheduled_for=_future(),
             )
             await session.commit()
             pin2.status = ScheduledPinStatus.FAILED
@@ -285,12 +326,13 @@ def test_client_create_pin_payload():
         return httpx.Response(200, json={"id": "pin-9"})
 
     async def scenario():
-        async with pin_svc.PinterestClient(
-            "tok", transport=httpx.MockTransport(handler)
-        ) as client:
+        async with pin_svc.PinterestClient("tok", transport=httpx.MockTransport(handler)) as client:
             result = await client.create_pin(
-                board_id="b1", title="t" * 200, description="d",
-                link="https://x.co", image_b64="QUJD",
+                board_id="b1",
+                title="t" * 200,
+                description="d",
+                link="https://x.co",
+                image_b64="QUJD",
             )
         return result
 
@@ -318,9 +360,14 @@ def test_missing_product_link_blocks_and_save(temp_config_db):
             assert reason and "product link" in reason
             with pytest.raises(pin_svc.PinScheduleError, match="product link"):
                 await pin_svc.schedule_pin(
-                    session, storefront_listing_id=listing_id,
-                    board_id="b", board_name="B", title="t", description="",
-                    link="https://x.co", image_path="/x.png",
+                    session,
+                    storefront_listing_id=listing_id,
+                    board_id="b",
+                    board_name="B",
+                    title="t",
+                    description="",
+                    link="https://x.co",
+                    image_path="/x.png",
                     scheduled_for=_future(),
                 )
 
@@ -349,9 +396,12 @@ def test_suggest_product_link_guess(temp_config_db):
             guess = await pin_svc.suggest_product_link(session, listing)
             assert guess.startswith("https://syntheticmuse.ai/products/")
             # A guess does not satisfy eligibility
-            assert await pin_svc.pin_ineligibility(
-                session, listing_id, resolved_link="", _link_resolved=True
-            ) is not None
+            assert (
+                await pin_svc.pin_ineligibility(
+                    session, listing_id, resolved_link="", _link_resolved=True
+                )
+                is not None
+            )
 
     asyncio.run(scenario())
 
@@ -361,6 +411,7 @@ def test_token_refresh_flow(temp_config_db, monkeypatch):
     monkeypatch.setenv("PINTEREST_CLIENT_SECRET", "secret")
 
     from app.config import settings
+
     monkeypatch.setattr(settings, "pinterest_client_id", "cid")
     monkeypatch.setattr(settings, "pinterest_client_secret", "secret")
 
@@ -368,18 +419,21 @@ def test_token_refresh_flow(temp_config_db, monkeypatch):
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(dict(httpx.QueryParams(request.url.params)))
-        return httpx.Response(200, json={
-            "access_token": "new-access", "refresh_token": "new-refresh",
-            "expires_in": 3600,
-        })
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+            },
+        )
 
     async def scenario():
         async with temp_config_db() as session:
             # Store an expiring token, then get_valid_token should refresh
             await _store_tokens(
                 session,
-                {"access_token": "old", "refresh_token": "r",
-                 "expires_in": 60},
+                {"access_token": "old", "refresh_token": "r", "expires_in": 60},
             )
             await session.commit()
             transport = httpx.MockTransport(handler)

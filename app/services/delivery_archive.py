@@ -888,9 +888,7 @@ async def get_archive(
     return archive
 
 
-async def latest_ready_archive(
-    session: AsyncSession, job_id: int
-) -> DeliveryArchive | None:
+async def latest_ready_archive(session: AsyncSession, job_id: int) -> DeliveryArchive | None:
     """Newest verified delivery archive for the job, or None."""
     result = await session.execute(
         select(DeliveryArchive)

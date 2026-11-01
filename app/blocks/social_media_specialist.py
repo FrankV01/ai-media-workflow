@@ -35,15 +35,11 @@ Suggested next role: None (terminal for now)
 
 from __future__ import annotations
 
-import base64
-import io
 import logging
 import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-
-from PIL import Image
 
 from app.blocks.base import BlockMeta
 from app.blocks.output_contract import (
@@ -54,6 +50,7 @@ from app.blocks.output_contract import (
 )
 from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
+from app.blocks.vision import encode_image_part
 from app.config import settings
 from app.services.configuration.base import ResolvedLlmConfiguration
 
@@ -214,20 +211,7 @@ class SocialMediaSpecialist(RoleBlock):
 
     def _encode_image(self, path: str) -> dict[str, Any] | None:
         """Downscale and base64-encode an image as an OpenAI image_url part."""
-        try:
-            with Image.open(path) as img:
-                img.thumbnail((settings.social_media_image_max_edge,) * 2, Image.LANCZOS)
-                if img.mode not in ("RGB", "L"):
-                    img = img.convert("RGB")
-                buffer = io.BytesIO()
-                img.save(buffer, format="JPEG", quality=85)
-            data_uri = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode(
-                "ascii"
-            )
-            return {"type": "image_url", "image_url": {"url": data_uri}}
-        except Exception as exc:
-            logger.warning("SocialMediaSpecialist: skipping image %s (%s)", path, exc)
-            return None
+        return encode_image_part(path, settings.social_media_image_max_edge)
 
     def build_user_content(self, context: dict[str, Any], input_brief: str) -> tuple[Any, str]:
         """Attach downscaled variant images as vision content parts.

@@ -561,6 +561,9 @@ async def test_media_producer_with_placeholder():
         assert len(result["generated_images"]) >= 2  # main + 1 variant
         assert "generation_metadata" in result
         assert result["generation_metadata"][0]["backend"] == "placeholder"
+        # The output root is published so directory-scanning blocks can
+        # discover the generated images downstream
+        assert result["image_directory"].startswith(str(settings.image_output_dir))
         # parameters emitted by the LLM are ignored — the media profile wins
         snapshot = json.loads(result["_media_executions"][0]["settings_snapshot"])
         assert snapshot["request"]["width"] == 1024
@@ -1721,3 +1724,143 @@ async def test_media_producer_resolve_configuration_prefers_step_override(temp_c
     )
 
     assert resolved.model_name == "DreamShaperXL1.0Alpha2_fixedVae_half_00001_.safetensors"
+
+
+# ── Product Describer block tests ────────────────────────────────────────
+
+
+def test_product_describer_registered():
+    cls = get_block("product_describer")
+    assert cls.meta.name == "product_describer"
+    assert cls.meta.category == "creative"
+    assert "source_job_id" in cls.meta.inputs
+    assert "product_description_path" in cls.meta.outputs
+
+
+def test_product_describer_scan_recursive(tmp_path):
+    """PNG/JPEG files are found recursively; other files are ignored."""
+    from app.services.product_descriptions import scan_images
+
+    _make_png(tmp_path / "front.png")
+    _make_png(tmp_path / "sub" / "back.jpeg")
+    (tmp_path / "notes.txt").write_text("not an image")
+    images, _ = scan_images(tmp_path)
+    assert [p.name for p in images] == ["front.png", "back.jpeg"]
+
+
+def test_product_describer_scan_cap(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.product_descriptions import scan_images
+
+    monkeypatch.setattr(settings, "product_describer_max_images", 2)
+    for n in range(4):
+        _make_png(tmp_path / f"i{n}.png")
+    assert len(scan_images(tmp_path)[0]) == 2
+
+
+@pytest.mark.asyncio
+async def test_product_describer_rejects_directory_inputs(tmp_path):
+    block = get_block("product_describer")()
+    with pytest.raises(ValueError, match="no longer supported"):
+        await block.validate({"_job_id": 1, "image_directory": str(tmp_path)})
+
+
+@pytest.mark.asyncio
+async def test_product_describer_validate_requires_directory():
+    block = get_block("product_describer")()
+    with pytest.raises(ValueError, match="source job"):
+        await block.validate({"_job_id": 1})
+
+
+@pytest.mark.asyncio
+async def test_product_describer_validate_rejects_unknown_source(tmp_path):
+    block = get_block("product_describer")()
+    with pytest.raises(ValueError, match="not found"):
+        await block.validate({"_job_id": 1, "source_job_id": 123})
+
+
+@pytest.mark.asyncio
+async def test_product_describer_validate_requires_job(tmp_path):
+    block = get_block("product_describer")()
+    _make_png(tmp_path / "a.png")
+    with pytest.raises(ValueError, match="_job_id"):
+        await block.validate({"image_directory": str(tmp_path)})
+
+
+@pytest.mark.asyncio
+async def test_product_describer_run_writes_file_and_row(tmp_path, monkeypatch, temp_config_db):
+    """Full run: fake LLM → product_description.md + ProductDescription row."""
+    from sqlalchemy import select
+
+    import app.blocks.role_block as role_block_module
+    from app.config import settings
+    from app.models.job import Job, JobStatus, JobStep
+    from app.models.product import ProductDescription
+    from app.services.open_folder import job_output_dir
+
+    monkeypatch.setattr(settings, "image_output_dir", tmp_path)
+    monkeypatch.setattr(
+        role_block_module,
+        "AsyncOpenAI",
+        lambda **_: _fake_llm_client("# Mug\n\nA sturdy ceramic mug."),
+    )
+    async with temp_config_db() as session:
+        source = Job(workflow_name="Images", status=JobStatus.COMPLETED)
+        session.add(source)
+        await session.flush()
+        source_id = source.id
+        directory = job_output_dir(source)
+        _make_png(directory / "front.png")
+        _make_png(directory / "sub" / "back.jpeg")
+        job = Job(workflow_name="Product Run")
+        session.add(job)
+        await session.flush()
+        step = JobStep(job_id=job.id, block_name="product_describer", order=0)
+        session.add(step)
+        await session.commit()
+        job_id, step_id = job.id, step.id
+
+    block = get_block("product_describer")()
+    context = {
+        "_job_id": job_id,
+        "_job_step_id": step_id,
+        "source_job_id": source_id,
+    }
+    result = await block.run(context)
+
+    output = directory / "product_description.md"
+    assert output.exists()
+    assert "ceramic mug" in output.read_text(encoding="utf-8")
+    assert result["product_description"] == "# Mug\n\nA sturdy ceramic mug."
+    assert result["product_description_path"] == str(output)
+    assert str(output) in result["report_files"]
+    assert len(result["product_description_images"]) == 2
+    assert result["product_describer_output"] == result["product_description"]
+
+    async with temp_config_db() as session:
+        row = (await session.execute(select(ProductDescription))).scalar_one()
+        assert row.id == result["product_description_id"]
+        assert row.job_id == job_id
+        assert row.job_step_id == step_id
+        assert row.directory_path == str(directory)
+        assert row.source_job_id == source_id
+        assert row.system_prompt == block.system_prompt
+        assert row.version == 1
+        assert "ceramic mug" in row.content
+        assert len(json.loads(row.image_paths)) == 2
+
+
+@pytest.mark.asyncio
+async def test_product_describer_audit_content_has_no_base64(tmp_path):
+    """Vision content parts go to the API; audit text lists paths only."""
+    from pathlib import Path
+
+    img = _make_png(tmp_path / "shot.png")
+    block = get_block("product_describer")()
+    context = {"_product_describer_images": [Path(img)]}
+    api_content, audit = block.build_user_content(context, "describe this")
+    assert api_content[0] == {"type": "text", "text": "describe this"}
+    assert api_content[1]["type"] == "image_url"
+    assert api_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert img in audit
+    assert "base64" not in audit

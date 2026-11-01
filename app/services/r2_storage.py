@@ -18,6 +18,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from app.services.service_errors import ErrorKind, wrap_service_error
+
+_R2_HINTS: dict[ErrorKind, str] = {
+    ErrorKind.UNREACHABLE: "Check your internet connection and the R2 account/endpoint settings.",
+    ErrorKind.TIMEOUT: "The upload timed out — retry the upload later.",
+    ErrorKind.AUTH: (
+        "Check CLOUDFLARE_R2_ACCESS_KEY_ID / CLOUDFLARE_R2_SECRET_ACCESS_KEY in .env "
+        "and that the token can write to the bucket."
+    ),
+    ErrorKind.NOT_FOUND: "The bucket may not exist — check the bucket name on /settings/general.",
+}
+
 
 @dataclass
 class R2UploadResult:
@@ -97,7 +109,10 @@ class Boto3R2Storage:
                 )
                 head = client.head_object(Bucket=bucket, Key=key)
             except Exception as exc:  # botocore raises many concrete types
-                raise R2StorageError(f"R2 upload failed: {exc}") from exc
+                friendly = wrap_service_error(
+                    "Cloudflare R2", exc, url=self._endpoint_url, hints=_R2_HINTS
+                )
+                raise R2StorageError(str(friendly or f"R2 upload failed: {exc}")) from exc
             etag = head.get("ETag")
             if isinstance(etag, str):
                 etag = etag.strip('"')

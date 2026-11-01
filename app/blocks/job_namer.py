@@ -29,6 +29,7 @@ from app.blocks.registry import register
 from app.blocks.role_block import RoleBlock
 from app.pipeline.naming import clean_shoot_title, fallback_photo_shoot_name
 from app.services.configuration.base import LlmRoleDefaults
+from app.services.service_errors import ExternalServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,9 @@ class PhotoShootNamer(RoleBlock):
         if isinstance(brief, str) and brief.strip():
             try:
                 result = await super().run(context)
+            except ExternalServiceError as exc:
+                logger.warning("job_namer LLM call failed — falling back to concept words. %s", exc)
+                result = {}
             except Exception:
                 logger.exception("job_namer LLM call failed — falling back to concept words")
                 result = {}

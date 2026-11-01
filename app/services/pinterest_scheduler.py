@@ -40,14 +40,16 @@ async def publish_due_pins() -> int:
     published = 0
     async with workload_guard.hold("pinterest-scheduler"):
         async with app.database.async_session() as session:
-            await session.execute(update(ScheduledPin).where(
-                ScheduledPin.status == ScheduledPinStatus.PUBLISHING
-            ).values(
-                status=ScheduledPinStatus.FAILED,
-                error_type="PublicationOutcomeUnknown",
-                error="Publishing was interrupted. Check the Pinterest board before retrying.",
-                finished_at=datetime.now(UTC),
-            ))
+            await session.execute(
+                update(ScheduledPin)
+                .where(ScheduledPin.status == ScheduledPinStatus.PUBLISHING)
+                .values(
+                    status=ScheduledPinStatus.FAILED,
+                    error_type="PublicationOutcomeUnknown",
+                    error="Publishing was interrupted. Check the Pinterest board before retrying.",
+                    finished_at=datetime.now(UTC),
+                )
+            )
             await session.commit()
             warning = permission_warning(await get_tokens(session))
             if warning:

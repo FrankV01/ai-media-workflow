@@ -29,6 +29,7 @@ from app.config import settings
 from app.pipeline.naming import safe_filename_part
 from app.services.generation.base import GenerationBackend, GenerationRequest, GenerationResult
 from app.services.generation.sdxl_workflow import SdxlWorkflowConfig, build_sdxl_workflow
+from app.services.service_errors import comfyui_service_error
 from app.services.workload_guard import workload_guard
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,13 @@ class ComfyUIBackend(GenerationBackend):
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:
         async with workload_guard.hold(f"comfyui-{request.variant_name}"):
-            return await self._generate_unlocked(request)
+            try:
+                return await self._generate_unlocked(request)
+            except Exception as exc:
+                friendly = comfyui_service_error(exc)
+                if friendly is None:
+                    raise
+                raise friendly from exc
 
     async def _generate_unlocked(self, request: GenerationRequest) -> GenerationResult:
         start = time.monotonic()
@@ -206,11 +213,16 @@ class ComfyUIBackend(GenerationBackend):
 
         return workflow
 
+    async def ensure_available(self) -> None:
+        """Raise (httpx error) unless the ComfyUI server answers /system_stats."""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{self.base_url}/system_stats")
+            resp.raise_for_status()
+
     async def is_available(self) -> bool:
         """Check if the ComfyUI server is reachable."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{self.base_url}/system_stats")
-                return resp.status_code == 200
-        except (httpx.ConnectError, httpx.TimeoutException):
+            await self.ensure_available()
+        except httpx.HTTPError:
             return False
+        return True

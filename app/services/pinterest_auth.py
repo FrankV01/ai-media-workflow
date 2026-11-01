@@ -33,8 +33,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.setting import Setting
+from app.services.service_errors import ErrorKind, wrap_service_error
 
 logger = logging.getLogger(__name__)
+
+PINTEREST_HINTS: dict[ErrorKind, str] = {
+    ErrorKind.UNREACHABLE: "Check your internet connection.",
+    ErrorKind.TIMEOUT: "Pinterest did not answer in time — the scheduler will retry.",
+    ErrorKind.AUTH: "Reconnect Pinterest from the Pinterest page.",
+}
 
 PINTEREST_TOKENS_KEY = "social.pinterest.tokens"
 PINTEREST_AUTHORIZE_URL = "https://www.pinterest.com/oauth/"
@@ -148,7 +155,8 @@ async def _token_request(
         ) as client:
             response = await client.post("/oauth/token", data=payload)
     except httpx.HTTPError as exc:
-        raise PinterestError(f"Pinterest token request failed: {exc}") from exc
+        friendly = wrap_service_error("Pinterest OAuth", exc, hints=PINTEREST_HINTS)
+        raise PinterestError(str(friendly or f"Pinterest token request failed: {exc}")) from exc
     if response.status_code >= 400:
         raise PinterestApiError(response.status_code, response.text[:500])
     try:
@@ -174,8 +182,11 @@ async def _fetch_username(access_token: str) -> str:
 
 
 async def _store_tokens(
-    session: AsyncSession, payload: dict[str, Any], username: str = "",
-    *, preserve_scopes: bool = True,
+    session: AsyncSession,
+    payload: dict[str, Any],
+    username: str = "",
+    *,
+    preserve_scopes: bool = True,
 ) -> PinterestTokens:
     access_token = str(payload.get("access_token") or "")
     refresh_token = str(payload.get("refresh_token") or "")
@@ -185,7 +196,10 @@ async def _store_tokens(
     raw_scope = payload.get("scope")
     scopes = (
         sorted(set(str(raw_scope).replace(",", " ").split()))
-        if raw_scope is not None else previous.scopes if previous and preserve_scopes else None
+        if raw_scope is not None
+        else previous.scopes
+        if previous and preserve_scopes
+        else None
     )
     expires_in = int(payload.get("expires_in") or payload.get("access_token_expires_in") or 0)
     expires_at = datetime.now(UTC) + timedelta(seconds=max(expires_in, 60))
@@ -234,11 +248,18 @@ async def exchange_code(
     if previous:
         from app.models.pinterest import ScheduledPin, ScheduledPinStatus
 
-        pending = await session.scalar(select(ScheduledPin.id).where(
-            ScheduledPin.status.in_([
-                ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING,
-            ])
-        ).limit(1))
+        pending = await session.scalar(
+            select(ScheduledPin.id)
+            .where(
+                ScheduledPin.status.in_(
+                    [
+                        ScheduledPinStatus.SCHEDULED,
+                        ScheduledPinStatus.PUBLISHING,
+                    ]
+                )
+            )
+            .limit(1)
+        )
         if pending and (not username or not previous.username or username != previous.username):
             raise PinterestError(
                 "Cannot change or verify the Pinterest account while pins are pending. "
@@ -305,9 +326,13 @@ async def disconnect(session: AsyncSession) -> None:
     """Drop the stored token row (Pinterest-side revocation is best-effort)."""
     from app.models.pinterest import ScheduledPin, ScheduledPinStatus
 
-    pending = await session.scalar(select(ScheduledPin.id).where(
-        ScheduledPin.status.in_([ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING])
-    ).limit(1))
+    pending = await session.scalar(
+        select(ScheduledPin.id)
+        .where(
+            ScheduledPin.status.in_([ScheduledPinStatus.SCHEDULED, ScheduledPinStatus.PUBLISHING])
+        )
+        .limit(1)
+    )
     if pending:
         raise PinterestError("Cancel pending pins before disconnecting this Pinterest account.")
     await session.execute(delete(Setting).where(Setting.key == PINTEREST_TOKENS_KEY))

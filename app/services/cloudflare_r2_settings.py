@@ -29,9 +29,7 @@ R2_SETTINGS_KEY = "cloudflare.r2"
 
 MAX_NAME_CHARS = 255
 
-DEFAULT_ENDPOINT_URL = (
-    "https://d168825896f30364c102d714479c5f1f.r2.cloudflarestorage.com"
-)
+DEFAULT_ENDPOINT_URL = "https://d168825896f30364c102d714479c5f1f.r2.cloudflarestorage.com"
 DEFAULT_BUCKET = "ai-media"
 DEFAULT_KEY_PREFIX = "fourthwall/"
 
